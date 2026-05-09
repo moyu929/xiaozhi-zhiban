@@ -6,7 +6,7 @@ server.py — Panel HTTP 服务器
 2. 提供 RESTful API 接口，代理前端请求到设备端（xwebd / sair）
 3. 支持文件上传（multipart/form-data），并代理到设备端
 4. 支持 ADB 端口转发，通过 USB 连接设备
-5. 自动检测设备在线状态，切换 MOCK/LIVE 模式
+5. 连接真实设备，设备离线时返回连接错误
 
 关键概念：
 - xwebd：设备端 HTTP 守护进程，提供系统控制 API（音量、亮度、文件管理等），端口 8080
@@ -27,8 +27,8 @@ import shutil
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from device_api import SairAPI, XwebdAPI, set_mock_mode, check_device_alive
-import device_api
+from device_api import XwebdAPI
+from assistant_api import SairAPI
 from adb_manager import (is_adb_available, detect_devices, is_xwebd_installed,
                           check_xwebd_status, deploy_xwebd, update_xwebd,
                           remove_xwebd, start_xwebd, stop_xwebd, restart_xwebd,
@@ -206,8 +206,12 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         if path == "/api/upload":
             self._handle_upload()
         elif path.startswith("/api/"):
-            data = self._read_body()
-            self._handle_api("POST", path, data, {})
+            content_type = self.headers.get("Content-Type", "")
+            if "multipart/form-data" in content_type:
+                self._handle_api("POST", path, None, {})
+            else:
+                data = self._read_body()
+                self._handle_api("POST", path, data, {})
         else:
             self.send_error(404)
 
@@ -226,6 +230,20 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def do_DELETE(self):
+        """处理 DELETE 请求
+
+        路由规则：
+        - /api/* → 转发到 API 处理器
+        - 其他 → 返回 404
+        """
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path.startswith("/api/"):
+            self._handle_api("DELETE", path, None, parse_qs(parsed.query))
+        else:
+            self.send_error(404)
+
     def _handle_upload(self):
         """处理文件上传请求
 
@@ -236,9 +254,8 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         流程：
         1. 接收上传数据（分块读取，记录接收进度 0-50%）
         2. 解析 multipart/form-data，提取文件内容和文件名
-        3. MOCK 模式下直接返回成功
-        4. LIVE 模式下将文件保存到临时目录，然后转发到设备端（进度 55-100%）
-        5. 清理临时文件
+        3. 将文件保存到临时目录，然后转发到设备端（进度 55-100%）
+        4. 清理临时文件
         """
         xwebd = get_xwebd_api()
         if not xwebd:
@@ -291,10 +308,6 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         if not file_data or not filename:
             _upload_progress[upload_id] = {"progress": 0, "status": "error", "error": "No file found"}
             self._send_json({"error": "No file found in upload"}, 400)
-            return
-        if device_api.MOCK_MODE:
-            _upload_progress[upload_id] = {"progress": 100, "status": "uploaded", "method": "mock"}
-            self._send_json({"ok": True, "upload_id": upload_id, "file_size": len(file_data), "method": "mock"})
             return
         try:
             import tempfile
@@ -365,7 +378,12 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             new_xwebd = XwebdAPI(host, XWEBD_PORT)
             sair_ok = new_sair.check_connection()
             xwebd_ok = new_xwebd.check_connection()
-            set_apis(new_sair, new_xwebd)
+            any_ok = sair_ok or xwebd_ok
+            set_apis(new_sair if sair_ok else None, new_xwebd if xwebd_ok else None)
+            if not any_ok:
+                self._send_json({"ok": False, "error": "无法连接设备，请检查设备是否开机及IP地址是否正确",
+                                 "host": host, "sair_connected": False, "xwebd_connected": False}, 502)
+                return
             self._send_json({"ok": True, "host": host, "sair_port": SAIR_PORT, "xwebd_port": XWEBD_PORT,
                              "sair_connected": sair_ok, "xwebd_connected": xwebd_ok})
             return
@@ -373,7 +391,7 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         # --- 获取当前连接信息 ---
         if path == "/api/info":
             self._send_json({
-                "mode": "MOCK" if device_api.MOCK_MODE else "LIVE",
+                "mode": "LIVE",
                 "sair_host": sair.host if sair else None,
                 "sair_port": sair.port if sair else SAIR_PORT,
                 "xwebd_host": xwebd.host if xwebd else None,
@@ -392,16 +410,19 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
 
         # --- 获取设备状态 ---
         if method == "GET" and path == "/api/status":
-            if not sair:
-                self._send_json({"error": "Not connected"}, 503)
-                return
-            # 合并 sair 状态和 xwebd 系统信息
-            sair_status = sair.get_status()
+            result = {}
+            if sair:
+                sair_status = sair.get_status()
+                if "error" not in sair_status:
+                    result.update(sair_status)
             if xwebd:
                 xwebd_status = xwebd._request("GET", "/api/system")
                 if "error" not in xwebd_status:
-                    sair_status.update(xwebd_status)
-            self._send_json(sair_status)
+                    result.update(xwebd_status)
+            if not result:
+                self._send_json({"error": "Not connected"}, 503)
+                return
+            self._send_json(result)
             return
 
         # --- 服务状态 ---
@@ -424,17 +445,7 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             url = f"/api/logs?lines={lines}"
             if level:
                 url += f"&level={level}"
-            if source != "0":
-                url += f"&source={source}"
             self._send_json(xwebd._request("GET", url))
-            return
-
-        # --- 清除日志 ---
-        if method == "POST" and path == "/api/assistant/logs/clear":
-            if not xwebd:
-                self._send_json({"ok": False, "error": "xwebd not connected"}, 503)
-                return
-            self._send_json(xwebd._request("POST", "/api/assistant/logs/clear"))
             return
 
         # --- xwebd 自检 ---
@@ -461,12 +472,27 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             self._send_json(sair._request("GET", "/api/diag"))
             return
 
-        # --- 获取配置 ---
+        # --- 获取助手配置 ---
+        if method == "GET" and path == "/api/assistant/config":
+            if not sair:
+                self._send_json({"error": "sair not connected"}, 503)
+                return
+            self._send_json(sair.get_config())
+            return
+
+        # --- 获取 xwebd 配置 ---
+        if method == "GET" and path == "/api/xwebd/config":
+            if not xwebd:
+                self._send_json({"error": "xwebd not connected"}, 503)
+                return
+            self._send_json(xwebd.get_config())
+            return
+
+        # --- 获取合并配置 ---
         if method == "GET" and path == "/api/config":
             if not sair:
                 self._send_json({"error": "Not connected"}, 503)
                 return
-            # 合并 sair 和 xwebd 的配置
             sair_cfg = sair.get_config()
             if xwebd:
                 xwebd_cfg = xwebd.get_config()
@@ -484,9 +510,11 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             sair_fields = {}
             xwebd_fields = {}
             if body:
-                for k in ("ws_url", "ws_token", "realtime_mode", "aec_enabled", "log_level"):
+                for k in ("ws_url", "ws_token", "realtime_mode", "aec_enabled"):
                     if k in body:
                         sair_fields[k] = body[k]
+                if "log_level" in body:
+                    xwebd_fields["log_level"] = body["log_level"]
                 if "upload_max_mb" in body:
                     v, err = _validate_int_range(body["upload_max_mb"], "upload_max_mb", 1, 100)
                     if err:
@@ -630,7 +658,8 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             if not xwebd:
                 self._send_json({"error": "xwebd not connected"}, 503)
                 return
-            self._send_json(xwebd.list_files())
+            file_path = query.get("path", ["/var/upgrade"])[0] if query else "/var/upgrade"
+            self._send_json(xwebd.list_files(file_path))
             return
 
         # --- 下载设备文件 ---
@@ -798,7 +827,35 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             serial = body.get("serial") if body else None
             binary_path = body.get("binary_path") if body else None
             r = update_xwebd(serial, binary_path)
-            self._send_json(r if r["ok"] else {"error": r.get("error", "update failed")}, 200 if r["ok"] else 500)
+            self._send_json(r if r.get("ok") else {"error": r.get("error", "update failed")}, 200 if r.get("ok") else 500)
+            return
+
+        if method == "POST" and path == "/api/xwebd/upload-update":
+            if not is_adb_available():
+                self._send_json({"error": "ADB 不可用"}, 503)
+                return
+            content_type = self.headers.get('Content-Type', '')
+            if 'multipart/form-data' not in content_type:
+                self._send_json({"error": "multipart/form-data required"}, 400)
+                return
+            import cgi
+            form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={'REQUEST_METHOD': 'POST', 'CONTENT_TYPE': content_type})
+            file_item = form['file']
+            if not file_item.filename:
+                self._send_json({"error": "no file in form"}, 400)
+                return
+            import tempfile
+            tmp_dir = tempfile.mkdtemp(prefix="xiaozhi_xwebd_")
+            tmp_path = os.path.join(tmp_dir, "xwebd")
+            with open(tmp_path, "wb") as f:
+                f.write(file_item.file.read())
+            serial = form.getvalue("serial") if "serial" in form else None
+            r = update_xwebd(serial, tmp_path)
+            try:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
+            self._send_json(r if r.get("ok") else {"error": r.get("error", "update failed")}, 200 if r.get("ok") else 500)
             return
 
         # --- 通过 ADB 移除设备上的 xwebd ---
@@ -847,30 +904,20 @@ def _validate_int_range(value, name, min_val, max_val):
     return v, None
 
 
-def create_server(host="0.0.0.0", port=3000, device_host="192.168.1.96", force_live=False):
+def create_server(host="0.0.0.0", port=3000, device_host="192.168.1.96"):
     """创建 HTTP 服务器实例
 
-    根据设备在线状态自动决定是否启用 MOCK 模式，
-    然后初始化 API 实例并创建多线程 HTTP 服务器。
+    始终使用 LIVE 模式，连接真实设备。
+    设备离线时 API 请求会返回连接错误。
 
     Args:
         host: 服务器监听地址，默认 "0.0.0.0"（所有网卡）
         port: 服务器监听端口，默认 3000
         device_host: 设备 IP 地址，默认 "192.168.1.96"
-        force_live: 是否强制 LIVE 模式（连接真实设备），默认 False
 
     Returns:
         ThreadingHTTPServer: 已配置好的 HTTP 服务器实例
     """
-    if force_live:
-        set_mock_mode(False)
-    elif check_device_alive(device_host, XWEBD_PORT):
-        # 设备在线，使用 LIVE 模式
-        set_mock_mode(False)
-    else:
-        # 设备离线，使用 MOCK 模式
-        set_mock_mode(True)
-
     sair_api = SairAPI(device_host, SAIR_PORT)
     xwebd_api = XwebdAPI(device_host, XWEBD_PORT)
     sair_api.check_connection()
@@ -881,7 +928,7 @@ def create_server(host="0.0.0.0", port=3000, device_host="192.168.1.96", force_l
     return server
 
 
-def start_server(host="0.0.0.0", port=3000, device_host="192.168.1.96", open_browser=True, force_live=False):
+def start_server(host="0.0.0.0", port=3000, device_host="192.168.1.96", open_browser=True):
     """启动控制面板 HTTP 服务器
 
     创建服务器实例，打印启动信息，可选自动打开浏览器，
@@ -892,14 +939,11 @@ def start_server(host="0.0.0.0", port=3000, device_host="192.168.1.96", open_bro
         port: 服务器监听端口，默认 3000
         device_host: 设备 IP 地址，默认 "192.168.1.96"
         open_browser: 是否自动打开浏览器，默认 True
-        force_live: 是否强制 LIVE 模式，默认 False
     """
-    server = create_server(host, port, device_host, force_live=force_live)
+    server = create_server(host, port, device_host)
     url = f"http://localhost:{port}"
 
-    mode_label = "MOCK" if device_api.MOCK_MODE else "LIVE"
     print(f"=== xiaozhi-zhiban 控制面板 v3.0 ===")
-    print(f"  模式: {mode_label}")
     print(f"  面板: {url}")
     print(f"  xwebd: {device_host}:{XWEBD_PORT}")
     print(f"  sair:  {device_host}:{SAIR_PORT}")

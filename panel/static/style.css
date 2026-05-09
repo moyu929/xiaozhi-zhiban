@@ -119,11 +119,6 @@ body {
   border-radius: 20px;
   border: 1px solid rgba(50,240,140,0.2);
 }
-.badge-mock {
-  background: rgba(245,158,11,0.12);
-  color: var(--warning);
-  border: 1px solid rgba(245,158,11,0.2);
-}
 
 .state-idle { background: rgba(50,240,140,0.12) !important; color: var(--accent) !important; border: 1px solid rgba(50,240,140,0.2) !important; }
 .state-connecting { background: rgba(59,130,246,0.12) !important; color: var(--info) !important; border: 1px solid rgba(59,130,246,0.2) !important; }
@@ -132,6 +127,14 @@ body {
 .state-cleaning { background: rgba(245,158,11,0.12) !important; color: var(--warning) !important; border: 1px solid rgba(245,158,11,0.2) !important; }
 .state-starting { background: rgba(59,130,246,0.12) !important; color: var(--info) !important; border: 1px solid rgba(59,130,246,0.2) !important; }
 .state-activating { background: rgba(245,158,11,0.12) !important; color: var(--warning) !important; border: 1px solid rgba(245,158,11,0.2) !important; }
+
+.state-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
 
 .btn {
   padding: 9px 20px;
@@ -433,7 +436,7 @@ body {
 .btn-xs { padding: 2px 8px; font-size: 11px; border-radius: 4px; }
 
 .log-container {
-  max-height: 400px;
+  max-height: 350px;
   overflow-y: auto;
   font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
   font-size: 12px;
@@ -444,6 +447,34 @@ body {
 }
 .log-container::-webkit-scrollbar { width: 4px; }
 .log-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+.log-dual {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.log-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.log-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.log-panel-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+@media (max-width: 700px) {
+  .log-dual { grid-template-columns: 1fr; }
+}
 
 .log-line { padding: 1px 0; }
 .log-source { color: var(--text-muted); font-size: 11px; }
@@ -664,3 +695,40 @@ body {
 .svc-off { background: rgba(102,102,102,0.1); color: var(--text-muted); border: 1px solid rgba(102,102,102,0.2); }
 
 .svc-unknown { background: rgba(245,158,11,0.12); color: var(--warning); border: 1px solid rgba(245,158,11,0.2); }
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  backdrop-filter: blur(4px);
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.2s ease;
+}
+.confirm-dialog {
+  background: var(--bg-card);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-lg);
+  width: 90%;
+  max-width: 400px;
+  padding: 28px 24px 20px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+  text-align: center;
+}
+.confirm-icon {
+  font-size: 36px;
+  margin-bottom: 14px;
+}
+.confirm-message {
+  font-size: 14px;
+  color: var(--text-primary);
+  line-height: 1.6;
+  margin-bottom: 22px;
+}
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}

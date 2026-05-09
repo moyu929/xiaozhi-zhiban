@@ -15,7 +15,9 @@
     <span>设备控制面板</span>
   </div>
   <div class="nav-actions">
-    <span id="mockBadge" class="badge badge-mock" style="display:none">MOCK</span>
+    <a href="https://github.com/moyu929/xiaozhi-zhiban" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm" title="GitHub">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+    </a>
     <button class="btn btn-ghost btn-sm" onclick="showHelp()">帮助</button>
   </div>
 </nav>
@@ -40,7 +42,6 @@
     <section class="card">
       <div class="card-header">
         <h2>设备状态</h2>
-        <span id="devState" class="status-pill state-idle">Idle</span>
       </div>
       <div class="connect-bar" style="margin-bottom:14px">
         <span id="connStatus" class="status-pill offline"><span class="status-dot offline"></span>离线</span>
@@ -81,16 +82,21 @@
         <button class="btn btn-ghost" onclick="doAbort()">中止对话</button>
         <button class="btn btn-danger" onclick="doReboot()">重启</button>
         <button class="btn btn-danger btn-outline" onclick="doPoweroff()">关机</button>
+        <button class="btn btn-danger btn-sm" onclick="doCleanup()">清理垃圾</button>
       </div>
     </section>
   </div>
 
   <div class="grid-3col">
     <section class="card">
-      <div class="card-header"><h2>Assistant 管理</h2></div>
+      <div class="card-header"><h2>语音助手管理</h2><div class="card-actions"><span id="assistantState" class="status-pill state-idle">空闲</span></div></div>
       <div class="service-status">
         <span id="assistantInstalled" class="stat-value">--</span>
         <span id="assistantVersion" class="badge">--</span>
+      </div>
+      <div class="stat-grid" style="margin-bottom:12px">
+        <div class="stat-item"><span class="stat-label">PID</span><span id="assistantPid" class="stat-value">--</span></div>
+        <div class="stat-item"><span class="stat-label">激活码</span><span id="assistantActivation" class="stat-value" style="font-family:monospace;word-break:break-all">--</span></div>
       </div>
       <div class="form-group">
         <label class="form-label">WebSocket 服务器</label>
@@ -100,15 +106,7 @@
         <label class="form-check"><input type="checkbox" id="cfgRealtime" class="checkbox"> 实时对话模式</label>
         <label class="form-check"><input type="checkbox" id="cfgAec" class="checkbox"> 云端回声消除</label>
       </div>
-      <div class="form-group">
-        <label class="form-label">唤醒词</label>
-        <input type="text" id="cfgWakeWord" class="input-text" value="" placeholder="你好小智">
-      </div>
-      <div class="form-group">
-        <label class="control-label">唤醒灵敏度 <span id="wakeThresholdVal" class="control-val">--</span></label>
-        <input type="range" id="cfgWakeThreshold" class="slider" min="0" max="100" value="50" oninput="$('wakeThresholdVal').textContent=this.value">
-      </div>
-      <button class="btn btn-accent btn-block" onclick="saveAssistantConfig()" style="margin-bottom:12px">保存 Assistant 配置</button>
+      <button class="btn btn-accent btn-block" onclick="saveAssistantConfig()" style="margin-bottom:12px">保存助手配置</button>
       <div class="firmware-row">
         <div class="file-input-wrap">
           <input type="file" id="firmwareFile" class="file-input" accept=".bin,.elf,.sair">
@@ -119,7 +117,7 @@
       <div class="btn-row" style="margin-top:8px">
         <button id="btnDeploy" class="btn btn-primary" onclick="doDeploy()" disabled>部署</button>
         <button id="btnUpdate" class="btn btn-accent" onclick="doUpdate()" disabled>更新</button>
-        <button class="btn btn-ghost" onclick="doOtaUpgrade()">OTA升级</button>
+        <button class="btn btn-ghost" onclick="doHotUpdate()">热更新</button>
         <button class="btn btn-danger" onclick="doUninstall()">卸载</button>
       </div>
       <div id="upgradeProgress" class="progress-wrap" style="display:none;margin-top:12px">
@@ -129,7 +127,7 @@
     </section>
 
     <section class="card">
-      <div class="card-header"><h2>xwebd 管理</h2></div>
+      <div class="card-header"><h2>面板内核管理</h2></div>
       <div class="service-status">
         <span id="xwebdStatus" class="stat-value">--</span>
         <span id="xwebdVersion" class="badge">--</span>
@@ -145,9 +143,9 @@
       </div>
       <div class="form-group">
         <label class="form-label">上传大小限制 (MB)</label>
-        <input type="number" id="cfgUploadMax" class="input-text" value="20" min="1" max="100">
+        <input type="number" id="cfgUploadMax" class="input-text" value="10" min="1" max="100">
       </div>
-      <button class="btn btn-accent btn-block" onclick="saveXwebdConfig()" style="margin-bottom:12px">保存 xwebd 配置</button>
+      <button class="btn btn-accent btn-block" onclick="saveXwebdConfig()" style="margin-bottom:12px">保存面板内核配置</button>
       <div class="firmware-row">
         <div class="file-input-wrap">
           <input type="file" id="xwebdFile" class="file-input" accept=".xwebd,*/*">
@@ -163,7 +161,7 @@
     </section>
 
     <section class="card">
-      <div class="card-header"><h2>服务状态</h2></div>
+      <div class="card-header"><h2>服务状态</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" id="btnRefreshSvc" onclick="refreshServices()">刷新</button></div></div>
       <div class="svc-list">
         <div class="svc-item">
           <span class="svc-name">Telnet 服务</span>
@@ -185,9 +183,6 @@
           <span class="svc-name">助手备份文件</span>
           <span id="svcBackup" class="svc-status svc-unknown">未知</span>
         </div>
-      </div>
-      <div class="btn-row" style="margin-top:12px">
-        <button class="btn btn-ghost btn-sm" onclick="refreshServices()">刷新</button>
       </div>
     </section>
   </div>
@@ -211,7 +206,6 @@
         <div class="card-actions">
           <button class="btn btn-ghost btn-sm" onclick="refreshFiles()">刷新</button>
           <button class="btn btn-accent btn-sm" onclick="triggerUpload()">上传</button>
-          <button class="btn btn-danger btn-sm" onclick="doCleanup()">清理</button>
           <input type="file" id="uploadFile" class="file-input" onchange="doUpload()" multiple>
         </div>
       </div>
@@ -225,14 +219,9 @@
     <div class="card-header">
       <h2>日志</h2>
       <div class="card-actions">
-        <button class="btn btn-ghost btn-sm" onclick="refreshLogs()">刷新</button>
-        <button class="btn btn-danger btn-sm" onclick="doClearLogs()">清空</button>
+        <button class="btn btn-ghost btn-sm" id="btnRefreshLogs" onclick="refreshLogs()">刷新</button>
+        <button class="btn btn-danger btn-sm" onclick="doClearLogs()">清屏</button>
         <label class="auto-refresh"><input type="checkbox" id="autoRefresh" checked> 自动</label>
-        <select id="logSourceFilter" onchange="refreshLogs()" class="log-filter">
-          <option value="">全部来源</option>
-          <option value="1">Assistant</option>
-          <option value="2">xwebd</option>
-        </select>
         <select id="logLevelFilter" onchange="refreshLogs()" class="log-filter">
           <option value="">全部级别</option>
           <option value="E">ERROR</option>
@@ -242,8 +231,25 @@
         </select>
       </div>
     </div>
-    <div id="logContainer" class="log-container">
-      <div class="empty-state">等待连接设备...</div>
+    <div class="log-dual">
+      <div class="log-panel">
+        <div class="log-panel-header">
+          <span class="log-panel-title">xwebd</span>
+          <button class="btn btn-ghost btn-xs" onclick="clearLogPanel('xwebd')">清除</button>
+        </div>
+        <div id="logXwebd" class="log-container">
+          <div class="empty-state">等待连接设备...</div>
+        </div>
+      </div>
+      <div class="log-panel">
+        <div class="log-panel-header">
+          <span class="log-panel-title">语音助手</span>
+          <button class="btn btn-ghost btn-xs" onclick="clearLogPanel('assistant')">清除</button>
+        </div>
+        <div id="logAssistant" class="log-container">
+          <div class="empty-state">等待连接设备...</div>
+        </div>
+      </div>
     </div>
   </section>
 </main>
@@ -275,9 +281,9 @@
         <h3>功能说明</h3>
         <ul>
           <li><strong>设备状态</strong> — 实时显示设备型号、系统信息、网络、电量等</li>
-          <li><strong>设备控制</strong> — 调节音量/亮度、唤醒设备、中止对话、重启/关机</li>
-          <li><strong>Assistant 管理</strong> — 部署/更新/卸载语音助手，配置WebSocket/唤醒词/灵敏度</li>
-          <li><strong>xwebd 管理</strong> — 更新/重启/卸载设备端守护进程，配置日志级别</li>
+          <li><strong>设备控制</strong> — 调节音量/亮度、唤醒设备、中止对话、重启/关机、清理垃圾</li>
+          <li><strong>语音助手管理</strong> — 部署/更新/卸载语音助手，配置WebSocket/实时对话/回声消除</li>
+          <li><strong>面板内核管理</strong> — 更新/重启/卸载设备端守护进程，配置日志级别</li>
           <li><strong>服务状态</strong> — 查看系统服务运行状态（Telnet/看门狗/自启动等）</li>
           <li><strong>设备自检</strong> — 检测设备环境兼容性，诊断各模块是否正常</li>
           <li><strong>文件管理</strong> — 浏览设备文件系统、上传/下载/删除文件</li>
@@ -304,6 +310,18 @@
 </div>
 
 <div id="toast" class="toast" style="display:none"></div>
+
+<div id="confirmOverlay" class="confirm-overlay" style="display:none">
+  <div class="confirm-dialog">
+    <div class="confirm-icon" id="confirmIcon">⚠️</div>
+    <div class="confirm-message" id="confirmMessage"></div>
+    <div class="confirm-actions">
+      <button class="btn btn-ghost" id="confirmCancel" onclick="resolveConfirm(false)">取消</button>
+      <button class="btn btn-danger" id="confirmOk" onclick="resolveConfirm(true)">确定</button>
+    </div>
+  </div>
+</div>
+
 <script src="/app.js"></script>
 </body>
 </html>

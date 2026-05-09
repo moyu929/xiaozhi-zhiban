@@ -1,0 +1,9 @@
+build/
+__pycache__/
+*.o
+*.pyc
+*.tar.bz2
+*.tar.xz
+toolchain/
+.DS_Store
+Thumbs.db
