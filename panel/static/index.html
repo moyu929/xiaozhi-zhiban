@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>小智 · 智伴</title>
-<link rel="stylesheet" href="/style.css?v=4">
+<link rel="stylesheet" href="/style.css?v=6">
 </head>
 <body>
 <canvas id="particles"></canvas>
@@ -43,7 +43,7 @@
         <div class="panel-page-inner">
         <div class="grid-2col">
           <section class="card">
-            <div class="card-header"><h2>ADB 设备</h2><div class="card-actions"><button class="btn btn-primary btn-sm" onclick="adbDetect()" id="btnAdbDetect">扫描设备</button></div></div>
+            <div class="card-header"><h2>ADB 设备</h2><div class="card-actions"><button class="btn btn-primary btn-sm" onclick="adbDetect()" id="btnAdbDetect">扫描设备</button><button class="btn btn-ghost btn-sm" onclick="adbDisconnect()" id="btnAdbDisconnect" style="display:none">断开连接</button></div></div>
             <div id="adbDeviceList" class="adb-device-list">
               <div class="empty-state">点击「扫描设备」检测通过USB连接的设备</div>
             </div>
@@ -59,6 +59,7 @@
                 <div class="stat-item"><span class="stat-label">磁盘</span><span id="adbDisk" class="stat-value">--</span></div>
               </div>
             </div>
+            <div class="section-overlay" id="adbDeviceOverlay" style="display:none"><div class="spinner"></div></div>
           </section>
 
           <section class="card">
@@ -70,12 +71,12 @@
                   <span id="adbXwebdStatus" class="svc-status svc-unknown">未检测</span>
                 </div>
                 <div class="deploy-item-actions">
-                  <span id="adbXwebdProgress" class="deploy-progress" style="display:none"><span id="adbXwebdProgressLabel" class="progress-label-inline">准备中...</span><span class="progress-bar-inline"><span id="adbXwebdBar" class="progress-fill-inline" style="width:0%"></span></span></span>
                   <button class="btn btn-primary btn-sm" onclick="adbDeployXwebd()" id="btnAdbDeployXwebd">部署</button>
                   <button class="btn btn-accent btn-sm" onclick="adbStartXwebd()" id="btnAdbStartXwebd" style="display:none">启动</button>
                   <button class="btn btn-ghost btn-sm" onclick="adbRestartXwebd()" id="btnAdbRestartXwebd" style="display:none">重启</button>
                   <button class="btn btn-danger btn-sm" onclick="adbRemoveXwebd()" id="btnAdbRemoveXwebd" style="display:none">卸载</button>
                 </div>
+                <div id="adbXwebdProgress" class="deploy-progress" style="display:none;margin-top:8px"><span id="adbXwebdProgressLabel" class="progress-label-inline">准备中...</span><span class="progress-bar-inline"><span id="adbXwebdBar" class="progress-fill-inline" style="width:0%"></span></span></div>
               </div>
               <div class="deploy-item">
                 <div class="deploy-item-header">
@@ -83,10 +84,11 @@
                   <span id="adbSairStatus" class="svc-status svc-unknown">未检测</span>
                 </div>
                 <div class="deploy-item-actions">
-                  <span id="adbSairProgress" class="deploy-progress" style="display:none"><span id="adbSairProgressLabel" class="progress-label-inline">准备中...</span><span class="progress-bar-inline"><span id="adbSairBar" class="progress-fill-inline" style="width:0%"></span></span></span>
-                  <button class="btn btn-primary btn-sm" onclick="adbDeploySair()" id="btnAdbDeploySair">部署</button>
+                  <button class="btn btn-primary btn-sm" onclick="adbDeploySair('hot')" id="btnAdbDeploySairHot">热部署</button>
+                  <button class="btn btn-ghost btn-sm" onclick="adbDeploySair('cold')" id="btnAdbDeploySairCold">冷部署</button>
                   <button class="btn btn-danger btn-sm" onclick="adbRemoveSair()" id="btnAdbRemoveSair" style="display:none">卸载</button>
                 </div>
+                <div id="adbSairProgress" class="deploy-progress" style="display:none;margin-top:8px"><span id="adbSairProgressLabel" class="progress-label-inline">准备中...</span><span class="progress-bar-inline"><span id="adbSairBar" class="progress-fill-inline" style="width:0%"></span></span></div>
               </div>
             </div>
           </section>
@@ -96,7 +98,7 @@
           <section class="card">
             <div class="card-header"><h2>设备控制</h2></div>
             <div class="btn-row" style="margin-top:0">
-              <button class="btn btn-danger" onclick="adbReboot()">重启设备</button>
+              <button class="btn btn-danger" onclick="adbRebootAndReconnect()">重启设备</button>
               <button class="btn btn-danger btn-outline" onclick="adbPoweroff()">关机</button>
             </div>
             <div class="wired-hint" style="margin-top:14px">
@@ -153,9 +155,9 @@
           <section class="card">
             <div class="card-header"><h2>设备控制</h2></div>
             <div class="control-group">
-              <label class="control-label">音量 <span id="volumeVal" class="control-val">20</span><span class="control-range">0-80</span></label>
+              <label class="control-label">音量 <span id="volumeVal" class="control-val">25</span></label>
               <div class="slider-row">
-                <input type="range" id="volumeSlider" class="slider" min="0" max="80" value="20" oninput="onVolumeChange(this.value)">
+                <input type="range" id="volumeSlider" class="slider" min="0" max="100" value="25" oninput="onVolumeChange(this.value)">
                 <button id="btnMute" class="btn btn-icon" onclick="toggleMute()" title="静音">
                   <svg id="iconUnmuted" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.08"/></svg>
                   <svg id="iconMuted" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M11 5L6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
@@ -163,11 +165,11 @@
               </div>
             </div>
             <div class="control-group">
-              <label class="control-label">亮度 <span id="brightnessVal" class="control-val">80</span><span class="control-range">0-900</span></label>
-              <input type="range" id="brightnessSlider" class="slider" min="0" max="900" value="80" oninput="onBrightnessChange(this.value)">
+              <label class="control-label">亮度 <span id="brightnessVal" class="control-val">9</span></label>
+              <input type="range" id="brightnessSlider" class="slider" min="0" max="100" value="9" oninput="onBrightnessChange(this.value)">
             </div>
             <div class="btn-row">
-              <button class="btn btn-danger" onclick="doReboot()">重启</button>
+              <button class="btn btn-danger" onclick="wirelessRebootAndReconnect()">重启</button>
               <button class="btn btn-danger btn-outline" onclick="doPoweroff()">关机</button>
               <button class="btn btn-danger btn-sm" onclick="doCleanup()">清理垃圾</button>
             </div>
@@ -193,23 +195,17 @@
               <label class="form-check"><input type="checkbox" id="cfgRealtime" class="checkbox"> 实时对话模式</label>
               <label class="form-check"><input type="checkbox" id="cfgAec" class="checkbox"> 云端回声消除</label>
             </div>
-            <button class="btn btn-accent btn-block" onclick="saveAssistantConfig()" style="margin-bottom:12px">保存助手配置</button>
+            <div style="display:flex;gap:8px;margin-bottom:12px">
+              <button class="btn btn-accent" onclick="saveAssistantConfig()" style="flex:1">保存配置</button>
+              <button class="btn btn-ghost" onclick="restoreAssistantDefaults()" style="flex:1">恢复默认值</button>
+            </div>
             <div class="btn-row sair-required" style="margin-bottom:8px">
               <button class="btn btn-accent" onclick="doWakeup()">唤醒</button>
               <button class="btn btn-ghost" onclick="doAbort()">中止对话</button>
-              <span class="sair-lock-hint">需要语音助手运行中</span>
-            </div>
-            <div class="firmware-row" style="margin-top:12px">
-              <div class="file-input-wrap">
-                <input type="file" id="firmwareFile" class="file-input" accept=".bin,.elf,.sair">
-                <label for="firmwareFile" class="btn btn-ghost file-label">选择sair文件...</label>
-                <span id="firmwareName" class="file-name">未选择文件</span>
-              </div>
             </div>
             <div class="btn-row" style="margin-top:8px">
-              <button id="btnDeploy" class="btn btn-primary" onclick="doDeploy()" disabled>部署</button>
-              <button id="btnUpdate" class="btn btn-accent" onclick="doUpdate()" disabled>更新</button>
-              <button class="btn btn-ghost" onclick="doHotUpdate()">热更新</button>
+              <button class="btn btn-primary" onclick="doHotUpdate()">热更新</button>
+              <button id="btnUpdate" class="btn btn-ghost" onclick="doUpdate()">冷更新</button>
               <button class="btn btn-danger" onclick="doUninstall()">卸载</button>
             </div>
             <div id="upgradeProgress" class="progress-wrap" style="display:none;margin-top:12px">
@@ -228,6 +224,7 @@
             <div class="form-group">
               <label class="form-label">日志采集级别 <span class="form-hint">（设备端写入日志的最低级别，显示过滤请在日志栏操作）</span></label>
               <select id="cfgLogLevel" class="select">
+                <option value="">全部</option>
                 <option value="DEBUG">调试 (DEBUG)</option>
                 <option value="INFO">信息 (INFO)</option>
                 <option value="WARN">警告 (WARN)</option>
@@ -238,16 +235,12 @@
               <label class="form-label">上传大小限制 (MB)</label>
               <input type="number" id="cfgUploadMax" class="input-text" value="10" min="1" max="100">
             </div>
-            <button class="btn btn-accent btn-block" onclick="saveXwebdConfig()" style="margin-bottom:12px">保存面板内核配置</button>
-            <div class="firmware-row" style="margin-top:12px">
-              <div class="file-input-wrap">
-                <input type="file" id="xwebdFile" class="file-input" accept=".xwebd,*/*">
-                <label for="xwebdFile" class="btn btn-ghost file-label">选择文件...</label>
-                <span id="xwebdFileName" class="file-name">未选择文件</span>
-              </div>
+            <div style="display:flex;gap:8px;margin-bottom:12px">
+              <button class="btn btn-accent" onclick="saveXwebdConfig()" style="flex:1">保存配置</button>
+              <button class="btn btn-ghost" onclick="restoreXwebdDefaults()" style="flex:1">恢复默认值</button>
             </div>
             <div class="btn-row" style="margin-top:12px">
-              <button id="btnXwebdUpdate" class="btn btn-accent" onclick="doXwebdUpdate()" disabled>更新</button>
+              <button id="btnXwebdUpdate" class="btn btn-accent" onclick="doXwebdUpdate()">更新</button>
               <button id="btnXwebdRestart" class="btn btn-ghost" onclick="doXwebdRestart()">重启</button>
               <button id="btnXwebdRemove" class="btn btn-danger" onclick="doXwebdRemove()">卸载</button>
             </div>
@@ -258,7 +251,7 @@
             <div class="card-header"><h2>服务状态</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" id="btnRefreshSvc" onclick="refreshServicesWithFlash()">刷新</button></div></div>
             <div class="svc-list">
               <div class="svc-item">
-                <span class="svc-name">远程终端服务</span>
+                <span class="svc-name">Telnet 终端</span>
                 <span id="svcTelnet" class="svc-status svc-unknown">未知</span>
               </div>
               <div class="svc-item">
@@ -446,6 +439,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=4"></script>
+<script src="/app.js?v=6"></script>
 </body>
 </html>

@@ -607,23 +607,17 @@ def _ensure_xwebd_autostart(serial=None):
     if not (r["ok"] and "yes" in r["stdout"]):
         init_result = init_device(serial)
         if not init_result["ok"] and not init_result["created_test_sh"]:
-            logger.error("配置xwebd自启动失败: test.sh not found and init_device failed")
             return {"ok": False, "error": "test.sh not found and init_device failed"}
 
     r = _adb(["shell", f"grep -q xwebd {TEST_SH_PATH} && echo found || echo missing"], serial=serial)
     if not r["ok"]:
-        logger.error("配置xwebd自启动失败: cannot read test.sh")
         return {"ok": False, "error": "cannot read test.sh"}
     if "found" in r["stdout"]:
-        logger.debug("xwebd自启动已配置")
         return {"ok": True}
     logger.info("添加xwebd自启动到test.sh")
-    r = _adb(["shell", f"sed -i '/^#.*start manager/i\\\\n# Auto-start xwebd\\n/var/upgrade/xwebd -d\\n' {TEST_SH_PATH}"], serial=serial)
+    r = _adb(["shell", f"echo '/var/upgrade/xwebd -d' >> {TEST_SH_PATH}"], serial=serial)
     if not r["ok"]:
-        r2 = _adb(["shell", f"echo '/var/upgrade/xwebd -d' >> {TEST_SH_PATH}"], serial=serial)
-        if not r2["ok"]:
-            logger.error("配置xwebd自启动失败: cannot modify test.sh")
-            return {"ok": False, "error": "cannot modify test.sh"}
+        return {"ok": False, "error": "cannot modify test.sh"}
     return {"ok": True}
 
 
@@ -646,6 +640,8 @@ def get_device_info(serial=None):
         "; ifconfig wlan0 2>/dev/null"
         "; echo '---'"
         "; df -k /var/upgrade 2>/dev/null | tail -1"
+        "; echo '---'"
+        "; getprop ro.product.model 2>/dev/null || echo unknown"
     )
     r = _adb(["shell", cmd], serial=serial, timeout=10)
     if not r["ok"]:
@@ -705,12 +701,25 @@ def get_device_info(serial=None):
                 info["disk_free_kb"] = int(disk_parts[3])
             except (ValueError, IndexError):
                 pass
+    if len(sections) >= 7:
+        prop_model = sections[6].strip()
+        if prop_model and prop_model != "unknown":
+            info["model"] = prop_model
     return info
 
 
 def check_sair_status(serial=None):
     r = _adb(["shell", f"test -f {SAIR_REMOTE_PATH} && echo yes || echo no"], serial=serial)
     custom_installed = r["ok"] and "yes" in r["stdout"]
+    version = None
+    if custom_installed:
+        rv = _adb(["shell", f"stat -c '%Y' {SAIR_REMOTE_PATH} 2>/dev/null"], serial=serial)
+        if rv["ok"] and rv["stdout"].strip():
+            try:
+                ts = int(rv["stdout"].strip().strip("'"))
+                version = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+            except (ValueError, OSError):
+                version = None
     pid = None
     custom_running = False
     native_running = False
@@ -734,6 +743,7 @@ def check_sair_status(serial=None):
         "installed": custom_installed,
         "running": custom_running,
         "pid": pid,
+        "version": version,
     }
 
 
@@ -744,15 +754,37 @@ def deploy_sair(serial=None, binary_path=None):
             return {"ok": False, "error": "sair binary not found"}
     if not os.path.isfile(binary_path):
         return {"ok": False, "error": f"Binary not found: {binary_path}"}
-    logger.info("部署sair: serial=%s, binary=%s", serial, binary_path)
+    logger.info("冷部署sair: serial=%s, binary=%s", serial, binary_path)
     r = _adb(["push", binary_path, SAIR_REMOTE_PATH], serial=serial, timeout=30)
     if not r["ok"]:
         return {"ok": False, "error": f"adb push failed: {r['stderr']}"}
     r = _adb(["shell", f"chmod 755 {SAIR_REMOTE_PATH}"], serial=serial)
     if not r["ok"]:
         return {"ok": False, "error": f"chmod failed: {r['stderr']}"}
-    logger.info("sair部署完成: serial=%s", serial)
-    return {"ok": True, "binary": binary_path}
+    r = _adb(["shell", "reboot"], serial=serial, timeout=5)
+    logger.info("sair冷部署完成，设备重启中: serial=%s", serial)
+    return {"ok": True, "binary": binary_path, "mode": "cold", "rebooting": True}
+
+
+def hot_update_sair(serial=None, binary_path=None):
+    if binary_path is None:
+        binary_path = _find_sair_binary()
+        if not binary_path:
+            return {"ok": False, "error": "sair binary not found"}
+    if not os.path.isfile(binary_path):
+        return {"ok": False, "error": f"Binary not found: {binary_path}"}
+    logger.info("热更新sair: serial=%s", serial)
+    r = _adb(["push", binary_path, SAIR_REMOTE_PATH + "_new"], serial=serial, timeout=30)
+    if not r["ok"]:
+        return {"ok": False, "error": f"adb push failed: {r['stderr']}"}
+    r = _adb(["shell", f"chmod 755 {SAIR_REMOTE_PATH}_new"], serial=serial)
+    if not r["ok"]:
+        return {"ok": False, "error": f"chmod failed: {r['stderr']}"}
+    r = _adb(["shell", "kill -USR2 $(pidof sair)"], serial=serial, timeout=10)
+    if not r["ok"]:
+        return {"ok": False, "error": f"SIGUSR2 failed: {r['stderr']}"}
+    logger.info("sair热更新已触发: serial=%s", serial)
+    return {"ok": True, "binary": binary_path, "mode": "hot"}
 
 
 def _find_sair_binary():
@@ -760,10 +792,13 @@ def _find_sair_binary():
     candidates = [
         os.path.join(base_dir, "..", "device", "assistant", "build", "sair"),
         os.path.join(base_dir, "device", "build", "sair"),
+        os.path.join(base_dir, "..", "device", "assistant", "sair"),
+        os.path.join(base_dir, "device", "assistant", "sair"),
     ]
     for path in candidates:
-        if os.path.isfile(path):
-            return os.path.normpath(path)
+        norm = os.path.normpath(path)
+        if os.path.isfile(norm):
+            return norm
     return None
 
 

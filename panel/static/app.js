@@ -22,6 +22,8 @@ var g_lastLogCountXwebd = 0;
 var g_lastLogCountAssistant = 0;
 var g_lastLogCountPanel = 0;
 var g_panelSSE = null;
+var g_rebootTimer = null;
+var g_rebootStartTime = 0;
 
 var STATE_MAP = {
     'Idle': '空闲',
@@ -191,7 +193,7 @@ async function adbDetect() {
         if (d.state === 'device' || d.state === 'unknown' || !d.state) {
             var initInfo = d.initialized || {};
             if (!initInfo.initialized) {
-                initLabel = ' <span class="svc-status svc-unknown" style="font-size:11px;margin-left:4px">新设备</span>';
+                initLabel = ' · 新设备';
             }
         }
         var model = (d.model && d.model !== 'unknown') ? d.model : ((d.device && d.device !== 'unknown') ? d.device : null);
@@ -207,9 +209,6 @@ async function adbDetect() {
         html += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">';
         if (d.state === 'device' || d.state === 'unknown' || !d.state) {
             html += '<div class="adb-device-status svc-status ' + xwebdCls + '">' + xwebdLabel + initLabel + '</div>';
-            if (g_adbSerial === d.serial) {
-                html += '<button class="btn btn-ghost btn-xs" onclick="event.stopPropagation();adbDisconnect()" style="font-size:10px;padding:1px 8px">断开连接</button>';
-            }
         } else {
             html += '<div class="adb-device-status svc-status' + stateCls + '">' + d.state + '</div>';
         }
@@ -228,6 +227,7 @@ async function adbDetect() {
 function adbDisconnect() {
     g_adbSerial = null;
     g_adbConnected = false;
+    $('btnAdbDisconnect').style.display = 'none';
     $('adbDeviceInfo').style.display = 'none';
     adbDetect();
     toast('已断开设备连接', 'info');
@@ -236,6 +236,7 @@ function adbDisconnect() {
 async function selectAdbDevice(serial) {
     g_adbSerial = serial;
     g_adbConnected = true;
+    $('btnAdbDisconnect').style.display = '';
 
     var items = document.querySelectorAll('.adb-device-item');
     for (var i = 0; i < items.length; i++) {
@@ -283,25 +284,30 @@ async function adbRefreshStatus() {
     }
 
     var sairEl = $('adbSairStatus');
+    var sairVer = sair.version || '';
     if (sair.custom_running) {
-        sairEl.textContent = '运行中';
+        sairEl.textContent = sairVer ? '运行中 ' + sairVer : '运行中';
         sairEl.className = 'svc-status svc-on';
-        $('btnAdbDeploySair').style.display = 'none';
+        $('btnAdbDeploySairHot').style.display = '';
+        $('btnAdbDeploySairCold').style.display = 'none';
         $('btnAdbRemoveSair').style.display = '';
     } else if (sair.native_running) {
         sairEl.textContent = '原生运行中';
         sairEl.className = 'svc-status svc-off';
-        $('btnAdbDeploySair').style.display = '';
+        $('btnAdbDeploySairHot').style.display = '';
+        $('btnAdbDeploySairCold').style.display = '';
         $('btnAdbRemoveSair').style.display = 'none';
     } else if (sair.custom_installed) {
-        sairEl.textContent = '已安装';
+        sairEl.textContent = sairVer ? '已安装 ' + sairVer : '已安装';
         sairEl.className = 'svc-status svc-off';
-        $('btnAdbDeploySair').style.display = '';
+        $('btnAdbDeploySairHot').style.display = '';
+        $('btnAdbDeploySairCold').style.display = '';
         $('btnAdbRemoveSair').style.display = '';
     } else {
         sairEl.textContent = '未安装';
         sairEl.className = 'svc-status svc-unknown';
-        $('btnAdbDeploySair').style.display = '';
+        $('btnAdbDeploySairHot').style.display = '';
+        $('btnAdbDeploySairCold').style.display = '';
         $('btnAdbRemoveSair').style.display = 'none';
     }
 }
@@ -408,36 +414,77 @@ async function adbRemoveXwebd() {
     }
 }
 
-async function adbDeploySair() {
-    if (!await showConfirm('确定部署语音助手？')) return;
+async function adbDeploySair(mode) {
+    mode = mode || 'cold';
+    var confirmMsg = mode === 'hot' ? '确定热部署语音助手？（SIGUSR2热更新，进程不中断）' : '确定冷部署语音助手？（上传sair后设备将重启）';
+    if (!await showConfirm(confirmMsg)) return;
     var progress = $('adbSairProgress');
     var bar = $('adbSairBar');
     var label = $('adbSairProgressLabel');
     progress.style.display = 'inline-flex';
     bar.style.width = '10%';
-    label.textContent = '部署中...';
-    $('btnAdbDeploySair').disabled = true;
+    label.textContent = mode === 'hot' ? '热部署中...' : '冷部署中...';
+    $('btnAdbDeploySairHot').disabled = true;
+    $('btnAdbDeploySairCold').disabled = true;
 
     var r = await api('/api/adb/deploy-sair', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serial: g_adbSerial }),
+        body: JSON.stringify({ serial: g_adbSerial, mode: mode }),
     });
 
     bar.style.width = '100%';
-    $('btnAdbDeploySair').disabled = false;
+    $('btnAdbDeploySairHot').disabled = false;
+    $('btnAdbDeploySairCold').disabled = false;
 
     if (r.ok) {
         label.textContent = '完成';
-        toast('语音助手部署成功', 'success');
-        setTimeout(function() {
-            progress.style.display = 'none';
-            adbRefreshStatus();
-        }, 1500);
+        if (r.rebooting) {
+            toast('语音助手冷部署成功，设备重启中...', 'success');
+            setTimeout(function() {
+                progress.style.display = 'none';
+                adbWaitForReconnect();
+            }, 1500);
+        } else {
+            toast(mode === 'hot' ? '语音助手热部署成功' : '语音助手冷部署成功', 'success');
+            setTimeout(function() {
+                progress.style.display = 'none';
+                adbRefreshStatus();
+            }, 1500);
+        }
     } else {
         label.textContent = '失败';
-        toast('语音助手部署失败', 'error');
+        toast('语音助手部署失败: ' + (r.error || ''), 'error');
     }
+}
+
+function adbWaitForReconnect() {
+    toast('设备重启中，等待重新连接...', 'info');
+    $('adbDeviceOverlay').style.display = 'flex';
+    g_rebootStartTime = Date.now();
+    if (g_rebootTimer) clearInterval(g_rebootTimer);
+    g_rebootTimer = setInterval(async function() {
+        if (Date.now() - g_rebootStartTime > 60000) {
+            clearInterval(g_rebootTimer);
+            g_rebootTimer = null;
+            $('adbDeviceOverlay').style.display = 'none';
+            toast('重连超时，请手动扫描', 'error');
+            return;
+        }
+        var r = await api('/api/adb/devices');
+        if (r.error) return;
+        var devices = r.devices || [];
+        for (var i = 0; i < devices.length; i++) {
+            if (devices[i].serial === g_adbSerial && devices[i].state === 'device') {
+                clearInterval(g_rebootTimer);
+                g_rebootTimer = null;
+                $('adbDeviceOverlay').style.display = 'none';
+                toast('设备已重新连接', 'success');
+                await selectAdbDevice(g_adbSerial);
+                return;
+            }
+        }
+    }, 3000);
 }
 
 async function adbRemoveSair() {
@@ -476,6 +523,104 @@ async function adbPoweroff() {
     });
 }
 
+async function rebootAndReconnect(rebootFn, checkFn) {
+    await rebootFn();
+    toast('设备重启中，等待重新连接...', 'info');
+    g_rebootStartTime = Date.now();
+    if (g_rebootTimer) clearInterval(g_rebootTimer);
+    g_rebootTimer = setInterval(async function() {
+        if (Date.now() - g_rebootStartTime > 60000) {
+            clearInterval(g_rebootTimer);
+            g_rebootTimer = null;
+            toast('重连超时，请手动连接', 'error');
+            return;
+        }
+        await checkFn();
+    }, 3000);
+}
+
+async function adbRebootAndReconnect() {
+    if (!await showConfirm('确定重启设备？', {danger: true})) return;
+    $('adbDeviceOverlay').style.display = 'flex';
+    await rebootAndReconnect(
+        async function() {
+            await api('/api/adb/reboot', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ serial: g_adbSerial }),
+            });
+        },
+        async function() {
+            var r = await api('/api/adb/devices');
+            if (r.error) return;
+            var devices = r.devices || [];
+            for (var i = 0; i < devices.length; i++) {
+                if (devices[i].serial === g_adbSerial && devices[i].state === 'device') {
+                    clearInterval(g_rebootTimer);
+                    g_rebootTimer = null;
+                    $('adbDeviceOverlay').style.display = 'none';
+                    toast('设备已重新连接', 'success');
+                    await selectAdbDevice(g_adbSerial);
+                    return;
+                }
+            }
+        }
+    );
+    if (g_rebootTimer === null && $('adbDeviceOverlay').style.display !== 'none') {
+        $('adbDeviceOverlay').style.display = 'none';
+    }
+}
+
+async function wirelessRebootAndReconnect() {
+    if (!await showConfirm('确定重启设备？', {danger: true})) return;
+    showOverlay('deviceOverlay');
+    showOverlay('assistantOverlay');
+    showOverlay('xwebdOverlay');
+    await rebootAndReconnect(
+        async function() {
+            await api('/api/reboot', { method: 'POST' });
+            g_connected = false;
+            g_xwebdConnected = false;
+            g_sairConnected = false;
+            stopPolling();
+            updateConnUI(false);
+            updateConnStatus('xwebdConnStatus', false);
+            updateConnStatus('assistantConnStatus', false);
+            $('btnConnect').textContent = '连接';
+            $('btnConnect').disabled = false;
+        },
+        async function() {
+            var resp = await fetch('/api/connect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ host: g_deviceHost }),
+            });
+            var r = await resp.json();
+            if (r.ok && r.xwebd_connected) {
+                clearInterval(g_rebootTimer);
+                g_rebootTimer = null;
+                g_connected = true;
+                g_xwebdConnected = true;
+                updateConnUI(true);
+                $('btnConnect').textContent = '断开';
+                $('btnConnect').disabled = false;
+                startPolling();
+                refreshAll();
+                updateConnStatus('xwebdConnStatus', true);
+                hideOverlay('deviceOverlay');
+                hideOverlay('assistantOverlay');
+                hideOverlay('xwebdOverlay');
+                toast('设备已重新连接', 'success');
+            }
+        }
+    );
+    if (g_rebootTimer === null) {
+        hideOverlay('deviceOverlay');
+        hideOverlay('assistantOverlay');
+        hideOverlay('xwebdOverlay');
+    }
+}
+
 async function adbRefreshLogs() {
     await adbRefreshLogType('xwebd');
     await adbRefreshLogType('sair');
@@ -498,9 +643,7 @@ async function adbRefreshLogType(type) {
     for (var i = 0; i < lines.length; i++) {
         var l = lines[i];
         if (!l) continue;
-        var clean = stripAnsi(l);
-        var cls = getLogClass(clean);
-        html += '<div class="log-line ' + cls + '">' + escapeHtml(clean) + '</div>';
+        html += '<div class="log-line">' + renderLogLine(l) + '</div>';
     }
     container.innerHTML = html;
     container.scrollTop = container.scrollHeight;
@@ -552,6 +695,7 @@ async function connectDevice() {
             btn.textContent = '断开';
             btn.disabled = false;
             toast('连接设备成功', 'success');
+            if (g_adbSerial) adbDisconnect();
             startPolling();
             refreshAll();
             updateConnStatus('xwebdConnStatus', true);
@@ -683,6 +827,19 @@ function formatDisk(usedKb, totalKb) {
     return usedMb + '/' + totalMb + ' MB';
 }
 
+function formatFileTime(t) {
+    if (!t) return '--';
+    var d;
+    if (typeof t === 'number') {
+        d = new Date(t * 1000);
+    } else {
+        d = new Date(t);
+    }
+    if (isNaN(d.getTime())) return t;
+    var pad = function(n) { return n < 10 ? '0' + n : n; };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
 async function refreshStatus() {
     if (!g_connected) return;
     var r = await api('/api/status');
@@ -699,13 +856,13 @@ async function refreshStatus() {
     $('devDisk').textContent = formatDisk(d.disk_used_kb, d.disk_total_kb);
     if (d.volume != null) {
         g_volume = d.volume;
-        $('volumeSlider').value = d.volume;
-        $('volumeVal').textContent = d.volume;
+        $('volumeSlider').value = Math.round(d.volume * 100 / 80);
+        $('volumeVal').textContent = Math.round(d.volume * 100 / 80);
     }
     if (d.brightness != null) {
         g_brightness = d.brightness;
-        $('brightnessSlider').value = d.brightness;
-        $('brightnessVal').textContent = d.brightness;
+        $('brightnessSlider').value = Math.round(d.brightness * 100 / 900);
+        $('brightnessVal').textContent = Math.round(d.brightness * 100 / 900);
     }
     if (d.muted != null) {
         g_muted = d.muted;
@@ -735,7 +892,7 @@ async function refreshAssistantStatus() {
     $('assistantVersion').textContent = d.version || '--';
     $('assistantPid').textContent = d.pid || '--';
     $('btnDeploy').disabled = installed;
-    $('btnUpdate').disabled = !installed;
+    $('btnUpdate').disabled = false;
     if (d.activation_code) {
         $('assistantActivation').textContent = d.activation_code;
     }
@@ -808,27 +965,29 @@ async function refreshConfig() {
 }
 
 async function onVolumeChange(val) {
-    g_volume = parseInt(val);
+    var realVol = Math.round(parseInt(val) * 80 / 100);
+    g_volume = realVol;
     $('volumeVal').textContent = val;
     if (g_volumeTimer) clearTimeout(g_volumeTimer);
     g_volumeTimer = setTimeout(async function() {
         await api('/api/volume', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ volume: g_volume }),
+            body: JSON.stringify({ volume: realVol }),
         });
     }, 300);
 }
 
 async function onBrightnessChange(val) {
-    g_brightness = parseInt(val);
+    var realBri = Math.round(parseInt(val) * 900 / 100);
+    g_brightness = realBri;
     $('brightnessVal').textContent = val;
     if (g_brightnessTimer) clearTimeout(g_brightnessTimer);
     g_brightnessTimer = setTimeout(async function() {
         await api('/api/brightness', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ brightness: g_brightness }),
+            body: JSON.stringify({ brightness: realBri }),
         });
     }, 300);
 }
@@ -925,6 +1084,19 @@ async function saveXwebdConfig() {
     else toast('保存失败', 'error');
 }
 
+function restoreAssistantDefaults() {
+    $('cfgWsUrl').value = 'wss://api.tenclass.net/xiaozhi/v1/';
+    $('cfgRealtime').checked = false;
+    $('cfgAec').checked = false;
+    toast('已恢复默认值', 'info');
+}
+
+function restoreXwebdDefaults() {
+    $('cfgLogLevel').value = 'DEBUG';
+    $('cfgUploadMax').value = '10';
+    toast('已恢复默认值', 'info');
+}
+
 async function doHotUpdate() {
     if (!await showConfirm('确定进行热更新？')) return;
     toast('正在检查更新...', 'info');
@@ -969,7 +1141,7 @@ async function refreshFiles() {
         html += '<tr>';
         html += '<td><span class="' + nameClass + '"' + nameClick + ' style="cursor:pointer">' + f.name + (f.is_dir ? '/' : '') + '</span></td>';
         html += '<td>' + size + '</td>';
-        html += '<td>' + (f.mtime || '--') + '</td>';
+        html += '<td>' + formatFileTime(f.mtime) + '</td>';
         html += '<td class="file-actions">';
         if (!f.is_dir) {
             html += '<button class="btn btn-ghost btn-xs" onclick="downloadFile(\'' + filePath + '\')">下载</button>';
@@ -1054,12 +1226,11 @@ function connectPanelSSE() {
             var container = $(containerId);
             if (!container) return;
             var l = stripAnsi(data.text || '');
-            var cls = getLogClass(l);
             var emptyState = container.querySelector('.empty-state');
             if (emptyState) emptyState.remove();
             var div = document.createElement('div');
-            div.className = 'log-line ' + cls;
-            div.textContent = l;
+            div.className = 'log-line';
+            div.innerHTML = renderLogLine(data.text || '');
             container.appendChild(div);
             if (container.children.length > 500) {
                 container.removeChild(container.firstChild);
@@ -1168,12 +1339,10 @@ function renderLogPanel(containerId, r, source) {
     }
     var html = '';
     lines.forEach(function(l) {
-        var cls = 'log-info';
         if (typeof l === 'string') {
-            var clean = stripAnsi(l);
-            cls = getLogClass(clean);
-            html += '<div class="log-line ' + cls + '">' + escapeHtml(clean) + '</div>';
+            html += '<div class="log-line">' + renderLogLine(l) + '</div>';
         } else {
+            var cls = 'log-info';
             if (l.level === 'ERROR' || l.level === 'E' || l.level === 'CRITICAL') cls = 'log-error';
             else if (l.level === 'WARN' || l.level === 'W' || l.level === 'WARNING') cls = 'log-warn';
             else if (l.level === 'DEBUG' || l.level === 'D') cls = 'log-debug';
@@ -1194,9 +1363,12 @@ function clearLogPanel(source) {
     }
     if (source === 'xwebd') g_clearLineXwebd = g_lastLogCountXwebd;
     else if (source === 'assistant') g_clearLineAssistant = g_lastLogCountAssistant;
-    else if (source === 'panel') g_clearLinePanel = g_lastLogCountPanel;
+    else if (source === 'panel') {
+        g_clearLinePanel = g_lastLogCountPanel;
+        disconnectPanelSSE();
+        setTimeout(connectPanelSSE, 500);
+    }
     toast('已清屏，仅显示新日志', 'success');
-    setTimeout(function() { refreshLogPanel(source, false); }, 300);
 }
 
 async function cleanLogPanel(source) {
@@ -1228,6 +1400,23 @@ async function cleanLogPanel(source) {
     }
 }
 
+function renderLogLine(l) {
+    var clean = stripAnsi(l);
+    var m = clean.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\s+(\S+):\s+(.*)$/);
+    if (m) {
+        var dateHtml = '<span style="color:#6a9955">' + escapeHtml(m[1]) + '</span>';
+        var levelColors = {DEBUG:'#569cd6', INFO:'#d4d4d4', WARNING:'#e5c07b', WARN:'#e5c07b', ERROR:'#f44747', CRITICAL:'#ff4cff'};
+        var levelColor = levelColors[m[2]] || '#d4d4d4';
+        var levelHtml = '<span style="color:' + levelColor + ';font-weight:600">' + escapeHtml(m[2]) + '</span>';
+        var sourceHtml = '<span style="color:#dcdcaa">' + escapeHtml(m[3]) + '</span>';
+        var msgHtml = '<span style="color:' + levelColor + '">' + escapeHtml(m[4]) + '</span>';
+        return dateHtml + ' ' + levelHtml + ' ' + sourceHtml + ': ' + msgHtml;
+    }
+    var cls = getLogClass(clean);
+    var colors = {logInfo:'#d4d4d4', logError:'#f44747', logWarn:'#e5c07b', logDebug:'#569cd6', logCritical:'#ff4cff'};
+    return '<span style="color:' + (colors[cls] || '#d4d4d4') + '">' + escapeHtml(clean) + '</span>';
+}
+
 function getLogClass(l) {
     if (l.indexOf('[E]') >= 0 || l.indexOf('ERROR') >= 0 || l.indexOf('CRITICAL') >= 0) return 'log-error';
     if (l.indexOf('[W]') >= 0 || l.indexOf('WARNING') >= 0 || l.indexOf('WARN') >= 0) return 'log-warn';
@@ -1248,19 +1437,10 @@ function stripAnsi(s) {
 }
 
 async function doXwebdUpdate() {
-    var fileInput = $('xwebdFile');
-    if (!fileInput.files.length) { toast('请选择xwebd文件', 'error'); return; }
-    toast('上传并更新中...', 'info');
-    var fd = new FormData();
-    fd.append('file', fileInput.files[0]);
-    try {
-        var r = await fetch('/api/xwebd/upload-update', { method: 'POST', body: fd });
-        var data = await r.json();
-        if (data.ok) toast('xwebd 更新成功', 'success');
-        else toast('更新失败', 'error');
-    } catch (e) {
-        toast('更新失败', 'error');
-    }
+    toast('更新xwebd中...', 'info');
+    var r = await api('/api/xwebd/upload-update', { method: 'POST' });
+    if (r.ok) toast('xwebd 更新成功', 'success');
+    else toast('更新失败: ' + (r.error || ''), 'error');
 }
 
 async function doXwebdRestart() {
@@ -1278,93 +1458,46 @@ async function doXwebdRemove() {
 }
 
 async function doDeploy() {
-    var fileInput = $('firmwareFile');
-    if (!fileInput.files.length) { toast('请选择sair固件文件', 'error'); return; }
     var progress = $('upgradeProgress');
     var bar = $('upgradeBar');
     var label = $('upgradeLabel');
     progress.style.display = 'block';
     bar.style.width = '0%';
-    label.textContent = '上传中... 0%';
+    label.textContent = '部署中...';
     $('btnDeploy').disabled = true;
 
-    var fd = new FormData();
-    fd.append('file', fileInput.files[0]);
-    try {
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/files/upload?path=' + encodeURIComponent('/var/upgrade'));
-        xhr.upload.onprogress = function(e) {
-            if (e.lengthComputable) {
-                var pct = Math.round(e.loaded / e.total * 80);
-                bar.style.width = pct + '%';
-                label.textContent = '上传中... ' + pct + '%';
-            }
-        };
-        xhr.onload = function() {
-            var data;
-            try { data = JSON.parse(xhr.responseText); } catch(e) { data = { ok: false, error: 'Invalid response' }; }
-            if (data.ok) {
-                bar.style.width = '85%';
-                label.textContent = '部署中...';
-                api('/api/assistant/deploy', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: '/var/upgrade/sair_new' }),
-                }).then(function(r) {
-                    if (r.ok) {
-                        bar.style.width = '100%';
-                        label.textContent = '部署成功！';
-                        toast('语音助手部署成功', 'success');
-                        refreshAssistantStatus();
-                    } else {
-                        label.textContent = '部署失败: ' + (r.error || '');
-                        toast('部署失败', 'error');
-                    }
-                    $('btnDeploy').disabled = false;
-                });
-            } else {
-                label.textContent = '上传失败: ' + (data.error || '');
-                toast('上传失败', 'error');
-                $('btnDeploy').disabled = false;
-            }
-        };
-        xhr.onerror = function() {
-            label.textContent = '上传失败';
-            toast('上传失败', 'error');
-            $('btnDeploy').disabled = false;
-        };
-        xhr.send(fd);
-    } catch (e) {
-        toast('部署失败', 'error');
+    bar.style.width = '30%';
+    api('/api/assistant/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: '/var/upgrade/sair_new' }),
+    }).then(function(r) {
+        if (r.ok) {
+            bar.style.width = '100%';
+            label.textContent = '部署成功！';
+            toast('语音助手部署成功', 'success');
+            refreshAssistantStatus();
+        } else {
+            label.textContent = '部署失败: ' + (r.error || '');
+            toast('部署失败', 'error');
+        }
         $('btnDeploy').disabled = false;
-    }
+    });
 }
 
 async function doUpdate() {
-    var fileInput = $('firmwareFile');
-    if (!fileInput.files.length) { toast('请选择sair固件文件', 'error'); return; }
-    toast('上传更新中...', 'info');
-    var fd = new FormData();
-    fd.append('file', fileInput.files[0]);
-    try {
-        var uploadR = await fetch('/api/files/upload?path=' + encodeURIComponent('/var/upgrade'), {
-            method: 'POST',
-            body: fd,
-        });
-        var uploadData = await uploadR.json();
-        if (!uploadData.ok) {
-            toast('上传失败', 'error');
-            return;
-        }
-        var r = await api('/api/assistant/update', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: '/var/upgrade/sair_new' }),
-        });
-        if (r.ok) { toast('更新成功', 'success'); refreshAssistantStatus(); }
-        else toast('更新失败', 'error');
-    } catch (e) {
-        toast('更新失败', 'error');
+    if (!await showConfirm('确定进行冷更新？设备将重启')) return;
+    toast('冷更新中...', 'info');
+    var r = await api('/api/assistant/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+    });
+    if (r.ok) {
+        toast('冷更新指令已发送，设备将重启', 'success');
+        wirelessRebootAndReconnect();
+    } else {
+        toast('冷更新失败: ' + (r.error || ''), 'error');
     }
 }
 
@@ -1461,6 +1594,8 @@ document.addEventListener('DOMContentLoaded', function() {
         var rect = card.getBoundingClientRect();
         var y = ((e.clientY - rect.top) / rect.height) * 100;
         card.style.setProperty('--glow-y', y + '%');
+        card.style.setProperty('--glow-top', Math.max(0, y - 25) + '%');
+        card.style.setProperty('--glow-bottom', Math.min(100, y + 25) + '%');
     });
 
     applyMode();
@@ -1473,15 +1608,6 @@ document.addEventListener('DOMContentLoaded', function() {
         updateViewportHeight();
     });
 
-    $('xwebdFile').addEventListener('change', function() {
-        $('xwebdFileName').textContent = this.files.length ? this.files[0].name : '未选择文件';
-        $('btnXwebdUpdate').disabled = !this.files.length;
-    });
-    $('firmwareFile').addEventListener('change', function() {
-        $('firmwareName').textContent = this.files.length ? this.files[0].name : '未选择文件';
-        $('btnDeploy').disabled = false;
-        $('btnUpdate').disabled = false;
-    });
     $('cfgRealtime').addEventListener('change', function() {
         if (this.checked) {
             $('cfgWsUrl').value = 'wss://api.tenclass.net/xiaozhi/v1/realtime';

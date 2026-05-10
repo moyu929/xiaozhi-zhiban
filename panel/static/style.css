@@ -326,15 +326,14 @@ body {
   background: var(--border-color);
   border-radius: 3px 0 0 3px;
   transition: background 0.25s ease, box-shadow 0.25s ease;
-  --glow-y: 50%;
 }
 .card:hover { background: var(--bg-card-hover); border-color: var(--border-hover); box-shadow: var(--shadow-hover); transform: translateY(-1px); }
 .card:hover::before {
   background: linear-gradient(to bottom,
     transparent 0%,
-    rgba(50,240,140,0.3) calc(var(--glow-y) - 30%),
+    rgba(50,240,140,0.3) var(--glow-top),
     rgba(50,240,140,1) var(--glow-y),
-    rgba(50,240,140,0.3) calc(var(--glow-y) + 30%),
+    rgba(50,240,140,0.3) var(--glow-bottom),
     transparent 100%
   );
   box-shadow: 0 0 8px rgba(50,240,140,0.3);

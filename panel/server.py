@@ -36,7 +36,7 @@ from adb_manager import (is_adb_available, detect_devices, is_xwebd_installed,
                           check_xwebd_status, deploy_xwebd, update_xwebd,
                           remove_xwebd, start_xwebd, stop_xwebd, restart_xwebd,
                           setup_forward, get_device_ip, get_device_info,
-                          check_sair_status, deploy_sair, reboot_device,
+                          check_sair_status, deploy_sair, hot_update_sair, reboot_device,
                           poweroff_device, get_device_logs, _find_adb,
                           init_device, is_device_initialized)
 
@@ -529,7 +529,7 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             try:
-                last_count = 0
+                last_count = len(get_panel_logs(80))
                 while True:
                     try:
                         logs = get_panel_logs(80)
@@ -1036,24 +1036,26 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "ADB 不可用"}, 503)
                 return
             content_type = self.headers.get('Content-Type', '')
-            if 'multipart/form-data' not in content_type:
-                self._send_json({"error": "multipart/form-data required"}, 400)
-                return
-            parsed = _parse_multipart(self.headers, self.rfile)
-            if not parsed or not parsed["filename"] or not parsed["data"]:
-                self._send_json({"error": "no file in form"}, 400)
-                return
-            import tempfile
-            tmp_dir = tempfile.mkdtemp(prefix="xiaozhi_xwebd_")
-            tmp_path = os.path.join(tmp_dir, "xwebd")
-            with open(tmp_path, "wb") as f:
-                f.write(parsed["data"])
-            serial = parsed["fields"].get("serial")
-            r = update_xwebd(serial, tmp_path)
-            try:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-            except Exception:
-                pass
+            if 'multipart/form-data' in content_type:
+                parsed = _parse_multipart(self.headers, self.rfile)
+                if not parsed or not parsed["filename"] or not parsed["data"]:
+                    self._send_json({"error": "no file in form"}, 400)
+                    return
+                import tempfile
+                tmp_dir = tempfile.mkdtemp(prefix="xiaozhi_xwebd_")
+                tmp_path = os.path.join(tmp_dir, "xwebd")
+                with open(tmp_path, "wb") as f:
+                    f.write(parsed["data"])
+                serial = parsed["fields"].get("serial")
+                r = update_xwebd(serial, tmp_path)
+                try:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+            else:
+                serial = body.get("serial") if body else None
+                binary_path = body.get("binary_path") if body else None
+                r = update_xwebd(serial, binary_path)
             self._send_json(r if r.get("ok") else {"error": r.get("error", "update failed")}, 200 if r.get("ok") else 500)
             return
 
@@ -1100,9 +1102,16 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/adb/deploy-sair":
             serial = body.get("serial") if body else None
             binary_path = body.get("binary_path") if body else None
-            logger.info("通过ADB部署sair: serial=%s", serial)
-            r = deploy_sair(serial, binary_path)
-            self._send_json(r if r.get("ok") else {"error": r.get("error", "deploy failed")}, 200 if r.get("ok") else 500)
+            mode = body.get("mode", "cold") if body else "cold"
+            logger.info("通过ADB部署sair: serial=%s, mode=%s", serial, mode)
+            if mode == "hot":
+                r = hot_update_sair(serial, binary_path)
+            else:
+                r = deploy_sair(serial, binary_path)
+            if r.get("ok"):
+                self._send_json(r, 200)
+            else:
+                self._send_json({"error": r.get("error", "deploy failed")}, 500)
             return
 
         # --- 有线模式：重启设备 ---
