@@ -41,26 +41,39 @@
 #include <dirent.h>
 #include <limits.h>
 
+/* ===== 类型定义 ===== */
+
+typedef int (*route_handler_t)(int, const char *, const char *);
+
+typedef struct {
+    const char *method;
+    const char *path;
+    route_handler_t handler;
+} route_t;
+
+/* ===== 全局变量 ===== */
+
 #define TAG "XWD"
 
-static volatile int g_running = 1;       /* 服务器运行标志，收到SIGTERM时置0 */
-static int g_server_fd = -1;             /* 服务器监听套接字 */
-static int g_port = XWEBD_DEFAULT_PORT;  /* 监听端口 */
-static int g_daemon = 0;                 /* 是否以守护进程模式运行 */
+static volatile int g_running = 1;
+static int g_server_fd = -1;
+static int g_port = XWEBD_DEFAULT_PORT;
+static int g_daemon = 0;
 
-static int g_upload_max_mb = XWEBD_UPLOAD_MAX_MB_DEFAULT; /* 当前上传文件大小限制(MB) */
-static volatile pid_t g_upload_pid = 0;  /* 当前上传子进程PID */
+static int g_upload_max_mb = XWEBD_UPLOAD_MAX_MB_DEFAULT;
+static volatile pid_t g_upload_pid = 0;
 
-static int g_plog_fd = -1;              /* 日志文件描述符 */
-static int g_plog_level = 2;            /* 日志级别(0=ERROR, 1=WARN, 2=INFO, 3=DEBUG) */
-static pthread_mutex_t g_plog_mutex = PTHREAD_MUTEX_INITIALIZER; /* 日志写入互斥锁 */
-static off_t g_plog_size = 0;           /* 当前日志文件大小 */
-static char g_plog_path[256] = XWEBD_LOG_PATH; /* 日志文件路径 */
+static int g_plog_fd = -1;
+static int g_plog_level = 2;
+static pthread_mutex_t g_plog_mutex = PTHREAD_MUTEX_INITIALIZER;
+static off_t g_plog_size = 0;
+static char g_plog_path[256] = XWEBD_LOG_PATH;
 
-static int g_watchdog_crash_count = 0;   /* 看门狗: 当前时间窗口内崩溃计数 */
-static time_t g_watchdog_crash_start = 0; /* 看门狗: 当前崩溃统计窗口起始时间 */
+static int g_watchdog_crash_count = 0;
+static time_t g_watchdog_crash_start = 0;
 
-/* 日志级别宏: E=错误, W=警告, I=信息, D=调试 */
+/* ===== 日志系统 ===== */
+
 #define XLOG_E(tag, fmt, ...) xlog_write(0, tag, fmt, ##__VA_ARGS__)
 #define XLOG_W(tag, fmt, ...) xlog_write(1, tag, fmt, ##__VA_ARGS__)
 #define XLOG_I(tag, fmt, ...) xlog_write(2, tag, fmt, ##__VA_ARGS__)
@@ -68,13 +81,6 @@ static time_t g_watchdog_crash_start = 0; /* 看门狗: 当前崩溃统计窗口
 
 static const char *level_names[] = {"E", "W", "I", "D"};
 
-/**
- * xlog_rotate - 日志文件轮转
- *
- * 当日志文件超过XWEBD_LOG_MAX_SIZE时，保留文件尾部XWEBD_LOG_KEEP_SIZE的内容，
- * 删除前半部分，避免日志文件无限增长。
- * 轮转时会跳过第一行不完整的日志（从换行符处开始保留）。
- */
 static void xlog_rotate(void) {
     if (g_plog_size < XWEBD_LOG_MAX_SIZE) return;
     close(g_plog_fd);
@@ -108,7 +114,6 @@ static void xlog_rotate(void) {
     }
     close(src_fd);
 
-    /* 跳过第一行不完整的日志，从换行符后开始保留 */
     char *start = buf;
     if (total_read > 0 && keep_offset > 0) {
         char *nl = memchr(buf, '\n', total_read);
@@ -125,13 +130,6 @@ static void xlog_rotate(void) {
     free(buf);
 }
 
-/**
- * xlog_init - 初始化日志系统
- * @path: 日志文件路径，为NULL时使用默认路径g_plog_path
- *
- * 打开日志文件并获取当前文件大小，用于后续轮转判断。
- * 线程安全，通过g_plog_mutex保护。
- */
 static void xlog_init(const char *path) {
     pthread_mutex_lock(&g_plog_mutex);
     if (g_plog_fd >= 0) close(g_plog_fd);
@@ -145,27 +143,12 @@ static void xlog_init(const char *path) {
     pthread_mutex_unlock(&g_plog_mutex);
 }
 
-/**
- * xlog_close - 关闭日志系统
- *
- * 同步并关闭日志文件描述符，线程安全。
- */
 static void xlog_close(void) {
     pthread_mutex_lock(&g_plog_mutex);
     if (g_plog_fd >= 0) { fsync(g_plog_fd); close(g_plog_fd); g_plog_fd = -1; }
     pthread_mutex_unlock(&g_plog_mutex);
 }
 
-/**
- * xlog_vwrite - 写入日志（可变参数列表版本）
- * @level: 日志级别(0=ERROR, 1=WARN, 2=INFO, 3=DEBUG)
- * @tag:   日志标签
- * @fmt:   格式化字符串
- * @ap:    可变参数列表
- *
- * 日志格式: [HH:MM:SS][级别][标签] 消息内容
- * 超过当前日志级别的消息会被忽略，写入前检查是否需要轮转。
- */
 static void xlog_vwrite(int level, const char *tag, const char *fmt, va_list ap) {
     if (level > g_plog_level) return;
     if (g_plog_fd < 0) return;
@@ -198,14 +181,6 @@ static void xlog_vwrite(int level, const char *tag, const char *fmt, va_list ap)
     pthread_mutex_unlock(&g_plog_mutex);
 }
 
-/**
- * xlog_write - 写入日志（包装函数）
- * @level: 日志级别(0=ERROR, 1=WARN, 2=INFO, 3=DEBUG)
- * @tag:   日志标签
- * @fmt:   格式化字符串
- *
- * 将可变参数转换为va_list后调用xlog_vwrite。
- */
 static void xlog_write(int level, const char *tag, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -213,17 +188,8 @@ static void xlog_write(int level, const char *tag, const char *fmt, ...) {
     va_end(ap);
 }
 
-/**
- * send_response - 发送HTTP响应
- * @fd:           客户端套接字描述符
- * @status:       HTTP状态码(200, 400, 404, 500, 503)
- * @content_type: 响应Content-Type头
- * @body:         响应体数据
- * @body_len:     响应体长度
- *
- * 返回: 成功返回0，发送失败返回-1
- * 503状态码会自动添加Retry-After: 5头
- */
+/* ===== HTTP工具函数 ===== */
+
 static int send_response(int fd, int status, const char *content_type, const char *body, int body_len) {
     const char *status_text;
     switch (status) {
@@ -250,42 +216,16 @@ static int send_response(int fd, int status, const char *content_type, const cha
     return 0;
 }
 
-/**
- * send_json - 发送JSON格式的HTTP响应
- * @fd:     客户端套接字描述符
- * @status: HTTP状态码
- * @json:   JSON字符串
- *
- * 返回: 成功返回0，失败返回-1
- */
 static int send_json(int fd, int status, const char *json) {
     return send_response(fd, status, "application/json", json, strlen(json));
 }
 
-/**
- * send_error - 发送错误响应
- * @fd:      客户端套接字描述符
- * @code:    HTTP错误状态码
- * @message: 错误消息字符串
- *
- * 返回: 成功返回0，失败返回-1
- * 响应格式: {"error":"消息"}
- */
 static int send_error(int fd, int code, const char *message) {
     char buf[256];
     snprintf(buf, sizeof(buf), "{\"error\":\"%s\"}", message);
     return send_json(fd, code, buf);
 }
 
-/**
- * parse_json_int - 从JSON字符串中解析整数值
- * @json: JSON字符串
- * @key:  要查找的键名
- * @out:  输出整数值的指针
- *
- * 返回: 成功返回0，未找到键返回-1
- * 简易解析，仅支持顶层字段
- */
 static int parse_json_int(const char *json, const char *key, int *out) {
     char search[128];
     snprintf(search, sizeof(search), "\"%s\"", key);
@@ -297,16 +237,6 @@ static int parse_json_int(const char *json, const char *key, int *out) {
     return 0;
 }
 
-/**
- * parse_json_str - 从JSON字符串中解析字符串值
- * @json:     JSON字符串
- * @key:      要查找的键名
- * @out:      输出字符串缓冲区
- * @out_size: 输出缓冲区大小
- *
- * 返回: 成功返回0，未找到键或格式错误返回-1
- * 支持转义字符(如\")
- */
 static int parse_json_str(const char *json, const char *key, char *out, int out_size) {
     char search[128];
     snprintf(search, sizeof(search), "\"%s\"", key);
@@ -325,12 +255,6 @@ static int parse_json_str(const char *json, const char *key, char *out, int out_
     return 0;
 }
 
-/**
- * hex_to_int - 十六进制字符转整数
- * @c: 十六进制字符(0-9, a-f, A-F)
- *
- * 返回: 对应的整数值(0-15)，非法字符返回-1
- */
 static int hex_to_int(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -338,15 +262,6 @@ static int hex_to_int(char c) {
     return -1;
 }
 
-/**
- * url_decode - URL解码
- * @src:      待解码的URL编码字符串
- * @dst:      解码结果输出缓冲区
- * @dst_size: 输出缓冲区大小
- *
- * 返回: 解码后的字符串长度
- * 支持%XX编码和+转空格
- */
 static int url_decode(const char *src, char *dst, int dst_size) {
     int i = 0;
     while (*src && i < dst_size - 1) {
@@ -364,18 +279,6 @@ static int url_decode(const char *src, char *dst, int dst_size) {
     return i;
 }
 
-/**
- * validate_path - 校验文件路径安全性
- * @raw_path:      原始请求路径
- * @resolved:      解析后的安全路径输出缓冲区
- * @resolved_size: 输出缓冲区大小
- *
- * 返回: 路径合法返回0，不合法返回-1
- * 安全检查:
- * 1. 禁止路径中包含".."防止目录遍历
- * 2. 解析后的路径必须以XWEBD_BASE_DIR为前缀
- * 3. 前缀后必须紧跟'/'或字符串结束
- */
 static int validate_path(const char *raw_path, char *resolved, size_t resolved_size) {
     char decoded[PATH_MAX];
     url_decode(raw_path, decoded, sizeof(decoded));
@@ -399,15 +302,6 @@ static int validate_path(const char *raw_path, char *resolved, size_t resolved_s
     return 0;
 }
 
-/**
- * read_file_string - 读取文件内容为字符串
- * @path:     文件路径
- * @buf:      输出缓冲区
- * @buf_size: 缓冲区大小
- *
- * 返回: 读取的字符串长度(去除尾部空白)，失败返回-1
- * 自动去除尾部换行符、回车符和空格
- */
 static int read_file_string(const char *path, char *buf, int buf_size) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) return -1;
@@ -419,19 +313,24 @@ static int read_file_string(const char *path, char *buf, int buf_size) {
     return n;
 }
 
-/**
- * get_volume - 获取当前音量
- *
- * 通过tinymix工具读取硬件音量值，并转换为0-XWEBD_VOLUME_MAX的范围。
- * 返回: 音量值(0-80)，获取失败返回-1
- */
+static int read_proc_line(const char *path, char *buf, int size) {
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    int ok = (fgets(buf, size, f) != NULL);
+    fclose(f);
+    if (ok) { char *nl = strchr(buf, '\n'); if (nl) *nl = '\0'; }
+    return ok ? 0 : -1;
+}
+
+/* ===== 硬件控制 ===== */
+
 static int get_volume(void) {
-    char buf[128];
     if (access(XWEBD_TINYMIX_PATH, X_OK) == 0) {
         char cmd[64];
         snprintf(cmd, sizeof(cmd), XWEBD_TINYMIX_PATH " %d 2>/dev/null", XWEBD_VOLUME_TINYMIX_ID);
         FILE *f = popen(cmd, "r");
         if (f) {
+            char buf[128];
             if (fgets(buf, sizeof(buf), f)) {
                 pclose(f);
                 char *colon = strchr(buf, ':');
@@ -445,17 +344,9 @@ static int get_volume(void) {
             } else { pclose(f); }
         }
     }
-
     return -1;
 }
 
-/**
- * set_volume - 设置音量
- * @vol: 目标音量值(0-80)，超出范围会被自动截断
- *
- * 将逻辑音量转换为硬件音量后通过tinymix设置。
- * 返回: 成功返回0，失败返回-1
- */
 static int set_volume(int vol) {
     if (vol < XWEBD_VOLUME_MIN) vol = XWEBD_VOLUME_MIN;
     if (vol > XWEBD_VOLUME_MAX) vol = XWEBD_VOLUME_MAX;
@@ -468,16 +359,9 @@ static int set_volume(int vol) {
         if (ret == 0) return 0;
         XLOG_W(TAG, "tinymix设置音量失败, ret=%d", ret);
     }
-
     return -1;
 }
 
-/**
- * get_brightness - 获取当前屏幕亮度
- *
- * 从sysfs背光节点读取亮度值。
- * 返回: 亮度值(0-900)，读取失败返回-1
- */
 static int get_brightness(void) {
     char buf[64];
     int n = read_file_string(XWEBD_BACKLIGHT_PATH, buf, sizeof(buf));
@@ -485,13 +369,6 @@ static int get_brightness(void) {
     return atoi(buf);
 }
 
-/**
- * set_brightness - 设置屏幕亮度
- * @val: 目标亮度值(0-900)，超出范围会被自动截断
- *
- * 通过sysfs背光节点写入亮度值。
- * 返回: 成功返回0，失败返回-1
- */
 static int set_brightness(int val) {
     if (val < XWEBD_BRIGHTNESS_MIN) val = XWEBD_BRIGHTNESS_MIN;
     if (val > XWEBD_BRIGHTNESS_MAX) val = XWEBD_BRIGHTNESS_MAX;
@@ -504,12 +381,6 @@ static int set_brightness(int val) {
     return (w == len) ? 0 : -1;
 }
 
-/**
- * get_mute - 获取当前静音状态
- *
- * 通过tinymix读取静音控制值，Off表示已静音，On表示未静音。
- * 返回: 1=已静音, 0=未静音, 获取失败返回-1
- */
 static int get_mute(void) {
     if (access(XWEBD_TINYMIX_PATH, X_OK) == 0) {
         char cmd[64];
@@ -527,13 +398,6 @@ static int get_mute(void) {
     return -1;
 }
 
-/**
- * set_mute - 设置静音状态
- * @muted: 1=静音, 0=取消静音
- *
- * 通过tinymix设置静音控制值，0=静音, 1=取消静音(tinymix参数语义)。
- * 返回: 成功返回0，失败返回-1
- */
 static int set_mute(int muted) {
     if (access(XWEBD_TINYMIX_PATH, X_OK) == 0) {
         char cmd[128];
@@ -545,13 +409,8 @@ static int set_mute(int muted) {
     return -1;
 }
 
-/**
- * is_protected_file - 检查文件是否为受保护文件
- * @name: 文件名(不含路径)
- *
- * 返回: 受保护文件返回1，否则返回0
- * 受保护文件禁止通过API删除，列表由XWEBD_PROTECT_FILES宏定义
- */
+/* ===== 文件辅助 ===== */
+
 static int is_protected_file(const char *name) {
     const char *p = XWEBD_PROTECT_FILES;
     while (*p) {
@@ -561,13 +420,6 @@ static int is_protected_file(const char *name) {
     return 0;
 }
 
-/**
- * is_truncate_file - 检查文件是否为截断清理文件
- * @name: 文件名(不含路径)
- *
- * 返回: 截断文件返回1，否则返回0
- * 截断文件在清理时只清空内容而非删除，列表由XWEBD_TRUNCATE_FILES宏定义
- */
 static int is_truncate_file(const char *name) {
     const char *p = XWEBD_TRUNCATE_FILES;
     while (*p) {
@@ -577,32 +429,31 @@ static int is_truncate_file(const char *name) {
     return 0;
 }
 
-/**
- * handle_get_ping - 处理GET /api/ping请求
- *
- * 心跳检测接口，返回{"ok":true}
- */
-static int handle_get_ping(int fd) {
+/* ===== 诊断辅助 ===== */
+
+static int diag_append(char *buf, int pos, int size, int first,
+                       const char *name, int ok, const char *msg,
+                       int *ok_count, int *fail_count) {
+    pos += snprintf(buf + pos, size - pos,
+        "%s{\"name\":\"%s\",\"ok\":%s,\"message\":\"%s\"}",
+        first ? "" : ",", name, ok ? "true" : "false", msg);
+    if (ok) (*ok_count)++; else (*fail_count)++;
+    return pos;
+}
+
+/* ===== API处理函数: 通用 ===== */
+
+static int handle_get_ping(int fd, const char *body, const char *query) {
     return send_json(fd, 200, "{\"ok\":true}");
 }
 
-/**
- * handle_get_version - 处理GET /api/version请求
- *
- * 返回服务器版本号
- */
-static int handle_get_version(int fd) {
+static int handle_get_version(int fd, const char *body, const char *query) {
     char buf[64];
     snprintf(buf, sizeof(buf), "{\"version\":\"%s\"}", XWEBD_VERSION);
     return send_json(fd, 200, buf);
 }
 
-/**
- * handle_get_config - 处理GET /api/config请求
- *
- * 返回当前运行配置，包括上传大小限制和日志级别
- */
-static int handle_get_config(int fd) {
+static int handle_get_config(int fd, const char *body, const char *query) {
     char buf[128];
     snprintf(buf, sizeof(buf), "{\"upload_max_mb\":%d,\"log_level\":\"%s\"}",
              g_upload_max_mb,
@@ -610,18 +461,7 @@ static int handle_get_config(int fd) {
     return send_json(fd, 200, buf);
 }
 
-/**
- * handle_put_config - 处理PUT /api/config请求
- * @fd:   客户端套接字描述符
- * @body: 请求体JSON字符串
- *
- * 修改运行时配置，支持字段:
- * - upload_max_mb: 上传文件大小限制(1-100 MB)
- * - log_level: 日志级别(DEBUG/INFO/WARN/ERROR)
- *
- * 返回: 成功返回0，参数错误返回负数
- */
-static int handle_put_config(int fd, const char *body) {
+static int handle_put_config(int fd, const char *body, const char *query) {
     if (!body || !*body) return send_error(fd, 400, "Empty request body");
 
     int upload_mb = -1;
@@ -648,19 +488,9 @@ static int handle_put_config(int fd, const char *body) {
     return send_json(fd, 200, "{\"ok\":true}");
 }
 
-/**
- * handle_get_system - 处理GET /api/system请求
- *
- * 采集并返回设备系统信息，包括:
- * - 设备型号、内核版本、CPU型号
- * - 内存总量/空闲/缓存
- * - 系统运行时间、电池电量
- * - WiFi连接状态和IP地址
- * - 磁盘总量/已用/可用
- * - 音量、亮度、静音状态
- * - 助手程序安装和运行状态
- */
-static int handle_get_system(int fd) {
+/* ===== API处理函数: 系统 ===== */
+
+static int handle_get_system(int fd, const char *body, const char *query) {
     char buf[XWEBD_RESP_BUF_SIZE];
     int len = 0;
 
@@ -675,17 +505,9 @@ static int handle_get_system(int fd) {
     int assistant_installed = 0, assistant_running = 0;
     char assistant_version[32] = "";
 
-    /* 读取设备型号 */
-    {
-        FILE *f = fopen("/proc/device-tree/model", "r");
-        if (f) { if (fgets(model, sizeof(model), f)) { char *nl = strchr(model, '\n'); if (nl) *nl = '\0'; } fclose(f); }
-    }
-    /* 读取内核版本 */
-    {
-        FILE *f = fopen("/proc/version", "r");
-        if (f) { if (fgets(kernel, sizeof(kernel), f)) { char *nl = strchr(kernel, '\n'); if (nl) *nl = '\0'; } fclose(f); }
-    }
-    /* 读取CPU型号 */
+    read_proc_line("/proc/device-tree/model", model, sizeof(model));
+    read_proc_line("/proc/version", kernel, sizeof(kernel));
+
     {
         FILE *f = fopen("/proc/cpuinfo", "r");
         if (f) {
@@ -700,7 +522,7 @@ static int handle_get_system(int fd) {
             fclose(f);
         }
     }
-    /* 读取内存信息 */
+
     {
         FILE *f = fopen("/proc/meminfo", "r");
         if (f) {
@@ -713,28 +535,25 @@ static int handle_get_system(int fd) {
             fclose(f);
         }
     }
-    /* 读取系统运行时间 */
+
     {
         char buf2[64];
         if (read_file_string("/proc/uptime", buf2, sizeof(buf2)) > 0) uptime = atof(buf2);
     }
-    /* 读取电池电量 */
     {
         char buf2[16];
         if (read_file_string("/sys/class/power_supply/battery/capacity", buf2, sizeof(buf2)) > 0) battery = atoi(buf2);
     }
-    /* 检测WiFi连接状态 */
+
     {
         FILE *f = fopen("/proc/net/wireless", "r");
         if (f) {
             char line[256];
-            if (fgets(line, sizeof(line), f) && fgets(line, sizeof(line), f)) {
-                wifi_connected = 1;
-            }
+            if (fgets(line, sizeof(line), f) && fgets(line, sizeof(line), f)) wifi_connected = 1;
             fclose(f);
         }
     }
-    /* 获取wlan0的IP地址 */
+
     {
         int sock = socket(AF_INET, SOCK_DGRAM, 0);
         if (sock >= 0) {
@@ -748,7 +567,7 @@ static int handle_get_system(int fd) {
             close(sock);
         }
     }
-    /* 获取磁盘使用情况 */
+
     {
         struct statfs st;
         if (statfs(XWEBD_BASE_DIR, &st) == 0) {
@@ -762,13 +581,10 @@ static int handle_get_system(int fd) {
     brightness = get_brightness();
     muted = get_mute();
 
-    /* 检查助手程序(sair)安装和运行状态 */
     if (access(XWEBD_SAIR_BIN, X_OK) == 0) {
         assistant_installed = 1;
         char pid_buf[16];
-        char cmd[64];
-        snprintf(cmd, sizeof(cmd), "pidof sair 2>/dev/null");
-        FILE *pf = popen(cmd, "r");
+        FILE *pf = popen("pidof sair 2>/dev/null", "r");
         if (pf) {
             if (fgets(pid_buf, sizeof(pid_buf), pf)) assistant_running = 1;
             pclose(pf);
@@ -794,19 +610,7 @@ static int handle_get_system(int fd) {
     return send_response(fd, 200, "application/json", buf, len);
 }
 
-/**
- * handle_get_logs - 处理GET /api/logs请求
- * @fd:    客户端套接字描述符
- * @query: URL查询字符串
- *
- * 查询参数:
- * - lines: 返回的日志行数(默认100, 最大500)
- * - level: 日志级别过滤(E/W/I/D)
- * - source: 日志来源(1=sair, 2=xwebd, 不指定=全部)
- *
- * 使用环形缓冲区保留最新的指定行数日志
- */
-static int handle_get_logs(int fd, const char *query) {
+static int handle_get_logs(int fd, const char *body, const char *query) {
     int lines = 100;
     char level_filter = 0;
     int source = 0;
@@ -844,19 +648,15 @@ static int handle_get_logs(int fd, const char *query) {
         FILE *f = fopen(log_paths[idx], "r");
         if (!f) continue;
 
-        /* 对于大文件，只读取尾部64KB以提高效率 */
         fseek(f, 0, SEEK_END);
         long file_size = ftell(f);
 
         int want_lines = lines - total_lines;
         long read_start = 0;
-        if (file_size > 65536) {
-            read_start = file_size - 65536;
-        }
+        if (file_size > 65536) read_start = file_size - 65536;
         fseek(f, read_start, SEEK_SET);
 
         char line[512];
-        /* 环形缓冲区，保留最新的want_lines行 */
         char **ring = malloc(sizeof(char*) * want_lines);
         int *ring_level = malloc(sizeof(int) * want_lines);
         int ring_count = 0;
@@ -872,7 +672,6 @@ static int handle_get_logs(int fd, const char *query) {
             while (line_len > 0 && (line[line_len-1] == '\n' || line[line_len-1] == '\r'))
                 line[--line_len] = '\0';
 
-            /* 从日志格式[HH:MM:SS][级别][TAG]中提取级别字符 */
             char line_level = 0;
             char *lb = strchr(line, '[');
             if (lb) {
@@ -881,20 +680,16 @@ static int handle_get_logs(int fd, const char *query) {
                     char *lb2 = strchr(rb + 1, '[');
                     if (lb2) {
                         char *rb2 = strchr(lb2 + 1, ']');
-                        if (rb2 && rb2 == lb2 + 2) {
-                            line_level = *(lb2 + 1);
-                        }
+                        if (rb2 && rb2 == lb2 + 2) line_level = *(lb2 + 1);
                     }
                 }
             }
 
-            /* 按日志级别过滤 */
             if (level_filter) {
                 char effective_level = line_level ? line_level : 'I';
                 if (effective_level != level_filter) continue;
             }
 
-            /* 环形缓冲区: 满时淘汰最旧的行 */
             if (ring_count < want_lines) {
                 ring[ring_count] = strdup(line);
                 ring_level[ring_count] = line_level;
@@ -909,7 +704,6 @@ static int handle_get_logs(int fd, const char *query) {
         }
         fclose(f);
 
-        /* 将环形缓冲区中的日志行写入响应JSON */
         for (int i = 0; i < ring_count && total_lines < lines; i++) {
             if (written > 0) buf_pos += snprintf(buf + buf_pos, XWEBD_RESP_BUF_SIZE * 4 - buf_pos, ",");
             const char *lvl = "INFO";
@@ -919,7 +713,6 @@ static int handle_get_logs(int fd, const char *query) {
                 case 'I': lvl = "INFO"; break;
                 case 'D': lvl = "DEBUG"; break;
             }
-            /* 转义JSON特殊字符 */
             char escaped[1024];
             int ep = 0;
             for (const char *s = ring[i]; *s && ep < (int)sizeof(escaped) - 2; s++) {
@@ -944,12 +737,130 @@ static int handle_get_logs(int fd, const char *query) {
     return ret;
 }
 
-/**
- * handle_get_volume - 处理GET /api/volume请求
- *
- * 返回当前音量值
- */
-static int handle_get_volume(int fd) {
+static int handle_get_services(int fd, const char *body, const char *query) {
+    int telnet_running = 0;
+    {
+        FILE *pf = popen("pidof telnetd 2>/dev/null", "r");
+        if (pf) { char pbuf[16]; if (fgets(pbuf, sizeof(pbuf), pf)) telnet_running = 1; pclose(pf); }
+    }
+    int watchdog_exists = (access(XWEBD_WATCHDOG_SH, X_OK) == 0);
+    int xwebd_autostart = 0;
+    {
+        char buf2[1024];
+        int n = read_file_string(XWEBD_TEST_SH, buf2, sizeof(buf2));
+        if (n > 0 && strstr(buf2, "xwebd")) xwebd_autostart = 1;
+    }
+
+    char buf[512];
+    int len = snprintf(buf, sizeof(buf),
+        "{\"telnet\":{\"running\":%s},"
+        "\"boot_watchdog\":{\"deployed\":%s},"
+        "\"xwebd_autostart\":{\"enabled\":%s}}",
+        telnet_running ? "true" : "false",
+        watchdog_exists ? "true" : "false",
+        xwebd_autostart ? "true" : "false");
+    return send_response(fd, 200, "application/json", buf, len);
+}
+
+static int handle_get_diag(int fd, const char *body, const char *query) {
+    char buf[2048];
+    int pos = 0;
+    int ok_count = 0, fail_count = 0;
+    int first = 1;
+    char msg[128];
+
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "{\"items\":[");
+
+    pos = diag_append(buf, pos, sizeof(buf), first,
+        "HTTP服务", 1, "HTTP服务运行正常", &ok_count, &fail_count);
+    first = 0;
+
+    {
+        const char *test_path = XWEBD_BASE_DIR "/.diag_test";
+        int fs_ok = 0;
+        int tfd = open(test_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (tfd >= 0) {
+            const char *test_data = "diag_ok";
+            int wlen = strlen(test_data);
+            if (write(tfd, test_data, wlen) == wlen) {
+                close(tfd);
+                char read_buf[16];
+                int n = read_file_string(test_path, read_buf, sizeof(read_buf));
+                if (n == wlen && memcmp(read_buf, test_data, wlen) == 0) {
+                    fs_ok = 1;
+                    snprintf(msg, sizeof(msg), "文件系统读写正常");
+                } else {
+                    snprintf(msg, sizeof(msg), "文件系统读验证失败");
+                }
+            } else {
+                snprintf(msg, sizeof(msg), "文件系统写入失败: %s", strerror(errno));
+                close(tfd);
+            }
+            unlink(test_path);
+        } else {
+            snprintf(msg, sizeof(msg), "文件系统读写失败: %s", strerror(errno));
+        }
+        pos = diag_append(buf, pos, sizeof(buf), first, "文件系统", fs_ok, msg, &ok_count, &fail_count);
+    }
+
+    {
+        char tmp[64];
+        int v_ok = (read_file_string("/proc/version", tmp, sizeof(tmp)) >= 0);
+        int m_ok = (read_file_string("/proc/meminfo", tmp, sizeof(tmp)) >= 0);
+        pos = diag_append(buf, pos, sizeof(buf), first,
+            "系统信息", v_ok && m_ok,
+            (v_ok && m_ok) ? "系统信息读取正常" : "系统信息读取失败",
+            &ok_count, &fail_count);
+    }
+
+    {
+        int vol = get_volume();
+        if (vol >= 0) snprintf(msg, sizeof(msg), "音量控制接口正常（当前音量: %d）", vol);
+        else snprintf(msg, sizeof(msg), "音量控制接口不可用");
+        pos = diag_append(buf, pos, sizeof(buf), first, "音量控制", vol >= 0, msg, &ok_count, &fail_count);
+    }
+
+    {
+        int br = get_brightness();
+        if (br >= 0) snprintf(msg, sizeof(msg), "亮度控制接口正常（当前亮度: %d）", br);
+        else snprintf(msg, sizeof(msg), "亮度控制接口不可用");
+        pos = diag_append(buf, pos, sizeof(buf), first, "亮度控制", br >= 0, msg, &ok_count, &fail_count);
+    }
+
+    pos = diag_append(buf, pos, sizeof(buf), first,
+        "Assistant状态", access(XWEBD_SAIR_BIN, F_OK) == 0,
+        (access(XWEBD_SAIR_BIN, F_OK) == 0) ? "助手程序已部署" : "助手程序未部署",
+        &ok_count, &fail_count);
+
+    pos = diag_append(buf, pos, sizeof(buf), first,
+        "看门狗脚本", access(XWEBD_WATCHDOG_SH, F_OK) == 0,
+        (access(XWEBD_WATCHDOG_SH, F_OK) == 0) ? "看门狗脚本已部署" : "看门狗脚本未部署",
+        &ok_count, &fail_count);
+
+    {
+        struct statvfs vfs;
+        if (statvfs(XWEBD_BASE_DIR, &vfs) == 0) {
+            long free_kb = (long)((long long)vfs.f_bfree * vfs.f_bsize / 1024);
+            int ok = (free_kb >= 1024);
+            if (ok) snprintf(msg, sizeof(msg), "磁盘空间充足（%ldKB可用）", free_kb);
+            else snprintf(msg, sizeof(msg), "磁盘空间不足（仅%ldKB可用）", free_kb);
+            pos = diag_append(buf, pos, sizeof(buf), first, "磁盘空间", ok, msg, &ok_count, &fail_count);
+        } else {
+            pos = diag_append(buf, pos, sizeof(buf), first, "磁盘空间", 0, "磁盘空间查询失败", &ok_count, &fail_count);
+        }
+    }
+
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
+        "],\"ok_count\":%d,\"fail_count\":%d,\"total\":8,"
+        "\"summary\":\"%d项正常, %d项异常\"}",
+        ok_count, fail_count, ok_count, fail_count);
+
+    return send_response(fd, 200, "application/json", buf, pos);
+}
+
+/* ===== API处理函数: 硬件 ===== */
+
+static int handle_get_volume(int fd, const char *body, const char *query) {
     int vol = get_volume();
     if (vol < 0) return send_error(fd, 500, "Volume control not available");
     char buf[32];
@@ -957,14 +868,7 @@ static int handle_get_volume(int fd) {
     return send_json(fd, 200, buf);
 }
 
-/**
- * handle_post_volume - 处理POST /api/volume请求
- * @fd:   客户端套接字描述符
- * @body: 请求体JSON，需包含"volume"字段(0-80)
- *
- * 设置音量值
- */
-static int handle_post_volume(int fd, const char *body) {
+static int handle_post_volume(int fd, const char *body, const char *query) {
     if (!body) return send_error(fd, 400, "Empty request body");
     int vol;
     if (parse_json_int(body, "volume", &vol) != 0) return send_error(fd, 400, "Missing 'volume' field");
@@ -976,12 +880,7 @@ static int handle_post_volume(int fd, const char *body) {
     return send_json(fd, 200, buf);
 }
 
-/**
- * handle_get_brightness - 处理GET /api/brightness请求
- *
- * 返回当前亮度值
- */
-static int handle_get_brightness(int fd) {
+static int handle_get_brightness(int fd, const char *body, const char *query) {
     int br = get_brightness();
     if (br < 0) return send_error(fd, 500, "Brightness control not available");
     char buf[32];
@@ -989,14 +888,7 @@ static int handle_get_brightness(int fd) {
     return send_json(fd, 200, buf);
 }
 
-/**
- * handle_post_brightness - 处理POST /api/brightness请求
- * @fd:   客户端套接字描述符
- * @body: 请求体JSON，需包含"brightness"字段(0-900)
- *
- * 设置屏幕亮度值
- */
-static int handle_post_brightness(int fd, const char *body) {
+static int handle_post_brightness(int fd, const char *body, const char *query) {
     if (!body) return send_error(fd, 400, "Empty request body");
     int val;
     if (parse_json_int(body, "brightness", &val) != 0) return send_error(fd, 400, "Missing 'brightness' field");
@@ -1008,36 +900,37 @@ static int handle_post_brightness(int fd, const char *body) {
     return send_json(fd, 200, buf);
 }
 
-/**
- * handle_post_poweroff - 处理POST /api/poweroff请求
- *
- * 先发送响应再执行关机命令，避免客户端收不到响应
- */
-static int handle_post_poweroff(int fd) {
+static int handle_get_mute(int fd, const char *body, const char *query) {
+    int m = get_mute();
+    char buf[32];
+    snprintf(buf, sizeof(buf), "{\"muted\":%s}", m < 0 ? "null" : (m ? "true" : "false"));
+    return send_json(fd, 200, buf);
+}
+
+static int handle_post_mute(int fd, const char *body, const char *query) {
+    int muted = 0;
+    if (body) parse_json_int(body, "muted", &muted);
+    if (set_mute(muted) != 0) return send_error(fd, 500, "Failed to set mute");
+    char buf[32];
+    snprintf(buf, sizeof(buf), "{\"muted\":%s}", muted ? "true" : "false");
+    return send_json(fd, 200, buf);
+}
+
+static int handle_post_poweroff(int fd, const char *body, const char *query) {
     send_json(fd, 200, "{\"ok\":true}");
     system("poweroff");
     return 0;
 }
 
-/**
- * handle_post_reboot - 处理POST /api/reboot请求
- *
- * 先发送响应再执行重启命令，避免客户端收不到响应
- */
-static int handle_post_reboot(int fd) {
+static int handle_post_reboot(int fd, const char *body, const char *query) {
     send_json(fd, 200, "{\"ok\":true}");
     system("reboot");
     return 0;
 }
 
-/**
- * handle_get_files - 处理GET /api/files请求
- * @fd:    客户端套接字描述符
- * @query: URL查询字符串，需包含"path"参数
- *
- * 列出指定目录下的文件和子目录信息(名称、大小、是否目录、修改时间)
- */
-static int handle_get_files(int fd, const char *query) {
+/* ===== API处理函数: 文件 ===== */
+
+static int handle_get_files(int fd, const char *body, const char *query) {
     char path_val[PATH_MAX] = "";
     if (query) {
         char *p = strstr(query, "path=");
@@ -1079,7 +972,6 @@ static int handle_get_files(int fd, const char *query) {
             "{\"name\":\"%s\",\"size\":%ld,\"is_dir\":%s,\"mtime\":%ld}",
             ent->d_name, (long)st.st_size, S_ISDIR(st.st_mode) ? "true" : "false", (long)st.st_mtime);
 
-        /* 缓冲区快满时停止，避免溢出 */
         if ((size_t)len > sizeof(buf) - 256) break;
     }
     closedir(dir);
@@ -1088,14 +980,7 @@ static int handle_get_files(int fd, const char *query) {
     return send_response(fd, 200, "application/json", buf, len);
 }
 
-/**
- * handle_download_file - 处理GET /api/files/download请求
- * @fd:    客户端套接字描述符
- * @query: URL查询字符串，需包含"path"参数
- *
- * 以附件形式下载指定文件，流式传输避免大文件占用过多内存
- */
-static int handle_download_file(int fd, const char *query) {
+static int handle_download_file(int fd, const char *body, const char *query) {
     char path_val[PATH_MAX] = "";
     if (query) {
         char *p = strstr(query, "path=");
@@ -1123,7 +1008,6 @@ static int handle_download_file(int fd, const char *query) {
     const char *fname = strrchr(resolved, '/');
     fname = fname ? fname + 1 : resolved;
 
-    /* 发送文件下载响应头 */
     char header[512];
     int hlen = snprintf(header, sizeof(header),
         "HTTP/1.1 200 OK\r\n"
@@ -1136,7 +1020,6 @@ static int handle_download_file(int fd, const char *query) {
         (long)st.st_size, fname);
     send(fd, header, hlen, MSG_NOSIGNAL);
 
-    /* 流式传输文件内容 */
     char fbuf[XWEBD_FILE_BUF_SIZE];
     ssize_t total_sent = 0;
     while (total_sent < st.st_size) {
@@ -1150,14 +1033,7 @@ static int handle_download_file(int fd, const char *query) {
     return 0;
 }
 
-/**
- * handle_delete_file - 处理DELETE /api/files请求
- * @fd:    客户端套接字描述符
- * @query: URL查询字符串，需包含"path"参数
- *
- * 删除指定文件，受保护文件禁止删除
- */
-static int handle_delete_file(int fd, const char *query) {
+static int handle_delete_file(int fd, const char *body, const char *query) {
     char path_val[PATH_MAX] = "";
     if (query) {
         char *p = strstr(query, "path=");
@@ -1186,14 +1062,7 @@ static int handle_delete_file(int fd, const char *query) {
     return send_json(fd, 200, "{\"ok\":true}");
 }
 
-/**
- * handle_batch_delete - 处理POST /api/files/batch-delete请求
- * @fd:   客户端套接字描述符
- * @body: 请求体JSON，需包含"paths"数组字段
- *
- * 批量删除文件，受保护文件会被跳过，返回实际删除数量
- */
-static int handle_batch_delete(int fd, const char *body) {
+static int handle_batch_delete(int fd, const char *body, const char *query) {
     if (!body) return send_error(fd, 400, "Empty request body");
     int deleted = 0;
     const char *p = strstr(body, "\"paths\"");
@@ -1202,7 +1071,6 @@ static int handle_batch_delete(int fd, const char *body) {
     if (!p) return send_error(fd, 400, "Invalid paths format");
     p++;
 
-    /* 逐个解析paths数组中的路径并删除 */
     while (*p && *p != ']') {
         while (*p && (*p == ' ' || *p == ',' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
         if (*p != '"') { p++; continue; }
@@ -1229,17 +1097,7 @@ static int handle_batch_delete(int fd, const char *body) {
     return send_json(fd, 200, buf);
 }
 
-/**
- * handle_cleanup - 处理POST /api/files/cleanup请求
- *
- * 清理XWEBD_BASE_DIR目录下的临时和可清理文件:
- * 1. 截断类文件(如xwebd.log): 清空内容但不删除
- * 2. .upload_pid文件: 仅在对应进程不存在时删除
- * 3. 匹配清理模式的文件: 直接删除
- * 4. .tmp后缀文件: 直接删除
- * 受保护文件不会被清理
- */
-static int handle_cleanup(int fd) {
+static int handle_cleanup(int fd, const char *body, const char *query) {
     long cleaned_bytes = 0;
     int cleaned_files = 0;
 
@@ -1256,10 +1114,8 @@ static int handle_cleanup(int fd) {
         struct stat st;
         if (stat(full_path, &st) != 0 || S_ISDIR(st.st_mode)) continue;
 
-        /* 跳过受保护文件 */
         if (is_protected_file(ent->d_name)) continue;
 
-        /* 截断类文件: 清空内容但不删除 */
         if (is_truncate_file(ent->d_name)) {
             long old_size = st.st_size;
             int tfd = open(full_path, O_WRONLY | O_TRUNC);
@@ -1271,7 +1127,6 @@ static int handle_cleanup(int fd) {
             continue;
         }
 
-        /* .upload_pid文件: 仅在对应上传进程已不存在时删除 */
         if (strcmp(ent->d_name, ".upload_pid") == 0) {
             char pid_buf[16];
             int n = read_file_string(full_path, pid_buf, sizeof(pid_buf));
@@ -1289,7 +1144,6 @@ static int handle_cleanup(int fd) {
             continue;
         }
 
-        /* 匹配清理模式列表的文件: 直接删除 */
         const char *cp = XWEBD_CLEANUP_PATTERNS;
         while (*cp) {
             if (strcmp(ent->d_name, cp) == 0) {
@@ -1299,7 +1153,6 @@ static int handle_cleanup(int fd) {
             cp += strlen(cp) + 1;
         }
 
-        /* .tmp后缀文件: 直接删除 */
         size_t namelen = strlen(ent->d_name);
         if (namelen >= 4 && strcmp(ent->d_name + namelen - 4, ".tmp") == 0) {
             if (remove(full_path) == 0) { cleaned_bytes += st.st_size; cleaned_files++; }
@@ -1312,22 +1165,234 @@ static int handle_cleanup(int fd) {
     return send_json(fd, 200, buf);
 }
 
-/**
- * do_upload_child - multipart/form-data上传子进程函数
- * @client_fd:     客户端套接字描述符
- * @boundary:      multipart边界字符串
- * @content_length: 请求体总长度
- * @body_read:     已读取的请求体数据
- * @body_read_len: 已读取的请求体数据长度
- *
- * 在子进程中执行文件上传:
- * 1. 创建临时文件
- * 2. 解析multipart头部获取文件名
- * 3. 写入文件数据并去除结尾边界标记
- * 4. 校验目标路径安全性
- * 5. 重命名临时文件为最终文件名
- * 成功或失败后子进程直接_exit退出
- */
+/* ===== API处理函数: 助手 ===== */
+
+static int handle_get_assistant_status(int fd, const char *body, const char *query) {
+    int installed = (access(XWEBD_SAIR_BIN, X_OK) == 0);
+    int running = 0;
+    int pid = 0;
+    int backup_exists = (access(XWEBD_SAIR_BACKUP, F_OK) == 0);
+    char version[32] = "";
+    char state[32] = "";
+
+    if (installed) {
+        FILE *pf = popen("pidof sair 2>/dev/null", "r");
+        if (pf) {
+            char pbuf[16];
+            if (fgets(pbuf, sizeof(pbuf), pf)) { running = 1; pid = atoi(pbuf); }
+            pclose(pf);
+        }
+
+        if (running) {
+            char state_buf[256] = "";
+            int sfd = open("/tmp/sair_state.json", O_RDONLY);
+            if (sfd >= 0) {
+                int n = read(sfd, state_buf, sizeof(state_buf) - 1);
+                close(sfd);
+                if (n > 0) {
+                    state_buf[n] = '\0';
+                    parse_json_str(state_buf, "state", state, sizeof(state));
+                    parse_json_str(state_buf, "version", version, sizeof(version));
+                }
+            }
+        }
+    }
+
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+        "{\"installed\":%s,\"running\":%s,\"pid\":%d,\"native_backup_exists\":%s,\"state\":\"%s\",\"version\":\"%s\"}",
+        installed ? "true" : "false", running ? "true" : "false", pid,
+        backup_exists ? "true" : "false", state, version);
+    return send_json(fd, 200, buf);
+}
+
+static int handle_get_assistant_logs(int fd, const char *body, const char *query) {
+    int lines = 50;
+    if (query) {
+        char *p = strstr(query, "lines=");
+        if (p) lines = atoi(p + 6);
+        if (lines <= 0) lines = 50;
+        if (lines > 500) lines = 500;
+    }
+
+    char buf[XWEBD_RESP_BUF_SIZE];
+    int fd_log = open(XWEBD_SAIR_LOG, O_RDONLY);
+    if (fd_log < 0) return send_json(fd, 200, "{\"logs\":\"\"}");
+
+    off_t file_size = lseek(fd_log, 0, SEEK_END);
+    int line_count = 0;
+    off_t pos = file_size;
+    char rbuf[1024];
+
+    while (pos > 0 && line_count < lines) {
+        int chunk = (pos < (off_t)sizeof(rbuf)) ? (int)pos : (int)sizeof(rbuf);
+        pos -= chunk;
+        lseek(fd_log, pos, SEEK_SET);
+        ssize_t n = read(fd_log, rbuf, chunk);
+        if (n <= 0) break;
+        for (ssize_t i = n - 1; i >= 0; i--) {
+            if (rbuf[i] == '\n') { line_count++; if (line_count >= lines) { pos += i + 1; break; } }
+        }
+    }
+    if (pos < 0) pos = 0;
+    lseek(fd_log, pos, SEEK_SET);
+
+    int total = 0;
+    while (total < (int)sizeof(buf) - 1) {
+        ssize_t n = read(fd_log, buf + total, (int)sizeof(buf) - 1 - total);
+        if (n <= 0) break;
+        total += n;
+    }
+    close(fd_log);
+    buf[total] = '\0';
+
+    char resp[XWEBD_RESP_BUF_SIZE + 64];
+    int rlen = snprintf(resp, sizeof(resp), "{\"logs\":");
+    resp[rlen++] = '"';
+    for (int i = 0; i < total && rlen < (int)sizeof(resp) - 4; i++) {
+        if (buf[i] == '"') { resp[rlen++] = '\\'; resp[rlen++] = '"'; }
+        else if (buf[i] == '\n') { resp[rlen++] = '\\'; resp[rlen++] = 'n'; }
+        else if (buf[i] == '\r') { }
+        else if (buf[i] == '\\') { resp[rlen++] = '\\'; resp[rlen++] = '\\'; }
+        else { resp[rlen++] = buf[i]; }
+    }
+    resp[rlen++] = '"';
+    resp[rlen++] = '}';
+    resp[rlen] = '\0';
+
+    return send_response(fd, 200, "application/json", resp, rlen);
+}
+
+static int handle_post_assistant_deploy(int fd, const char *body, const char *query) {
+    char sair_new_path[PATH_MAX] = XWEBD_BASE_DIR "/sair_new";
+    if (body && *body) {
+        char path_val[PATH_MAX] = "";
+        if (parse_json_str(body, "path", path_val, sizeof(path_val)) == 0 && path_val[0]) {
+            char resolved[PATH_MAX];
+            if (validate_path(path_val, resolved, sizeof(resolved)) != 0)
+                return send_error(fd, 400, "Invalid path");
+            strncpy(sair_new_path, resolved, sizeof(sair_new_path) - 1);
+        }
+    }
+
+    if (access(sair_new_path, R_OK) != 0)
+        return send_error(fd, 404, "sair_new not found, upload first");
+
+    int sair_running = 0;
+    pid_t sair_pid = 0;
+    {
+        char pbuf[16];
+        FILE *pf = popen("pidof sair 2>/dev/null", "r");
+        if (pf) {
+            if (fgets(pbuf, sizeof(pbuf), pf)) { sair_running = 1; sair_pid = atoi(pbuf); }
+            pclose(pf);
+        }
+    }
+
+    if (sair_running && sair_pid > 0) {
+        if (access(XWEBD_SAIR_BIN, X_OK) == 0) {
+            if (rename(XWEBD_SAIR_BIN, XWEBD_SAIR_BACKUP) != 0)
+                XLOG_W(TAG, "备份助手程序失败: %s", strerror(errno));
+        }
+        if (rename(sair_new_path, XWEBD_SAIR_BIN) != 0)
+            return send_error(fd, 500, "Failed to rename sair_new to sair");
+        XLOG_I(TAG, "助手部署: 发送SIGUSR2信号到pid %d进行热更新", sair_pid);
+        kill(sair_pid, SIGUSR2);
+        return send_json(fd, 200, "{\"ok\":true,\"method\":\"hot_update\",\"pid\":0}");
+    }
+
+    if (access(XWEBD_SAIR_BIN, X_OK) == 0) {
+        if (rename(XWEBD_SAIR_BIN, XWEBD_SAIR_BACKUP) != 0)
+            XLOG_W(TAG, "备份助手程序失败: %s", strerror(errno));
+    }
+    if (rename(sair_new_path, XWEBD_SAIR_BIN) != 0)
+        return send_error(fd, 500, "Failed to rename sair_new to sair");
+
+    chmod(XWEBD_SAIR_BIN, 0755);
+
+    XLOG_I(TAG, "助手部署: sair未运行, 二进制文件已放置到 %s", XWEBD_SAIR_BIN);
+    return send_json(fd, 200, "{\"ok\":true,\"method\":\"cold_deploy\"}");
+}
+
+static int handle_post_assistant_update(int fd, const char *body, const char *query) {
+    return handle_post_assistant_deploy(fd, body, query);
+}
+
+static int handle_post_assistant_uninstall(int fd, const char *body, const char *query) {
+    int sair_running = 0;
+    {
+        char pbuf[16];
+        FILE *pf = popen("pidof sair 2>/dev/null", "r");
+        if (pf) {
+            if (fgets(pbuf, sizeof(pbuf), pf)) sair_running = 1;
+            pclose(pf);
+        }
+    }
+
+    if (sair_running) {
+        XLOG_I(TAG, "助手卸载: 正在停止sair...");
+        system("killall sair 2>/dev/null");
+        usleep(500000);
+        system("killall -9 sair 2>/dev/null");
+        usleep(500000);
+    }
+
+    if (access(XWEBD_SAIR_BIN, F_OK) == 0) {
+        if (unlink(XWEBD_SAIR_BIN) != 0)
+            return send_error(fd, 500, "Failed to remove sair");
+        XLOG_I(TAG, "助手卸载: 已删除 %s", XWEBD_SAIR_BIN);
+    }
+
+    if (access(XWEBD_SAIR_BACKUP, F_OK) == 0) {
+        unlink(XWEBD_SAIR_BACKUP);
+        XLOG_I(TAG, "助手卸载: 已删除 %s", XWEBD_SAIR_BACKUP);
+    }
+
+    return send_json(fd, 200, "{\"ok\":true}");
+}
+
+static int handle_post_assistant_logs_clear(int fd, const char *body, const char *query) {
+    if (truncate(XWEBD_SAIR_LOG, 0) == 0)
+        return send_json(fd, 200, "{\"ok\":true}");
+    return send_error(fd, 500, "Failed to clear log file");
+}
+
+/* ===== 路由表 ===== */
+
+static const route_t g_routes[] = {
+    {"GET",    "/api/ping",                handle_get_ping},
+    {"GET",    "/api/version",             handle_get_version},
+    {"GET",    "/api/config",              handle_get_config},
+    {"PUT",    "/api/config",              handle_put_config},
+    {"GET",    "/api/system",              handle_get_system},
+    {"GET",    "/api/logs",                handle_get_logs},
+    {"GET",    "/api/volume",              handle_get_volume},
+    {"POST",   "/api/volume",              handle_post_volume},
+    {"GET",    "/api/brightness",          handle_get_brightness},
+    {"POST",   "/api/brightness",          handle_post_brightness},
+    {"GET",    "/api/mute",                handle_get_mute},
+    {"POST",   "/api/mute",                handle_post_mute},
+    {"POST",   "/api/poweroff",            handle_post_poweroff},
+    {"POST",   "/api/reboot",              handle_post_reboot},
+    {"GET",    "/api/files",               handle_get_files},
+    {"GET",    "/api/files/download",       handle_download_file},
+    {"DELETE", "/api/files",               handle_delete_file},
+    {"DELETE", "/api/files/download",       handle_delete_file},
+    {"POST",   "/api/files/batch-delete",   handle_batch_delete},
+    {"POST",   "/api/files/cleanup",        handle_cleanup},
+    {"GET",    "/api/services",             handle_get_services},
+    {"GET",    "/api/diag",                 handle_get_diag},
+    {"GET",    "/api/assistant/status",      handle_get_assistant_status},
+    {"GET",    "/api/assistant/logs",        handle_get_assistant_logs},
+    {"POST",   "/api/assistant/deploy",      handle_post_assistant_deploy},
+    {"POST",   "/api/assistant/update",      handle_post_assistant_update},
+    {"POST",   "/api/assistant/uninstall",   handle_post_assistant_uninstall},
+    {"POST",   "/api/assistant/logs/clear",  handle_post_assistant_logs_clear},
+    {NULL, NULL, NULL}
+};
+
+/* ===== 上传处理 ===== */
+
 static void do_upload_child(int client_fd, const char *boundary, int content_length,
                            const char *body_read, int body_read_len) {
     xlog_close();
@@ -1354,7 +1419,6 @@ static void do_upload_child(int client_fd, const char *boundary, int content_len
 
     while (total_read < content_length) {
         int n;
-        /* 优先使用已读取的body数据，不足部分从socket继续读取 */
         if (!from_socket && body_read_len > 0 && total_read < body_read_len) {
             int avail = body_read_len - total_read;
             int to_copy = avail < (int)sizeof(fbuf) ? avail : (int)sizeof(fbuf);
@@ -1370,7 +1434,6 @@ static void do_upload_child(int client_fd, const char *boundary, int content_len
         total_read += n;
 
         if (in_header) {
-            /* 解析multipart头部，提取filename */
             char *hdr_end = strstr(fbuf, "\r\n\r\n");
             if (hdr_end) {
                 char *fn_pos = strstr(fbuf, "filename=\"");
@@ -1399,7 +1462,6 @@ static void do_upload_child(int client_fd, const char *boundary, int content_len
         }
     }
 
-    /* 去除文件末尾的multipart结束边界标记 */
     if (found_file) {
         off_t file_size = lseek(tmp_fd, 0, SEEK_END);
         if (file_size > end_marker_len) {
@@ -1454,18 +1516,6 @@ static void do_upload_child(int client_fd, const char *boundary, int content_len
     _exit(0);
 }
 
-/**
- * do_upload_raw_child - 原始二进制流上传子进程函数
- * @client_fd:      客户端套接字描述符
- * @filename:       目标文件名(从X-Filename请求头获取)
- * @content_length: 请求体总长度
- * @body_read:      已读取的请求体数据
- * @body_read_len:  已读取的请求体数据长度
- *
- * 直接将请求体数据写入文件，无需解析multipart格式。
- * 文件名通过X-Filename请求头指定。
- * 成功或失败后子进程直接_exit退出
- */
 static void do_upload_raw_child(int client_fd, const char *filename, int content_length,
                                 const char *body_read, int body_read_len) {
     xlog_close();
@@ -1528,19 +1578,6 @@ static void do_upload_raw_child(int client_fd, const char *filename, int content
     _exit(0);
 }
 
-/**
- * handle_upload_raw - 处理POST /api/upload请求(原始二进制流上传)
- * @client_fd:      客户端套接字描述符
- * @content_type:   Content-Type请求头值
- * @content_length: Content-Length值
- * @body_read:      已读取的请求体数据
- * @body_read_len:  已读取的请求体数据长度
- * @req_buf:        完整请求缓冲区(用于提取X-Filename头)
- *
- * 文件名通过X-Filename请求头指定，请求体直接作为文件内容。
- * 上传在子进程中执行，避免阻塞主进程。
- * 返回: 1表示上传在子进程中进行(连接暂不关闭)，<=0表示已完成或出错
- */
 static int handle_upload_raw(int client_fd, const char *content_type, int content_length,
                               const char *body_read, int body_read_len, const char *req_buf) {
     if (content_length <= 0) return send_error(client_fd, 400, "Missing Content-Length");
@@ -1552,7 +1589,6 @@ static int handle_upload_raw(int client_fd, const char *content_type, int conten
         return send_error(client_fd, 400, err);
     }
 
-    /* 检查是否有正在进行的上传 */
     pid_t existing = g_upload_pid;
     if (existing > 0) {
         char check[64];
@@ -1560,7 +1596,6 @@ static int handle_upload_raw(int client_fd, const char *content_type, int conten
         if (access(check, F_OK) == 0) return send_error(client_fd, 503, "Upload in progress");
     }
 
-    /* 从X-Filename请求头提取文件名 */
     char filename[256] = "";
     char *xfn = strcasestr(req_buf, "X-Filename:");
     if (xfn) {
@@ -1581,7 +1616,6 @@ static int handle_upload_raw(int client_fd, const char *content_type, int conten
 
     if (pid == 0) {
         prctl(PR_SET_PDEATHSIG, SIGTERM);
-        /* 子进程关闭除客户端连接外的所有文件描述符 */
         for (int fd_i = 3; fd_i < 1024; fd_i++) {
             if (fd_i != client_fd) close(fd_i);
         }
@@ -1593,17 +1627,6 @@ static int handle_upload_raw(int client_fd, const char *content_type, int conten
     return 1;
 }
 
-/**
- * handle_upload - 处理POST /api/files/upload请求(multipart/form-data上传)
- * @client_fd:      客户端套接字描述符
- * @content_type:   Content-Type请求头值(需包含boundary)
- * @content_length: Content-Length值
- * @body_read:      已读取的请求体数据
- * @body_read_len:  已读取的请求体数据长度
- *
- * 解析multipart/form-data格式上传文件，在子进程中执行。
- * 返回: 1表示上传在子进程中进行(连接暂不关闭)，<=0表示已完成或出错
- */
 static int handle_upload(int client_fd, const char *content_type, int content_length,
                         const char *body_read, int body_read_len) {
     if (content_length <= 0) return send_error(client_fd, 400, "Missing Content-Length");
@@ -1615,7 +1638,6 @@ static int handle_upload(int client_fd, const char *content_type, int content_le
         return send_error(client_fd, 400, err);
     }
 
-    /* 检查是否有正在进行的上传 */
     pid_t existing = g_upload_pid;
     if (existing > 0) {
         char check[64];
@@ -1623,7 +1645,6 @@ static int handle_upload(int client_fd, const char *content_type, int content_le
         if (access(check, F_OK) == 0) return send_error(client_fd, 503, "Upload in progress");
     }
 
-    /* 从Content-Type中提取boundary */
     const char *boundary = NULL;
     if (content_type) {
         const char *b = strstr(content_type, "boundary=");
@@ -1656,496 +1677,13 @@ static int handle_upload(int client_fd, const char *content_type, int content_le
     return 1;
 }
 
-/**
- * handle_get_diag - 处理GET /api/diag请求
- *
- * 设备环境自检（诊断）接口，检查xwebd各项功能所依赖的环境是否就绪:
- * 1. HTTP服务 — 服务是否正常运行
- * 2. 文件系统 — XWEBD_BASE_DIR是否可读写
- * 3. 系统信息 — /proc/version和/proc/meminfo是否可读
- * 4. 音量控制 — get_volume()是否可用
- * 5. 亮度控制 — get_brightness()是否可用
- * 6. Assistant状态 — sair二进制文件是否存在
- * 7. 看门狗脚本 — boot_watchdog.sh是否存在
- * 8. 磁盘空间 — /var/upgrade剩余空间是否充足
- */
-static int handle_get_diag(int fd) {
-    char buf[2048];
-    int pos = 0;
-    int ok_count = 0, fail_count = 0;
-    int first = 1;
+/* ===== HTTP请求处理 ===== */
 
-    pos += snprintf(buf + pos, sizeof(buf) - pos, "{\"items\":[");
-
-    /* 1. HTTP服务 — 能调用此API说明服务正常运行 */
-    {
-        if (!first) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
-        first = 0;
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
-            "{\"name\":\"HTTP服务\",\"ok\":true,\"message\":\"HTTP服务运行正常\"}");
-        ok_count++;
-    }
-
-    /* 2. 文件系统 — 检查XWEBD_BASE_DIR是否可读写 */
-    {
-        if (!first) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
-        first = 0;
-        const char *test_path = XWEBD_BASE_DIR "/.diag_test";
-        int fs_ok = 0;
-        const char *fs_msg = "";
-        char err_buf[128] = "";
-        int tfd = open(test_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (tfd >= 0) {
-            const char *test_data = "diag_ok";
-            int wlen = strlen(test_data);
-            if (write(tfd, test_data, wlen) == wlen) {
-                close(tfd);
-                char read_buf[16];
-                int n = read_file_string(test_path, read_buf, sizeof(read_buf));
-                if (n == wlen && memcmp(read_buf, test_data, wlen) == 0) {
-                    fs_ok = 1;
-                    fs_msg = "文件系统读写正常";
-                } else {
-                    snprintf(err_buf, sizeof(err_buf), "文件系统读验证失败");
-                    fs_msg = err_buf;
-                }
-            } else {
-                snprintf(err_buf, sizeof(err_buf), "文件系统写入失败: %s", strerror(errno));
-                fs_msg = err_buf;
-                close(tfd);
-            }
-            unlink(test_path);
-        } else {
-            snprintf(err_buf, sizeof(err_buf), "文件系统读写失败: %s", strerror(errno));
-            fs_msg = err_buf;
-        }
-        if (fs_ok) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "{\"name\":\"文件系统\",\"ok\":true,\"message\":\"%s\"}", fs_msg);
-            ok_count++;
-        } else {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "{\"name\":\"文件系统\",\"ok\":false,\"message\":\"%s\"}", fs_msg);
-            fail_count++;
-        }
-    }
-
-    /* 3. 系统信息 — 检查/proc/version和/proc/meminfo是否可读 */
-    {
-        if (!first) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
-        first = 0;
-        char tmp[64];
-        int v_ok = (read_file_string("/proc/version", tmp, sizeof(tmp)) >= 0);
-        int m_ok = (read_file_string("/proc/meminfo", tmp, sizeof(tmp)) >= 0);
-        if (v_ok && m_ok) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "{\"name\":\"系统信息\",\"ok\":true,\"message\":\"系统信息读取正常\"}");
-            ok_count++;
-        } else {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "{\"name\":\"系统信息\",\"ok\":false,\"message\":\"系统信息读取失败\"}");
-            fail_count++;
-        }
-    }
-
-    /* 4. 音量控制 — 检查get_volume()是否可用 */
-    {
-        if (!first) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
-        first = 0;
-        int vol = get_volume();
-        if (vol >= 0) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "{\"name\":\"音量控制\",\"ok\":true,\"message\":\"音量控制接口正常（当前音量: %d）\"}", vol);
-            ok_count++;
-        } else {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "{\"name\":\"音量控制\",\"ok\":false,\"message\":\"音量控制接口不可用\"}");
-            fail_count++;
-        }
-    }
-
-    /* 5. 亮度控制 — 检查get_brightness()是否可用 */
-    {
-        if (!first) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
-        first = 0;
-        int br = get_brightness();
-        if (br >= 0) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "{\"name\":\"亮度控制\",\"ok\":true,\"message\":\"亮度控制接口正常（当前亮度: %d）\"}", br);
-            ok_count++;
-        } else {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "{\"name\":\"亮度控制\",\"ok\":false,\"message\":\"亮度控制接口不可用\"}");
-            fail_count++;
-        }
-    }
-
-    /* 6. Assistant状态 — 检查sair二进制文件是否存在 */
-    {
-        if (!first) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
-        first = 0;
-        if (access(XWEBD_SAIR_BIN, F_OK) == 0) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "{\"name\":\"Assistant状态\",\"ok\":true,\"message\":\"助手程序已部署\"}");
-            ok_count++;
-        } else {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "{\"name\":\"Assistant状态\",\"ok\":false,\"message\":\"助手程序未部署\"}");
-            fail_count++;
-        }
-    }
-
-    /* 7. 看门狗脚本 — 检查boot_watchdog.sh是否存在 */
-    {
-        if (!first) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
-        first = 0;
-        if (access(XWEBD_WATCHDOG_SH, F_OK) == 0) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "{\"name\":\"看门狗脚本\",\"ok\":true,\"message\":\"看门狗脚本已部署\"}");
-            ok_count++;
-        } else {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "{\"name\":\"看门狗脚本\",\"ok\":false,\"message\":\"看门狗脚本未部署\"}");
-            fail_count++;
-        }
-    }
-
-    /* 8. 磁盘空间 — 检查/var/upgrade剩余空间 */
-    {
-        if (!first) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
-        first = 0;
-        struct statvfs vfs;
-        if (statvfs(XWEBD_BASE_DIR, &vfs) == 0) {
-            long free_kb = (long)((long long)vfs.f_bfree * vfs.f_bsize / 1024);
-            if (free_kb >= 1024) {
-                pos += snprintf(buf + pos, sizeof(buf) - pos,
-                    "{\"name\":\"磁盘空间\",\"ok\":true,\"message\":\"磁盘空间充足（%ldKB可用）\"}", free_kb);
-                ok_count++;
-            } else {
-                pos += snprintf(buf + pos, sizeof(buf) - pos,
-                    "{\"name\":\"磁盘空间\",\"ok\":false,\"message\":\"磁盘空间不足（仅%ldKB可用）\"}", free_kb);
-                fail_count++;
-            }
-        } else {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                "{\"name\":\"磁盘空间\",\"ok\":false,\"message\":\"磁盘空间查询失败\"}");
-            fail_count++;
-        }
-    }
-
-    pos += snprintf(buf + pos, sizeof(buf) - pos,
-        "],\"ok_count\":%d,\"fail_count\":%d,\"total\":8,"
-        "\"summary\":\"%d项正常, %d项异常\"}",
-        ok_count, fail_count, ok_count, fail_count);
-
-    return send_response(fd, 200, "application/json", buf, pos);
-}
-
-/**
- * handle_get_services - 处理GET /api/services请求
- *
- * 查询系统服务状态:
- * - telnet: 是否运行中
- * - boot_watchdog: 看门狗脚本是否已部署
- * - xwebd_autostart: 自启动脚本中是否包含xwebd
- */
-static int handle_get_services(int fd) {
-    char buf[512];
-    int telnet_running = 0;
-    {
-        FILE *pf = popen("pidof telnetd 2>/dev/null", "r");
-        if (pf) { char pbuf[16]; if (fgets(pbuf, sizeof(pbuf), pf)) telnet_running = 1; pclose(pf); }
-    }
-    int watchdog_exists = (access(XWEBD_WATCHDOG_SH, X_OK) == 0);
-    int xwebd_autostart = 0;
-    {
-        char buf2[1024];
-        int n = read_file_string(XWEBD_TEST_SH, buf2, sizeof(buf2));
-        if (n > 0 && strstr(buf2, "xwebd")) xwebd_autostart = 1;
-    }
-
-    int len = snprintf(buf, sizeof(buf),
-        "{\"telnet\":{\"running\":%s},"
-        "\"boot_watchdog\":{\"deployed\":%s},"
-        "\"xwebd_autostart\":{\"enabled\":%s}}",
-        telnet_running ? "true" : "false",
-        watchdog_exists ? "true" : "false",
-        xwebd_autostart ? "true" : "false");
-    return send_response(fd, 200, "application/json", buf, len);
-}
-
-/**
- * handle_post_assistant_deploy - 处理POST /api/assistant/deploy请求
- * @fd:   客户端套接字描述符
- * @body: 请求体JSON，可选"path"字段指定sair_new文件路径
- *
- * 部署助手程序(sair)，支持两种模式:
- * 1. 热更新: sair正在运行时，替换二进制文件后发送SIGUSR2信号通知其重新加载
- * 2. 冷部署: sair未运行时，直接放置二进制文件并设置可执行权限
- *
- * 部署流程:
- * 1. 查找sair_new文件(默认XWEBD_BASE_DIR/sair_new，可通过path参数指定)
- * 2. 备份当前sair为sair_backup
- * 3. 将sair_new重命名为sair
- * 4. 若sair正在运行则发送SIGUSR2信号热更新，否则仅放置文件
- */
-static int handle_post_assistant_deploy(int fd, const char *body) {
-    char sair_new_path[PATH_MAX] = XWEBD_BASE_DIR "/sair_new";
-    if (body && *body) {
-        char path_val[PATH_MAX] = "";
-        if (parse_json_str(body, "path", path_val, sizeof(path_val)) == 0 && path_val[0]) {
-            char resolved[PATH_MAX];
-            if (validate_path(path_val, resolved, sizeof(resolved)) != 0)
-                return send_error(fd, 400, "Invalid path");
-            strncpy(sair_new_path, resolved, sizeof(sair_new_path) - 1);
-        }
-    }
-
-    if (access(sair_new_path, R_OK) != 0)
-        return send_error(fd, 404, "sair_new not found, upload first");
-
-    /* 检查sair(助手程序)是否正在运行 */
-    int sair_running = 0;
-    pid_t sair_pid = 0;
-    {
-        char pbuf[16];
-        FILE *pf = popen("pidof sair 2>/dev/null", "r");
-        if (pf) {
-            if (fgets(pbuf, sizeof(pbuf), pf)) { sair_running = 1; sair_pid = atoi(pbuf); }
-            pclose(pf);
-        }
-    }
-
-    /* 热更新: sair正在运行 */
-    if (sair_running && sair_pid > 0) {
-        if (access(XWEBD_SAIR_BIN, X_OK) == 0) {
-            if (rename(XWEBD_SAIR_BIN, XWEBD_SAIR_BACKUP) != 0)
-                XLOG_W(TAG, "备份助手程序失败: %s", strerror(errno));
-        }
-        if (rename(sair_new_path, XWEBD_SAIR_BIN) != 0)
-            return send_error(fd, 500, "Failed to rename sair_new to sair");
-        XLOG_I(TAG, "助手部署: 发送SIGUSR2信号到pid %d进行热更新", sair_pid);
-        kill(sair_pid, SIGUSR2);
-        return send_json(fd, 200, "{\"ok\":true,\"method\":\"hot_update\",\"pid\":0}");
-    }
-
-    /* 冷部署: sair未运行 */
-    if (access(XWEBD_SAIR_BIN, X_OK) == 0) {
-        if (rename(XWEBD_SAIR_BIN, XWEBD_SAIR_BACKUP) != 0)
-            XLOG_W(TAG, "备份助手程序失败: %s", strerror(errno));
-    }
-    if (rename(sair_new_path, XWEBD_SAIR_BIN) != 0)
-        return send_error(fd, 500, "Failed to rename sair_new to sair");
-
-    chmod(XWEBD_SAIR_BIN, 0755);
-
-    XLOG_I(TAG, "助手部署: sair未运行, 二进制文件已放置到 %s", XWEBD_SAIR_BIN);
-    return send_json(fd, 200, "{\"ok\":true,\"method\":\"cold_deploy\"}");
-}
-
-/**
- * handle_post_assistant_update - 处理POST /api/assistant/update请求
- * @fd:   客户端套接字描述符
- * @body: 请求体JSON
- *
- * 助手程序更新接口，实际逻辑与部署接口相同
- */
-static int handle_post_assistant_update(int fd, const char *body) {
-    return handle_post_assistant_deploy(fd, body);
-}
-
-/**
- * handle_post_assistant_uninstall - 处理POST /api/assistant/uninstall请求
- *
- * 卸载助手程序(sair):
- * 1. 若sair正在运行，先尝试正常终止，再强制终止
- * 2. 删除sair二进制文件
- * 3. 删除sair_backup备份文件
- */
-static int handle_post_assistant_uninstall(int fd) {
-    int sair_running = 0;
-    {
-        char pbuf[16];
-        FILE *pf = popen("pidof sair 2>/dev/null", "r");
-        if (pf) {
-            if (fgets(pbuf, sizeof(pbuf), pf)) sair_running = 1;
-            pclose(pf);
-        }
-    }
-
-    /* 先尝试正常终止sair进程，失败则强制终止 */
-    if (sair_running) {
-        XLOG_I(TAG, "助手卸载: 正在停止sair...");
-        system("killall sair 2>/dev/null");
-        usleep(500000);
-        system("killall -9 sair 2>/dev/null");
-        usleep(500000);
-    }
-
-    /* 删除sair二进制文件 */
-    if (access(XWEBD_SAIR_BIN, F_OK) == 0) {
-        if (unlink(XWEBD_SAIR_BIN) != 0)
-            return send_error(fd, 500, "Failed to remove sair");
-        XLOG_I(TAG, "助手卸载: 已删除 %s", XWEBD_SAIR_BIN);
-    }
-
-    /* 删除sair备份文件 */
-    if (access(XWEBD_SAIR_BACKUP, F_OK) == 0) {
-        unlink(XWEBD_SAIR_BACKUP);
-        XLOG_I(TAG, "助手卸载: 已删除 %s", XWEBD_SAIR_BACKUP);
-    }
-
-    return send_json(fd, 200, "{\"ok\":true}");
-}
-
-/**
- * handle_get_assistant_status - 处理GET /api/assistant/status请求
- *
- * 查询助手程序(sair)状态:
- * - installed: 是否已安装(sair二进制文件是否存在且可执行)
- * - running: 是否正在运行(通过pidof检测)
- * - pid: 运行时的进程ID
- * - native_backup_exists: 备份文件是否存在
- * - version: 运行时通过API获取的版本号
- */
-static int handle_get_assistant_status(int fd) {
-    int installed = (access(XWEBD_SAIR_BIN, X_OK) == 0);
-    int running = 0;
-    int pid = 0;
-    int backup_exists = (access(XWEBD_SAIR_BACKUP, F_OK) == 0);
-    char version[32] = "";
-    char state[32] = "";
-
-    if (installed) {
-        char cmd[64];
-        snprintf(cmd, sizeof(cmd), "pidof sair 2>/dev/null");
-        FILE *pf = popen(cmd, "r");
-        if (pf) {
-            char pbuf[16];
-            if (fgets(pbuf, sizeof(pbuf), pf)) { running = 1; pid = atoi(pbuf); }
-            pclose(pf);
-        }
-
-        if (running) {
-            char state_buf[256] = "";
-            int sfd = open("/tmp/sair_state.json", O_RDONLY);
-            if (sfd >= 0) {
-                int n = read(sfd, state_buf, sizeof(state_buf) - 1);
-                close(sfd);
-                if (n > 0) {
-                    state_buf[n] = '\0';
-                    parse_json_str(state_buf, "state", state, sizeof(state));
-                    parse_json_str(state_buf, "version", version, sizeof(version));
-                }
-            }
-        }
-    }
-
-    char buf[512];
-    snprintf(buf, sizeof(buf),
-        "{\"installed\":%s,\"running\":%s,\"pid\":%d,\"native_backup_exists\":%s,\"state\":\"%s\",\"version\":\"%s\"}",
-        installed ? "true" : "false", running ? "true" : "false", pid,
-        backup_exists ? "true" : "false", state, version);
-    return send_json(fd, 200, buf);
-}
-
-/**
- * handle_get_assistant_logs - 处理GET /api/assistant/logs请求
- * @fd:    客户端套接字描述符
- * @query: URL查询字符串，支持"lines"参数(默认50, 最大500)
- *
- * 从sair日志文件尾部读取指定行数的日志
- */
-static int handle_get_assistant_logs(int fd, const char *query) {
-    int lines = 50;
-    if (query) {
-        char *p = strstr(query, "lines=");
-        if (p) lines = atoi(p + 6);
-        if (lines <= 0) lines = 50;
-        if (lines > 500) lines = 500;
-    }
-
-    char buf[XWEBD_RESP_BUF_SIZE];
-    int fd_log = open(XWEBD_SAIR_LOG, O_RDONLY);
-    if (fd_log < 0) return send_json(fd, 200, "{\"logs\":\"\"}");
-
-    /* 从文件末尾向前搜索换行符，定位到指定行数的起始位置 */
-    off_t file_size = lseek(fd_log, 0, SEEK_END);
-    int line_count = 0;
-    off_t pos = file_size;
-    char rbuf[1024];
-
-    while (pos > 0 && line_count < lines) {
-        int chunk = (pos < (off_t)sizeof(rbuf)) ? (int)pos : (int)sizeof(rbuf);
-        pos -= chunk;
-        lseek(fd_log, pos, SEEK_SET);
-        ssize_t n = read(fd_log, rbuf, chunk);
-        if (n <= 0) break;
-        for (ssize_t i = n - 1; i >= 0; i--) {
-            if (rbuf[i] == '\n') { line_count++; if (line_count >= lines) { pos += i + 1; break; } }
-        }
-    }
-    if (pos < 0) pos = 0;
-    lseek(fd_log, pos, SEEK_SET);
-
-    /* 读取定位位置到文件末尾的内容 */
-    int total = 0;
-    while (total < (int)sizeof(buf) - 1) {
-        ssize_t n = read(fd_log, buf + total, (int)sizeof(buf) - 1 - total);
-        if (n <= 0) break;
-        total += n;
-    }
-    close(fd_log);
-    buf[total] = '\0';
-
-    /* 将日志内容转义为JSON字符串 */
-    char resp[XWEBD_RESP_BUF_SIZE + 64];
-    int rlen = snprintf(resp, sizeof(resp), "{\"logs\":");
-    resp[rlen++] = '"';
-    for (int i = 0; i < total && rlen < (int)sizeof(resp) - 4; i++) {
-        if (buf[i] == '"') { resp[rlen++] = '\\'; resp[rlen++] = '"'; }
-        else if (buf[i] == '\n') { resp[rlen++] = '\\'; resp[rlen++] = 'n'; }
-        else if (buf[i] == '\r') { }
-        else if (buf[i] == '\\') { resp[rlen++] = '\\'; resp[rlen++] = '\\'; }
-        else { resp[rlen++] = buf[i]; }
-    }
-    resp[rlen++] = '"';
-    resp[rlen++] = '}';
-    resp[rlen] = '\0';
-
-    return send_response(fd, 200, "application/json", resp, rlen);
-}
-
-/**
- * handle_post_assistant_logs_clear - 处理POST /api/assistant/logs/clear请求
- *
- * 清空sair日志文件内容(截断为0字节)
- */
-static int handle_post_assistant_logs_clear(int fd) {
-    if (truncate(XWEBD_SAIR_LOG, 0) == 0)
-        return send_json(fd, 200, "{\"ok\":true}");
-    return send_error(fd, 500, "Failed to clear log file");
-}
-
-/**
- * handle_request - 处理单个HTTP请求
- * @client_fd: 客户端套接字描述符
- *
- * 完整的HTTP请求处理流程:
- * 1. 读取请求头(直到\r\n\r\n)
- * 2. 解析HTTP方法、路径、查询参数
- * 3. 读取请求体(根据Content-Length)
- * 4. 回收已结束的上传子进程
- * 5. 根据方法和路径分发到对应的处理函数
- *
- * 返回: 1表示上传在子进程中进行(连接暂不关闭)，0表示正常完成，-1表示错误
- */
 static int handle_request(int client_fd) {
     char req_buf[XWEBD_REQ_BUF_SIZE];
     int total = 0;
     time_t start_time = time(NULL);
 
-    /* 读取HTTP请求头 */
     while (total < XWEBD_REQ_BUF_SIZE - 1) {
         if (time(NULL) - start_time >= XWEBD_REQUEST_TIMEOUT) return -1;
         struct pollfd pfd = {client_fd, POLLIN, 0};
@@ -2161,7 +1699,6 @@ static int handle_request(int client_fd) {
 
     if (total == 0) return -1;
 
-    /* 解析HTTP方法、路径和查询参数 */
     char method[16] = {0};
     char path[512] = {0};
     sscanf(req_buf, "%15s %511s", method, path);
@@ -2169,7 +1706,6 @@ static int handle_request(int client_fd) {
     char *query = strchr(path, '?');
     if (query) *query++ = '\0';
 
-    /* 定位请求体起始位置 */
     char *body_start = strstr(req_buf, "\r\n\r\n");
     int header_len = 0;
     if (body_start) {
@@ -2177,14 +1713,12 @@ static int handle_request(int client_fd) {
         body_start += 4;
     }
 
-    /* 解析Content-Length */
     int content_length = 0;
     {
         char *cl = strcasestr(req_buf, "Content-Length:");
         if (cl) content_length = atoi(cl + 15);
     }
 
-    /* 继续读取请求体数据 */
     int body_received = total - header_len;
     if (body_received < 0) body_received = 0;
 
@@ -2204,7 +1738,6 @@ static int handle_request(int client_fd) {
     const char *body = body_start;
     if (body_received <= 0 || content_length == 0) body = NULL;
 
-    /* 解析Content-Type */
     char content_type[256] = "";
     {
         char *ct = strcasestr(req_buf, "Content-Type:");
@@ -2220,7 +1753,6 @@ static int handle_request(int client_fd) {
 
     XLOG_D(TAG, "%s %s", method, path);
 
-    /* 回收已结束的上传子进程 */
     {
         pid_t wp;
         while ((wp = waitpid(-1, NULL, WNOHANG)) > 0) {
@@ -2228,70 +1760,29 @@ static int handle_request(int client_fd) {
         }
     }
 
-    /* GET请求路由 */
-    if (strcmp(method, "GET") == 0) {
-        if (strcmp(path, "/api/ping") == 0) return handle_get_ping(client_fd);
-        if (strcmp(path, "/api/version") == 0) return handle_get_version(client_fd);
-        if (strcmp(path, "/api/config") == 0) return handle_get_config(client_fd);
-        if (strcmp(path, "/api/system") == 0) return handle_get_system(client_fd);
-        if (strcmp(path, "/api/logs") == 0) return handle_get_logs(client_fd, query);
-        if (strcmp(path, "/api/volume") == 0) return handle_get_volume(client_fd);
-        if (strcmp(path, "/api/brightness") == 0) return handle_get_brightness(client_fd);
-        if (strcmp(path, "/api/mute") == 0) {
-            int m = get_mute();
-            char buf[32];
-            snprintf(buf, sizeof(buf), "{\"muted\":%s}", m < 0 ? "null" : (m ? "true" : "false"));
-            return send_json(client_fd, 200, buf);
-        }
-        if (strcmp(path, "/api/services") == 0) return handle_get_services(client_fd);
-        if (strcmp(path, "/api/diag") == 0) return handle_get_diag(client_fd);
-        if (strcmp(path, "/api/assistant/status") == 0) return handle_get_assistant_status(client_fd);
-        if (strcmp(path, "/api/assistant/logs") == 0) return handle_get_assistant_logs(client_fd, query);
-        if (strcmp(path, "/api/files") == 0) return handle_get_files(client_fd, query);
-        if (strcmp(path, "/api/files/download") == 0) return handle_download_file(client_fd, query);
-    } else if (strcmp(method, "POST") == 0) {
-        /* POST请求路由 */
-        if (strcmp(path, "/api/volume") == 0) return handle_post_volume(client_fd, body);
-        if (strcmp(path, "/api/brightness") == 0) return handle_post_brightness(client_fd, body);
-        if (strcmp(path, "/api/mute") == 0) {
-            int muted = 0;
-            if (body) parse_json_int(body, "muted", &muted);
-            int ret = set_mute(muted);
-            if (ret != 0) return send_error(client_fd, 500, "Failed to set mute");
-            char buf[32];
-            snprintf(buf, sizeof(buf), "{\"muted\":%s}", muted ? "true" : "false");
-            return send_json(client_fd, 200, buf);
-        }
-        if (strcmp(path, "/api/poweroff") == 0) return handle_post_poweroff(client_fd);
-        if (strcmp(path, "/api/reboot") == 0) return handle_post_reboot(client_fd);
-        if (strcmp(path, "/api/files/upload") == 0) return handle_upload(client_fd, content_type, content_length, body, body_received);
-        if (strcmp(path, "/api/upload") == 0) return handle_upload_raw(client_fd, content_type, content_length, body, body_received, req_buf);
-        if (strcmp(path, "/api/files/batch-delete") == 0) return handle_batch_delete(client_fd, body);
-        if (strcmp(path, "/api/files/cleanup") == 0) return handle_cleanup(client_fd);
-        if (strcmp(path, "/api/assistant/deploy") == 0) return handle_post_assistant_deploy(client_fd, body);
-        if (strcmp(path, "/api/assistant/update") == 0) return handle_post_assistant_update(client_fd, body);
-        if (strcmp(path, "/api/assistant/uninstall") == 0) return handle_post_assistant_uninstall(client_fd);
-        if (strcmp(path, "/api/assistant/logs/clear") == 0) return handle_post_assistant_logs_clear(client_fd);
-    } else if (strcmp(method, "PUT") == 0) {
-        /* PUT请求路由 */
-        if (strcmp(path, "/api/config") == 0) return handle_put_config(client_fd, body);
-    } else if (strcmp(method, "DELETE") == 0) {
-        /* DELETE请求路由 */
-        if (strcmp(path, "/api/files") == 0 || strcmp(path, "/api/files/download") == 0)
-            return handle_delete_file(client_fd, query);
-    } else if (strcmp(method, "OPTIONS") == 0) {
-        /* CORS预检请求 */
-        return send_json(client_fd, 200, "{}");
+    /* 上传路由(特殊处理，需要额外参数) */
+    if (strcmp(method, "POST") == 0) {
+        if (strcmp(path, "/api/files/upload") == 0)
+            return handle_upload(client_fd, content_type, content_length, body, body_received);
+        if (strcmp(path, "/api/upload") == 0)
+            return handle_upload_raw(client_fd, content_type, content_length, body, body_received, req_buf);
     }
+
+    /* 路由表查找 */
+    for (int i = 0; g_routes[i].handler; i++) {
+        if (strcmp(method, g_routes[i].method) == 0 && strcmp(path, g_routes[i].path) == 0)
+            return g_routes[i].handler(client_fd, body, query);
+    }
+
+    /* CORS预检 */
+    if (strcmp(method, "OPTIONS") == 0)
+        return send_json(client_fd, 200, "{}");
 
     return send_error(client_fd, 404, "Not found");
 }
 
-/**
- * cleanup_startup_residuals - 清理启动残留文件
- *
- * 删除test.sh.new临时文件（自启动脚本更新过程中的残留）
- */
+/* ===== 工作进程与看门狗 ===== */
+
 static void cleanup_startup_residuals(void) {
     if (access(XWEBD_TEST_SH_NEW, F_OK) == 0) {
         XLOG_I(TAG, "清理残留文件 %s", XWEBD_TEST_SH_NEW);
@@ -2299,29 +1790,12 @@ static void cleanup_startup_residuals(void) {
     }
 }
 
-/**
- * signal_handler - 信号处理函数
- * @sig: 接收到的信号编号
- *
- * 收到SIGTERM信号时设置g_running=0，使工作循环退出
- */
 static void signal_handler(int sig) {
     if (sig == SIGTERM) {
         g_running = 0;
     }
 }
 
-/**
- * worker_loop - 工作进程主循环
- *
- * 工作进程的完整生命周期:
- * 1. 初始化日志系统
- * 2. 创建TCP服务器套接字并绑定端口
- * 3. 循环接受客户端连接并处理请求
- * 4. 收到SIGTERM时优雅退出，等待上传子进程结束
- *
- * 退出码: 0=正常退出, 2=不可恢复错误(端口占用等)
- */
 static void worker_loop(void) {
     prctl(PR_SET_PDEATHSIG, SIGTERM);
 
@@ -2361,7 +1835,6 @@ static void worker_loop(void) {
     XLOG_I(TAG, "xwebd正在监听端口 %d", g_port);
 
     while (g_running) {
-        /* 回收已结束的子进程 */
         while (waitpid(-1, NULL, WNOHANG) > 0) {}
 
         struct pollfd pfd = {g_server_fd, POLLIN, 0};
@@ -2373,7 +1846,6 @@ static void worker_loop(void) {
         int client_fd = accept(g_server_fd, (struct sockaddr *)&client_addr, &addr_len);
         if (client_fd < 0) continue;
 
-        /* 设置客户端连接超时 */
         struct timeval tv = {XWEBD_REQUEST_TIMEOUT, 0};
         setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -2382,7 +1854,6 @@ static void worker_loop(void) {
         if (ret != 1) close(client_fd);
     }
 
-    /* 优雅退出: 等待上传子进程结束 */
     if (g_upload_pid > 0) {
         XLOG_I(TAG, "等待上传子进程结束 (pid=%d)...", g_upload_pid);
         int waited = 0;
@@ -2399,30 +1870,12 @@ static void worker_loop(void) {
     XLOG_I(TAG, "xwebd工作进程正常退出");
 }
 
-/**
- * print_usage - 打印命令行用法
- * @prog: 程序名称
- */
 static void print_usage(const char *prog) {
     fprintf(stderr, "用法: %s [-p 端口] [-d]\n", prog);
     fprintf(stderr, "  -p 端口   监听端口 (默认 %d)\n", XWEBD_DEFAULT_PORT);
     fprintf(stderr, "  -d        以守护进程模式运行\n");
 }
 
-/**
- * main - 程序入口
- *
- * 主进程作为看门狗运行:
- * 1. 解析命令行参数(-p端口, -d守护进程)
- * 2. 若指定-d则以守护进程模式运行
- * 3. 设置信号处理(SIGTERM, SIGINT, SIGPIPE)
- * 4. fork出工作进程运行HTTP服务器
- * 5. 监控工作进程:
- *    - 正常退出(退出码0): 看门狗也退出
- *    - 不可恢复错误(退出码2): 不重启，看门狗退出
- *    - 崩溃/被信号终止: 自动重启工作进程
- *    - 在时间窗口内崩溃次数超过限制: 放弃重启
- */
 int main(int argc, char *argv[]) {
     int opt;
     while ((opt = getopt(argc, argv, "p:d")) != -1) {
@@ -2433,7 +1886,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* 守护进程模式: fork后父进程退出，子进程脱离终端 */
     if (g_daemon) {
         pid_t pid = fork();
         if (pid < 0) return 1;
@@ -2445,7 +1897,6 @@ int main(int argc, char *argv[]) {
         open("/dev/null", O_WRONLY);
     }
 
-    /* 设置信号处理 */
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signal_handler;
@@ -2453,7 +1904,6 @@ int main(int argc, char *argv[]) {
     sigaction(SIGINT, &sa, NULL);
     signal(SIGPIPE, SIG_IGN);
 
-    /* fork工作进程 */
     pid_t worker_pid = fork();
     if (worker_pid < 0) {
         XLOG_E(TAG, "fork失败: %s", strerror(errno));
@@ -2468,7 +1918,6 @@ int main(int argc, char *argv[]) {
     xlog_init(NULL);
     XLOG_I(TAG, "xwebd看门狗已启动, 工作进程pid=%d", worker_pid);
 
-    /* 看门狗主循环: 监控工作进程状态 */
     while (1) {
         int status;
         pid_t ret = waitpid(worker_pid, &status, 0);
@@ -2480,25 +1929,20 @@ int main(int argc, char *argv[]) {
         if (WIFEXITED(status)) {
             int exit_code = WEXITSTATUS(status);
             if (exit_code == 0) {
-                /* 工作进程正常退出 */
                 XLOG_I(TAG, "工作进程正常退出, 看门狗退出");
                 break;
             } else if (exit_code == 2) {
-                /* 不可恢复错误(如端口占用)，不再重启 */
                 XLOG_E(TAG, "工作进程遇到不可恢复错误退出 (代码 %d), 不再重启", exit_code);
                 break;
             } else {
-                /* 其他退出码，视为崩溃 */
                 XLOG_W(TAG, "工作进程崩溃 (代码 %d)", exit_code);
             }
         } else if (WIFSIGNALED(status)) {
-            /* 被信号终止 */
             XLOG_W(TAG, "工作进程被信号 %d 终止", WTERMSIG(status));
         } else {
             break;
         }
 
-        /* 崩溃频率统计: 在时间窗口内崩溃次数超过限制则放弃 */
         time_t now = time(NULL);
         if (g_watchdog_crash_start == 0 || now - g_watchdog_crash_start > XWEBD_WATCHDOG_CRASH_WINDOW) {
             g_watchdog_crash_count = 1;

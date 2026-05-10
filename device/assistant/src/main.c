@@ -104,6 +104,18 @@ static uint64_t get_time_ms(void) {
     return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+static void json_extract_str(const char *json, size_t len, const char *field, char *out, int out_size) {
+    out[0] = '\0';
+    int field_len = strlen(field);
+    const char *p = memmem(json, len, field, field_len);
+    if (!p) return;
+    p += field_len;
+    while (p < json + len && (*p == ' ' || *p == ':' || *p == '\t' || *p == '"')) p++;
+    int i = 0;
+    while (p < json + len && *p != '"' && i < out_size - 1) out[i++] = *p++;
+    out[i] = '\0';
+}
+
 static void proc_srv_msg(void* req_header_ptr, int* resp_result);
 static void proc_sys_msg(void* msg_ptr);
 static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void* user_data);
@@ -274,11 +286,53 @@ static int setup_signals(void) {
     return 0;
 }
 
-/**
- * @brief 设置实时调度策略和优先级
- *        使用SCHED_RR轮转调度，优先级10
- * @return 0成功，-1失败
- */
+static void re_register_signals(void) {
+    struct sigaction sa_cur;
+    sigaction(SIGUSR1, NULL, &sa_cur);
+    PLOG_I("INIT", "applib_init 后 SIGUSR1: handler=%p flags=0x%x",
+           (void*)sa_cur.sa_handler, sa_cur.sa_flags);
+
+    if (sa_cur.sa_flags & SA_RESTART) {
+        PLOG_W("INIT", "applib 设置了 SA_RESTART! 重新注册不带 SA_RESTART");
+    }
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sigemptyset(&sa.sa_mask);
+    sa.sa_handler = sigusr1_handler;
+    sa.sa_flags = 0;
+    sigaction(SIGUSR1, &sa, &g_old_sigusr1_sa);
+    PLOG_I("INIT", "SIGUSR1 已重新注册 (无SA_RESTART), 旧处理器=%p flags=0x%x",
+           (void*)g_old_sigusr1_sa.sa_handler, g_old_sigusr1_sa.sa_flags);
+
+    memset(&sa, 0, sizeof(sa));
+    sigemptyset(&sa.sa_mask);
+
+    sa.sa_handler = signal_handler;
+    sa.sa_flags = 0;
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGPIPE, &sa, NULL);
+    sigaction(SIGUSR2, &sa, NULL);
+
+    {
+        sigset_t unblock_set;
+        sigemptyset(&unblock_set);
+        sigaddset(&unblock_set, SIGUSR2);
+        sigprocmask(SIG_UNBLOCK, &unblock_set, NULL);
+    }
+
+    sa.sa_sigaction = crash_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGILL, &sa, NULL);
+    sigaction(SIGFPE, &sa, NULL);
+
+    PLOG_I("INIT", "applib_init 后重新注册信号处理器");
+}
+
 static int set_sched_priority(void) {
     struct sched_param param;
     param.sched_priority = 10;
@@ -577,25 +631,14 @@ static void on_proto_json(const char *json, size_t len, void *user_data) {
     app_context_t *app = (app_context_t *)user_data;
     if (!app || !json) return;
 
-    /* 从JSON中提取type字段 */
     char type_str[64] = {0};
-    const char *p = memmem(json, len, "\"type\"", 6);
-    if (p) {
-        p += 6;
-        while (p < json + len && (*p == ' ' || *p == ':' || *p == '\t' || *p == '"')) p++;
-        int i = 0;
-        while (p < json + len && *p != '"' && i < sizeof(type_str) - 1) {
-            type_str[i++] = *p++;
-        }
-    }
+    json_extract_str(json, len, "\"type\"", type_str, sizeof(type_str));
 
     if (strcmp(type_str, "hello") == 0) {
-        /* 服务端hello消息：会话建立成功，初始化播放器和录音发送模块 */
         PLOG_I("PROTO", "收到服务端hello, session=%s sr=%d",
                app->proto.session_id, app->proto.server_sample_rate);
 
         if (app->player_initialized) {
-            /* 采样率变化时重建解码器 */
             if (app->player.sample_rate != app->proto.server_sample_rate) {
                 PLOG_I("PROTO", "采样率变化: %d -> %d, 重建解码器",
                        app->player.sample_rate, app->proto.server_sample_rate);
@@ -624,17 +667,8 @@ static void on_proto_json(const char *json, size_t len, void *user_data) {
 
         state_machine_transition(&app->sm, kStateListening);
     } else if (strcmp(type_str, "tts") == 0) {
-        /* TTS语音合成消息：处理start/stop状态 */
         char state_str[32] = {0};
-        const char *sp = memmem(json, len, "\"state\"", 7);
-        if (sp) {
-            sp += 7;
-            while (sp < json + len && (*sp == ' ' || *sp == ':' || *sp == '\t' || *sp == '"')) sp++;
-            int i = 0;
-            while (sp < json + len && *sp != '"' && i < sizeof(state_str) - 1) {
-                state_str[i++] = *sp++;
-            }
-        }
+        json_extract_str(json, len, "\"state\"", state_str, sizeof(state_str));
 
         if (strcmp(state_str, "start") == 0) {
             PLOG_I("PROTO", "TTS 开始");
@@ -664,33 +698,14 @@ static void on_proto_json(const char *json, size_t len, void *user_data) {
             }
         }
     } else if (strcmp(type_str, "stt") == 0) {
-        /* 语音识别中间结果 */
         char state_str[32] = {0};
-        const char *sp = memmem(json, len, "\"state\"", 7);
-        if (sp) {
-            sp += 7;
-            while (sp < json + len && (*sp == ' ' || *sp == ':' || *sp == '\t' || *sp == '"')) sp++;
-            int i = 0;
-            while (sp < json + len && *sp != '"' && i < sizeof(state_str) - 1) {
-                state_str[i++] = *sp++;
-            }
-        }
+        json_extract_str(json, len, "\"state\"", state_str, sizeof(state_str));
         PLOG_I("PROTO", "STT %s", state_str);
     } else if (strcmp(type_str, "llm") == 0) {
-        /* LLM大模型消息：提取情感表情并广播给系统 */
         char emotion_str[64] = {0};
-        const char *ep = memmem(json, len, "\"emotion\"", 9);
-        if (ep) {
-            ep += 9;
-            while (ep < json + len && (*ep == ' ' || *ep == ':' || *ep == '\t' || *ep == '"')) ep++;
-            int ei = 0;
-            while (ep < json + len && *ep != '"' && ei < sizeof(emotion_str) - 1) {
-                emotion_str[ei++] = *ep++;
-            }
-        }
+        json_extract_str(json, len, "\"emotion\"", emotion_str, sizeof(emotion_str));
         if (emotion_str[0]) {
             PLOG_I("PROTO", "表情: %s", emotion_str);
-            /* 情感名称到ID的映射表 */
             static const struct {
                 const char *name;
                 int id;
@@ -713,17 +728,14 @@ static void on_proto_json(const char *json, size_t len, void *user_data) {
                 emotion_id = 0;
                 PLOG_D("PROTO", "未知表情 '%s', 使用默认值", emotion_str);
             }
-            /* MSG_SAIR_EMOTION: 平台SDK定义的IPC消息ID - 表情通知 */
             int msg[4] = {MSG_SAIR_EMOTION, emotion_id, 0, 0};
             int ret = broadcast_msg(msg);
             PLOG_I("IPC", "广播 MSG_SAIR_EMOTION id=%d ret=%d", emotion_id, ret);
         }
     } else if (strcmp(type_str, "goodbye") == 0) {
-        /* 服务端主动结束会话 */
         PLOG_I("PROTO", "收到 goodbye");
         state_machine_transition(&app->sm, kStateCleaning);
     } else if (strcmp(type_str, "mcp") == 0 || strcmp(type_str, "iot") == 0) {
-        /* MCP/IoT设备控制消息 */
         if (app->mcp_initialized) {
             mcp_handler_process_message(&app->mcp, json, len);
         } else {
@@ -1065,10 +1077,45 @@ static void proc_srv_msg(void* req_header_ptr, int* resp_result) {
  * @param to 目标状态
  * @param user_data 用户数据，传入app_context_t指针
  */
+static void do_session_cleanup(app_context_t* app, uint64_t now) {
+    uint64_t prev_state_enter_time_ms = app->state_enter_time_ms;
+    uint64_t cleanup_elapsed_ms = now - prev_state_enter_time_ms;
+    PLOG_I("CLEANUP", "清理耗时 %llums", (unsigned long long)cleanup_elapsed_ms);
+
+    app->last_cleaning_end_time_ms = now;
+    app->in_session = 0;
+
+    if (app->proto_initialized) {
+        if (protocol_handler_is_connected(&app->proto)) {
+            protocol_handler_disconnect(&app->proto);
+        }
+        uint64_t step_ms = get_time_ms();
+        protocol_handler_destroy(&app->proto);
+        app->proto_initialized = 0;
+        PLOG_D("CLEANUP", "协议销毁: %llums", (unsigned long long)(get_time_ms() - step_ms));
+    }
+    if (app->player_initialized) {
+        audio_player_stop(&app->player);
+        uint64_t step_ms = get_time_ms();
+        audio_player_destroy(&app->player);
+        app->player_initialized = 0;
+        PLOG_D("CLEANUP", "播放器销毁: %llums", (unsigned long long)(get_time_ms() - step_ms));
+    }
+    if (app->recorder_initialized) {
+        audio_recorder_module_stop_sending(&app->recorder_mod);
+        uint64_t step_ms = get_time_ms();
+        audio_recorder_module_destroy(&app->recorder_mod);
+        app->recorder_initialized = 0;
+        PLOG_D("CLEANUP", "录音模块销毁: %llums", (unsigned long long)(get_time_ms() - step_ms));
+    }
+
+    uint64_t total_ms = get_time_ms() - now;
+    PLOG_I("CLEANUP", "总清理耗时: %llums (目标 < 200ms)", (unsigned long long)total_ms);
+}
+
 static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void* user_data) {
     app_context_t* app = (app_context_t*)user_data;
 
-    uint64_t prev_state_enter_time_ms = app->state_enter_time_ms;
     app->state_enter_time_ms = get_time_ms();
     uint64_t now = app->state_enter_time_ms;
 
@@ -1085,44 +1132,8 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void* use
         PLOG_I("STATE", "Idle: 等待唤醒");
         watchdog_set_timeout(&app->watchdog, WD_TIMEOUT_IDLE);
         if (from == kStateCleaning) {
-            /* 从Cleaning进入Idle：清理上一次会话的所有资源 */
-            uint64_t cleanup_elapsed_ms = now - prev_state_enter_time_ms;
-            PLOG_I("CLEANUP", "清理耗时 %llums", (unsigned long long)cleanup_elapsed_ms);
-
-            app->last_cleaning_end_time_ms = now;
-            app->in_session = 0;
-
-            /* 销毁协议处理器 */
-            if (app->proto_initialized) {
-                if (protocol_handler_is_connected(&app->proto)) {
-                    protocol_handler_disconnect(&app->proto);
-                }
-                uint64_t step_ms = get_time_ms();
-                protocol_handler_destroy(&app->proto);
-                app->proto_initialized = 0;
-                PLOG_D("CLEANUP", "协议销毁: %llums", (unsigned long long)(get_time_ms() - step_ms));
-            }
-            /* 销毁音频播放器 */
-            if (app->player_initialized) {
-                audio_player_stop(&app->player);
-                uint64_t step_ms = get_time_ms();
-                audio_player_destroy(&app->player);
-                app->player_initialized = 0;
-                PLOG_D("CLEANUP", "播放器销毁: %llums", (unsigned long long)(get_time_ms() - step_ms));
-            }
-            /* 销毁录音发送模块 */
-            if (app->recorder_initialized) {
-                audio_recorder_module_stop_sending(&app->recorder_mod);
-                uint64_t step_ms = get_time_ms();
-                audio_recorder_module_destroy(&app->recorder_mod);
-                app->recorder_initialized = 0;
-                PLOG_D("CLEANUP", "录音模块销毁: %llums", (unsigned long long)(get_time_ms() - step_ms));
-            }
-
-            uint64_t total_ms = get_time_ms() - now;
-            PLOG_I("CLEANUP", "总清理耗时: %llums (目标 < 200ms)", (unsigned long long)total_ms);
+            do_session_cleanup(app, now);
         }
-        /* 恢复唤醒词检测 */
         app->wakeup_cooldown_done = 0;
         if (app->wakeup.started && !wakeup_is_feed_active(&app->wakeup)) {
             wakeup_resume_feed(&app->wakeup);
@@ -1397,50 +1408,20 @@ static void process_pending_wakeup(app_context_t* app) {
  *        在Speaking/Listening/Connecting状态下终止当前会话
  * @param app 应用上下文指针
  */
-static void process_pending_key_exit(app_context_t* app) {
-    if (!app->pending_key_exit) return;
-    app->pending_key_exit = 0;
+static void process_pending_key(app_context_t* app, volatile sig_atomic_t *flag,
+                                const char *key_name, const char *abort_reason) {
+    if (!*flag) return;
+    *flag = 0;
 
     xiaozhi_state_t state = state_machine_get_state(&app->sm);
-    PLOG_I("KEY", "BACK键退出, 当前状态 %s", state_machine_get_state_name(state));
+    PLOG_I("KEY", "%s, 当前状态 %s", key_name, state_machine_get_state_name(state));
 
     switch (state) {
     case kStateSpeaking:
         app->player.aborted = true;
         audio_player_stop(&app->player);
         if (protocol_handler_is_connected(&app->proto)) {
-            protocol_handler_send_abort(&app->proto, "user_key_exit");
-            protocol_handler_clear_send_queue(&app->proto);
-        }
-        state_machine_transition(&app->sm, kStateCleaning);
-        break;
-    case kStateConnecting:
-    case kStateListening:
-        state_machine_transition(&app->sm, kStateCleaning);
-        break;
-    default:
-        break;
-    }
-}
-
-/**
- * @brief 处理挂起的Home键事件
- *        行为与返回键退出类似，终止当前会话
- * @param app 应用上下文指针
- */
-static void process_pending_key_home(app_context_t* app) {
-    if (!app->pending_key_home) return;
-    app->pending_key_home = 0;
-
-    xiaozhi_state_t state = state_machine_get_state(&app->sm);
-    PLOG_I("KEY", "HOME键, 当前状态 %s", state_machine_get_state_name(state));
-
-    switch (state) {
-    case kStateSpeaking:
-        app->player.aborted = true;
-        audio_player_stop(&app->player);
-        if (protocol_handler_is_connected(&app->proto)) {
-            protocol_handler_send_abort(&app->proto, "user_key_home");
+            protocol_handler_send_abort(&app->proto, abort_reason);
             protocol_handler_clear_send_queue(&app->proto);
         }
         state_machine_transition(&app->sm, kStateCleaning);
@@ -1458,6 +1439,56 @@ static void process_pending_key_home(app_context_t* app) {
  * @brief 早期初始化函数（constructor属性，在main之前执行）
  *        重置崩溃信号处理器为默认值，并强制链接applib符号
  */
+static void do_hot_update(app_context_t* app) {
+    struct stat st;
+    if (stat("/var/upgrade/sair_new", &st) != 0) return;
+
+    PLOG_I("OTA", "热更新: 优雅停止资源");
+
+    if (app->wakeup.started) wakeup_stop(&app->wakeup);
+
+    if (app->recorder_initialized) {
+        audio_recorder_module_stop_sending(&app->recorder_mod);
+        audio_recorder_module_destroy(&app->recorder_mod);
+        app->recorder_initialized = 0;
+    }
+
+    app->recorder_running = 0;
+
+    if (app->player_initialized) {
+        audio_player_stop(&app->player);
+        audio_player_release_track(&app->player);
+        audio_player_destroy(&app->player);
+        app->player_initialized = 0;
+    }
+
+    if (app->proto_initialized) {
+        if (protocol_handler_is_connected(&app->proto)) {
+            protocol_handler_disconnect(&app->proto);
+        }
+        protocol_handler_destroy(&app->proto);
+        app->proto_initialized = 0;
+    }
+
+    usleep(500000);
+    PLOG_I("OTA", "热更新: 资源已释放, 关闭文件描述符并执行 sair_new");
+
+    int max_fd = sysconf(_SC_OPEN_MAX);
+    if (max_fd > 4096) max_fd = 4096;
+    for (int fd = 3; fd < max_fd; fd++) close(fd);
+
+    unlink("/var/upgrade/sair_old");
+    rename("/var/upgrade/sair", "/var/upgrade/sair_old");
+    rename("/var/upgrade/sair_new", "/var/upgrade/sair");
+
+    char* new_argv[] = {"/var/upgrade/sair", NULL};
+    execvp("/var/upgrade/sair", new_argv);
+
+    PLOG_E("OTA", "execvp 失败, 正在回滚");
+    rename("/var/upgrade/sair", "/var/upgrade/sair_new");
+    rename("/var/upgrade/sair_old", "/var/upgrade/sair");
+}
+
 __attribute__((constructor)) static void early_init(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -1557,57 +1588,7 @@ int main(int argc, char* argv[]) {
     ret = applib_init(argc, argv);
     PLOG_I("INIT", "applib_init 返回值=%d errno=%d", ret, errno);
 
-    /* applib可能覆盖SIGUSR1处理器，需要重新注册（不带SA_RESTART） */
-    {
-        struct sigaction sa_cur;
-        sigaction(SIGUSR1, NULL, &sa_cur);
-        PLOG_I("INIT", "applib_init 后 SIGUSR1: handler=%p flags=0x%x",
-               (void*)sa_cur.sa_handler, sa_cur.sa_flags);
-
-        if (sa_cur.sa_flags & SA_RESTART) {
-            PLOG_W("INIT", "applib 设置了 SA_RESTART! 重新注册不带 SA_RESTART");
-        }
-
-        struct sigaction sa;
-        memset(&sa, 0, sizeof(sa));
-        sigemptyset(&sa.sa_mask);
-        sa.sa_handler = sigusr1_handler;
-        sa.sa_flags = 0;
-        sigaction(SIGUSR1, &sa, &g_old_sigusr1_sa);
-        PLOG_I("INIT", "SIGUSR1 已重新注册 (无SA_RESTART), 旧处理器=%p flags=0x%x",
-               (void*)g_old_sigusr1_sa.sa_handler, g_old_sigusr1_sa.sa_flags);
-    }
-
-    /* applib_init后重新注册所有信号处理器（applib可能覆盖） */
-    {
-        struct sigaction sa;
-        memset(&sa, 0, sizeof(sa));
-        sigemptyset(&sa.sa_mask);
-
-        sa.sa_handler = signal_handler;
-        sa.sa_flags = 0;
-        sigaction(SIGTERM, &sa, NULL);
-        sigaction(SIGINT, &sa, NULL);
-        sigaction(SIGPIPE, &sa, NULL);
-        sigaction(SIGUSR2, &sa, NULL);
-
-        {
-            sigset_t unblock_set;
-            sigemptyset(&unblock_set);
-            sigaddset(&unblock_set, SIGUSR2);
-            sigprocmask(SIG_UNBLOCK, &unblock_set, NULL);
-        }
-
-        sa.sa_sigaction = crash_handler;
-        sa.sa_flags = SA_SIGINFO;
-        sigaction(SIGSEGV, &sa, NULL);
-        sigaction(SIGABRT, &sa, NULL);
-        sigaction(SIGBUS, &sa, NULL);
-        sigaction(SIGILL, &sa, NULL);
-        sigaction(SIGFPE, &sa, NULL);
-
-        PLOG_I("INIT", "applib_init 后重新注册信号处理器");
-    }
+    re_register_signals();
 
     int applib_ok = (ret != 0);
     if (!applib_ok) {
@@ -1848,8 +1829,8 @@ int main(int argc, char* argv[]) {
 
         /* 处理各类挂起事件 */
         process_pending_wakeup(app);
-        process_pending_key_exit(app);
-        process_pending_key_home(app);
+        process_pending_key(app, &app->pending_key_exit, "BACK键退出", "user_key_exit");
+        process_pending_key(app, &app->pending_key_home, "HOME键", "user_key_home");
 
         /* 处理API中止请求 */
         if (app->pending_api_abort) {
@@ -1916,64 +1897,7 @@ int main(int argc, char* argv[]) {
         /* 处理热更新 */
         if (g_hot_update_pending) {
             g_hot_update_pending = 0;
-            struct stat st;
-            if (stat("/var/upgrade/sair_new", &st) == 0) {
-                PLOG_I("OTA", "热更新: 优雅停止资源");
-
-                /* 停止唤醒模块 */
-                if (app->wakeup.started) {
-                    wakeup_stop(&app->wakeup);
-                }
-
-                /* 停止录音发送模块 */
-                if (app->recorder_initialized) {
-                    audio_recorder_module_stop_sending(&app->recorder_mod);
-                    audio_recorder_module_destroy(&app->recorder_mod);
-                    app->recorder_initialized = 0;
-                }
-
-                app->recorder_running = 0;
-
-                /* 停止播放器 */
-                if (app->player_initialized) {
-                    audio_player_stop(&app->player);
-                    audio_player_release_track(&app->player);
-                    audio_player_destroy(&app->player);
-                    app->player_initialized = 0;
-                }
-
-                /* 断开协议连接 */
-                if (app->proto_initialized) {
-                    if (protocol_handler_is_connected(&app->proto)) {
-                        protocol_handler_disconnect(&app->proto);
-                    }
-                    protocol_handler_destroy(&app->proto);
-                    app->proto_initialized = 0;
-                }
-
-                usleep(500000);
-                PLOG_I("OTA", "热更新: 资源已释放, 关闭文件描述符并执行 sair_new");
-
-                /* 关闭所有文件描述符 */
-                int max_fd = sysconf(_SC_OPEN_MAX);
-                if (max_fd > 4096) max_fd = 4096;
-                for (int fd = 3; fd < max_fd; fd++) {
-                    close(fd);
-                }
-
-                /* 替换二进制文件并执行新版本 */
-                unlink("/var/upgrade/sair_old");
-                rename("/var/upgrade/sair", "/var/upgrade/sair_old");
-                rename("/var/upgrade/sair_new", "/var/upgrade/sair");
-
-                char* argv[] = {"/var/upgrade/sair", NULL}; /* sair 是助手二进制文件名 */
-                execvp("/var/upgrade/sair", argv);
-
-                /* execvp失败则回滚 */
-                PLOG_E("OTA", "execvp 失败, 正在回滚");
-                rename("/var/upgrade/sair", "/var/upgrade/sair_new");
-                rename("/var/upgrade/sair_old", "/var/upgrade/sair");
-            }
+            do_hot_update(app);
         }
 
         /* 调试用：通过文件触发模拟唤醒 */

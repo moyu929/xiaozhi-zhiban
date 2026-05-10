@@ -278,7 +278,6 @@ body {
 .btn-danger { background: var(--danger); color: #fff; border: none; }
 .btn-danger:hover { opacity: 0.9; }
 .btn-sm { padding: 5px 14px; font-size: 12px; }
-.btn-block { width: 100%; justify-content: center; }
 .btn-icon {
   width: 36px; height: 36px; padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
@@ -465,11 +464,7 @@ body {
   margin-bottom: 14px;
 }
 
-.firmware-row { margin-top: 8px; }
-.file-input-wrap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .file-input { display: none; }
-.file-label { cursor: pointer; white-space: nowrap; }
-.file-name { font-size: 12px; color: var(--text-muted); }
 
 .progress-wrap { margin-top: 12px; }
 .progress-bar {
@@ -539,12 +534,18 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.adb-device-status-col {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+}
 .adb-device-status {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 10px;
-  border-radius: 20px;
-  white-space: nowrap;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 10px;
+    border-radius: 20px;
+    white-space: nowrap;
 }
 
 .deploy-section {
@@ -645,6 +646,7 @@ body {
 }
 .file-nav-link:hover { text-decoration: underline; }
 .file-nav-sep { color: var(--text-muted); }
+.file-nav-dim { cursor: default; opacity: 0.5; }
 
 .file-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .file-table th {
@@ -949,8 +951,6 @@ body {
   flex: 1;
 }
 
-.control-range { font-size: 11px; color: var(--text-muted); margin-left: 4px; }
-
 .btn-outline { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
 .btn-outline:hover { background: var(--danger); color: #fff; }
 
@@ -996,16 +996,6 @@ body {
 .sair-required.sair-locked {
     opacity: 0.4;
     pointer-events: none;
-}
-.sair-lock-hint {
-    display: none;
-    font-size: 10px;
-    color: var(--warning);
-    margin-left: 8px;
-    white-space: nowrap;
-}
-.sair-required.sair-locked .sair-lock-hint {
-    display: inline;
 }
 
 .conn-status {

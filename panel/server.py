@@ -172,6 +172,683 @@ def set_apis(xwebd_api):
     logger.info("API实例更新: xwebd=%s", xwebd_api is not None)
 
 
+def _validate_int_range(value, name, min_val, max_val):
+    """验证整数值是否在指定范围内
+
+    Args:
+        value: 待验证的值（可以是字符串或数字）
+        name: 参数名称（用于错误信息）
+        min_val: 允许的最小值
+        max_val: 允许的最大值
+
+    Returns:
+        tuple: (验证后的整数值, 错误信息) 验证成功时错误信息为 None，
+               验证失败时整数值为 None
+    """
+    try:
+        v = int(value)
+    except (ValueError, TypeError):
+        return None, f"{name} must be a number"
+    if v < min_val or v > max_val:
+        return None, f"{name} must be between {min_val} and {max_val}"
+    return v, None
+
+
+_API_ROUTES = {}
+_STREAM_SENTINEL = object()
+
+
+def _api_route(method, path):
+    def decorator(func):
+        _API_ROUTES[(method, path)] = func
+        return func
+    return decorator
+
+
+def _requires_xwebd(func):
+    def wrapper(handler, xwebd, body, query):
+        if not xwebd:
+            return {"error": "xwebd not connected"}, 503
+        return func(handler, xwebd, body, query)
+    return wrapper
+
+
+@_api_route("POST", "/api/connect")
+def _api_connect(handler, xwebd, body, query):
+    host = body.get("host", "192.168.1.96") if body else "192.168.1.96"
+    is_usb = (host == "localhost" or host == "127.0.0.1")
+    logger.info("连接设备: host=%s, usb=%s", host, is_usb)
+    if is_usb:
+        adb_result = adb_forward_setup()
+        if not adb_result.get("ok"):
+            return adb_result, 502
+    new_xwebd = XwebdAPI(host, XWEBD_PORT)
+    xwebd_ok = new_xwebd.check_connection()
+    if xwebd_ok:
+        sair_status = new_xwebd._request("GET", "/api/assistant/status")
+        sair_ok = sair_status and "error" not in sair_status and sair_status.get("running", False)
+        set_apis(new_xwebd)
+        logger.info("连接结果: xwebd=%s, assistant=%s", xwebd_ok, sair_ok)
+        return {"ok": True, "host": host, "xwebd_port": XWEBD_PORT,
+                "sair_connected": sair_ok, "xwebd_connected": xwebd_ok}
+
+    set_apis(None)
+    adb_reachable = False
+    adb_serial = None
+    try:
+        devices = detect_devices()
+        if devices:
+            adb_reachable = True
+            adb_serial = devices[0]["serial"]
+            logger.info("xwebd不可达，但ADB设备可用: %s", adb_serial)
+    except Exception as e:
+        logger.debug("ADB检测异常: %s", e)
+
+    if adb_reachable:
+        return {"ok": True, "host": host, "xwebd_connected": False,
+                "sair_connected": False, "adb_reachable": True,
+                "adb_serial": adb_serial}, 200
+    logger.warning("连接失败: host=%s", host)
+    return {"ok": False, "error": "无法连接设备，请检查设备是否开机及IP地址是否正确",
+            "host": host, "sair_connected": False, "xwebd_connected": False,
+            "adb_reachable": False}, 502
+
+
+@_api_route("GET", "/api/info")
+def _api_info(handler, xwebd, body, query):
+    return {
+        "mode": "LIVE",
+        "xwebd_host": xwebd.host if xwebd else None,
+        "xwebd_port": xwebd.port if xwebd else XWEBD_PORT,
+        "xwebd_connected": xwebd.connected if xwebd else False,
+    }
+
+
+@_api_route("POST", "/api/adb-forward")
+def _api_adb_forward(handler, xwebd, body, query):
+    serial = body.get("serial") if body else None
+    return adb_forward_setup(serial)
+
+
+@_api_route("GET", "/api/status")
+def _api_status(handler, xwebd, body, query):
+    result = {}
+    if xwebd:
+        xwebd_status = xwebd._request("GET", "/api/system")
+        if xwebd_status and "error" not in xwebd_status:
+            result.update(xwebd_status)
+        sair_status = xwebd._request("GET", "/api/assistant/status")
+        if sair_status and "error" not in sair_status:
+            if "state" in sair_status:
+                result["state"] = sair_status["state"]
+            if "version" in sair_status:
+                result["assistant_version"] = sair_status["version"]
+            result["assistant_installed"] = sair_status.get("installed", False)
+            result["assistant_running"] = sair_status.get("running", False)
+    if not result:
+        return {"error": "Not connected"}, 503
+    return result
+
+
+@_api_route("GET", "/api/services")
+@_requires_xwebd
+def _api_services(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/services")
+
+
+@_api_route("GET", "/api/panel/logs/stream")
+def _api_panel_logs_stream(handler, xwebd, body, query):
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/event-stream")
+    handler.send_header("Cache-Control", "no-cache")
+    handler.send_header("Connection", "keep-alive")
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.end_headers()
+    try:
+        last_count = len(get_panel_logs(80))
+        while True:
+            try:
+                logs = get_panel_logs(80)
+                current_count = len(logs)
+                if current_count != last_count:
+                    new_lines = logs[last_count:]
+                    for line in new_lines:
+                        data = json.dumps({"text": line}, ensure_ascii=False)
+                        handler.wfile.write(("data: " + data + "\n\n").encode("utf-8"))
+                        handler.wfile.flush()
+                    last_count = current_count
+            except Exception:
+                pass
+            time.sleep(1)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    return _STREAM_SENTINEL
+
+
+@_api_route("GET", "/api/panel/logs")
+def _api_panel_logs(handler, xwebd, body, query):
+    lines_count = int(query.get("lines", [100])[0])
+    lines_count = max(1, min(lines_count, 500))
+    level = query.get("level", [""])[0]
+    try:
+        all_lines = get_panel_logs(500)
+        if level:
+            level_map = {"E": ["ERROR", "CRITICAL"], "W": ["WARNING"], "I": ["INFO"], "D": ["DEBUG"]}
+            targets = level_map.get(level, [level])
+            all_lines = [l for l in all_lines if any(t in l for t in targets)]
+        result_lines = all_lines[-lines_count:] if len(all_lines) > lines_count else all_lines
+        return {"lines": result_lines, "source": "panel"}
+    except Exception as e:
+        logger.error("读取Panel日志失败: %s", e)
+        return {"error": str(e)}, 500
+
+
+@_api_route("POST", "/api/panel/logs/clean")
+def _api_panel_logs_clean(handler, xwebd, body, query):
+    try:
+        log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "panel.log")
+        if os.path.exists(log_path):
+            with open(log_path, "w", encoding="utf-8") as f:
+                pass
+        logger.info("Panel日志已清理")
+        return {"ok": True}
+    except Exception as e:
+        logger.error("清理Panel日志失败: %s", e)
+        return {"error": str(e)}, 500
+
+
+@_api_route("POST", "/api/logs/clean")
+@_requires_xwebd
+def _api_logs_clean(handler, xwebd, body, query):
+    source = query.get("source", ["0"])[0] if query else "0"
+    url = "/api/logs/clean"
+    if source and source != "0":
+        url += "?source=" + source
+    logger.info("清理设备端日志: source=%s", source)
+    return xwebd._request("POST", url)
+
+
+@_api_route("GET", "/api/logs")
+@_requires_xwebd
+def _api_logs(handler, xwebd, body, query):
+    lines = int(query.get("lines", [100])[0])
+    lines = max(1, min(lines, 500))
+    level = query.get("level", [""])[0]
+    source = query.get("source", ["0"])[0]
+    url = f"/api/logs?lines={lines}"
+    if level:
+        url += f"&level={level}"
+    if source and source != "0":
+        url += f"&source={source}"
+    return xwebd._request("GET", url)
+
+
+@_api_route("GET", "/api/xwebd/diag")
+@_requires_xwebd
+def _api_xwebd_diag(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/diag")
+
+
+@_api_route("GET", "/api/xwebd/version")
+@_requires_xwebd
+def _api_xwebd_version(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/version")
+
+
+@_api_route("GET", "/api/assistant/diag")
+@_requires_xwebd
+def _api_assistant_diag(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/assistant/diag")
+
+
+@_api_route("GET", "/api/assistant/config")
+@_requires_xwebd
+def _api_assistant_config_get(handler, xwebd, body, query):
+    return xwebd.get_assistant_config()
+
+
+@_api_route("GET", "/api/xwebd/config")
+@_requires_xwebd
+def _api_xwebd_config_get(handler, xwebd, body, query):
+    return xwebd.get_config()
+
+
+@_api_route("GET", "/api/config")
+def _api_config_get(handler, xwebd, body, query):
+    if not xwebd:
+        return {"error": "Not connected"}, 503
+    result = xwebd.get_assistant_config()
+    xwebd_cfg = xwebd.get_config()
+    if "error" not in xwebd_cfg:
+        result.update(xwebd_cfg)
+    return result
+
+
+@_api_route("PUT", "/api/config")
+def _api_config_put(handler, xwebd, body, query):
+    if not xwebd:
+        return {"error": "Not connected"}, 503
+    assistant_fields = {}
+    xwebd_fields = {}
+    if body:
+        for k in ("ws_url", "ws_token", "realtime_mode", "aec_enabled"):
+            if k in body:
+                assistant_fields[k] = body[k]
+        if "log_level" in body:
+            xwebd_fields["log_level"] = body["log_level"]
+        if "upload_max_mb" in body:
+            v, err = _validate_int_range(body["upload_max_mb"], "upload_max_mb", 1, 100)
+            if err:
+                return {"error": err}, 400
+            xwebd_fields["upload_max_mb"] = v
+    result = {"ok": True}
+    logger.info("更新配置: assistant_fields=%s, xwebd_fields=%s", list(assistant_fields.keys()), list(xwebd_fields.keys()))
+    if assistant_fields:
+        r = xwebd.set_assistant_config(assistant_fields)
+        if "error" in r:
+            result = r
+    if xwebd_fields:
+        r = xwebd.set_config(xwebd_fields)
+        if "error" in r:
+            result = r
+    return result
+
+
+@_api_route("PUT", "/api/assistant/config")
+@_requires_xwebd
+def _api_assistant_config_put(handler, xwebd, body, query):
+    return xwebd.set_assistant_config(body or {})
+
+
+@_api_route("PUT", "/api/xwebd/config")
+@_requires_xwebd
+def _api_xwebd_config_put(handler, xwebd, body, query):
+    return xwebd._request("PUT", "/api/config", body)
+
+
+@_api_route("GET", "/api/volume")
+@_requires_xwebd
+def _api_volume_get(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/volume")
+
+
+@_api_route("POST", "/api/volume")
+@_requires_xwebd
+def _api_volume_post(handler, xwebd, body, query):
+    vol = body.get("volume") if body else None
+    if vol is None:
+        return {"error": "volume is required"}, 400
+    v, err = _validate_int_range(vol, "volume", 0, 80)
+    if err:
+        return {"error": err}, 400
+    logger.info("设置音量: %d", v)
+    return xwebd.set_volume(v)
+
+
+@_api_route("GET", "/api/brightness")
+@_requires_xwebd
+def _api_brightness_get(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/brightness")
+
+
+@_api_route("POST", "/api/brightness")
+@_requires_xwebd
+def _api_brightness_post(handler, xwebd, body, query):
+    brt = body.get("brightness") if body else None
+    if brt is None:
+        return {"error": "brightness is required"}, 400
+    v, err = _validate_int_range(brt, "brightness", 0, 900)
+    if err:
+        return {"error": err}, 400
+    logger.info("设置亮度: %d", v)
+    return xwebd.set_brightness(v)
+
+
+@_api_route("GET", "/api/mute")
+@_requires_xwebd
+def _api_mute_get(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/mute")
+
+
+@_api_route("POST", "/api/mute")
+@_requires_xwebd
+def _api_mute_post(handler, xwebd, body, query):
+    logger.info("设置静音: %s", body.get("muted") if body else None)
+    return xwebd.set_mute(body.get("muted", False) if body else False)
+
+
+@_api_route("POST", "/api/reboot")
+@_requires_xwebd
+def _api_reboot(handler, xwebd, body, query):
+    logger.warning("重启设备")
+    return xwebd.reboot()
+
+
+@_api_route("POST", "/api/poweroff")
+@_requires_xwebd
+def _api_poweroff(handler, xwebd, body, query):
+    logger.warning("关机")
+    return xwebd._request("POST", "/api/poweroff")
+
+
+@_api_route("POST", "/api/wakeup")
+@_requires_xwebd
+def _api_wakeup(handler, xwebd, body, query):
+    logger.info("唤醒助手")
+    return xwebd.wakeup_assistant()
+
+
+@_api_route("POST", "/api/abort")
+@_requires_xwebd
+def _api_abort(handler, xwebd, body, query):
+    logger.info("中止对话")
+    return xwebd.abort_assistant()
+
+
+@_api_route("POST", "/api/upgrade")
+@_requires_xwebd
+def _api_upgrade(handler, xwebd, body, query):
+    logger.info("升级助手")
+    return xwebd.upgrade_assistant()
+
+
+@_api_route("GET", "/api/files")
+@_requires_xwebd
+def _api_files_list(handler, xwebd, body, query):
+    file_path = query.get("path", ["/var/upgrade"])[0] if query else "/var/upgrade"
+    return xwebd.list_files(file_path)
+
+
+@_api_route("GET", "/api/files/download")
+@_requires_xwebd
+def _api_files_download(handler, xwebd, body, query):
+    file_path = query.get("path", [""])[0] if query else ""
+    if not file_path:
+        return {"error": "path parameter required"}, 400
+    logger.info("下载设备文件: %s", file_path)
+    try:
+        url = f"http://{xwebd.host}:{xwebd.port}/api/files/download?path={url_quote(file_path, safe='')}"
+        req = Request(url)
+        with urlopen(req, timeout=30) as resp:
+            content_type = resp.headers.get("Content-Type", "application/octet-stream")
+            handler.send_response(200)
+            handler.send_header("Content-Type", content_type)
+            handler.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(file_path)}"')
+            data = resp.read()
+            handler.send_header("Content-Length", str(len(data)))
+            handler.end_headers()
+            handler.wfile.write(data)
+    except Exception as e:
+        return {"error": str(e)}, 500
+    return _STREAM_SENTINEL
+
+
+@_api_route("DELETE", "/api/files/download")
+@_requires_xwebd
+def _api_files_delete(handler, xwebd, body, query):
+    file_path = query.get("path", [""])[0] if query else ""
+    if not file_path:
+        return {"error": "path parameter required"}, 400
+    logger.info("删除设备文件: %s", file_path)
+    return xwebd._request("DELETE", f"/api/files/download?path={url_quote(file_path, safe='')}")
+
+
+@_api_route("POST", "/api/files/cleanup")
+@_requires_xwebd
+def _api_files_cleanup(handler, xwebd, body, query):
+    logger.info("清理设备临时文件")
+    return xwebd.cleanup()
+
+
+@_api_route("POST", "/api/files/upload")
+@_requires_xwebd
+def _api_files_upload(handler, xwebd, body, query):
+    target_path = query.get("path", ["/var/upgrade"])[0] if query else "/var/upgrade"
+    content_type = handler.headers.get('Content-Type', '')
+    if 'multipart/form-data' in content_type:
+        parsed = _parse_multipart(handler.headers, handler.rfile)
+        if not parsed or not parsed["filename"] or not parsed["data"]:
+            return {"error": "no file in form"}, 400
+        upload_data = parsed["data"]
+        filename = parsed["filename"]
+        logger.info("文件上传到设备: %s -> %s", filename, target_path)
+        url = f"http://{xwebd.host}:{xwebd.port}/api/files/upload?path={url_quote(target_path, safe='')}"
+        req = Request(url, data=upload_data, headers={'Content-Type': 'application/octet-stream', 'X-Filename': filename})
+        try:
+            with urlopen(req, timeout=60) as resp:
+                resp_data = json.loads(resp.read())
+                return resp_data
+        except Exception as e:
+            return {"ok": False, "error": str(e)}, 500
+    else:
+        return {"error": "multipart/form-data required"}, 400
+
+
+@_api_route("POST", "/api/assistant/deploy")
+@_requires_xwebd
+def _api_assistant_deploy(handler, xwebd, body, query):
+    file_path = body.get("path", "/var/upgrade/sair_new") if body else "/var/upgrade/sair_new"
+    logger.info("部署助手: path=%s", file_path)
+    return xwebd.deploy_assistant(file_path)
+
+
+@_api_route("POST", "/api/assistant/update")
+@_requires_xwebd
+def _api_assistant_update(handler, xwebd, body, query):
+    file_path = body.get("path", "/var/upgrade/sair_new") if body else "/var/upgrade/sair_new"
+    logger.info("更新助手: path=%s", file_path)
+    return xwebd.update_assistant(file_path)
+
+
+@_api_route("POST", "/api/assistant/uninstall")
+@_requires_xwebd
+def _api_assistant_uninstall(handler, xwebd, body, query):
+    logger.info("卸载助手")
+    return xwebd.uninstall_assistant()
+
+
+@_api_route("GET", "/api/assistant/status")
+@_requires_xwebd
+def _api_assistant_status(handler, xwebd, body, query):
+    return xwebd.get_assistant_status()
+
+
+@_api_route("GET", "/api/upload-progress")
+@_requires_xwebd
+def _api_upload_progress(handler, xwebd, body, query):
+    uid = query.get("upload_id", [""])[0] if query else ""
+    info = _upload_progress.get(uid, {"progress": 0, "status": "unknown"})
+    return info
+
+
+@_api_route("GET", "/api/adb/devices")
+def _api_adb_devices(handler, xwebd, body, query):
+    if not is_adb_available():
+        return {"error": "ADB not installed", "adb_available": False}, 503
+    devices = detect_devices()
+    result = []
+    for d in devices:
+        info = {"serial": d["serial"], "model": d.get("model", "unknown"),
+                "state": d.get("state", "unknown")}
+        if "device" in d:
+            info["device"] = d["device"]
+        info["xwebd_installed"] = is_xwebd_installed(d["serial"])
+        info["xwebd_status"] = check_xwebd_status(d["serial"])
+        info["ip"] = get_device_ip(d["serial"])
+        info["initialized"] = is_device_initialized(d["serial"])
+        result.append(info)
+    return {"adb_available": True, "devices": result}
+
+
+@_api_route("GET", "/api/adb/check")
+def _api_adb_check(handler, xwebd, body, query):
+    serial = query.get("serial", [None])[0] if query else None
+    if not is_adb_available():
+        return {"adb_available": False}
+    return {
+        "adb_available": True,
+        "xwebd_installed": is_xwebd_installed(serial),
+        "xwebd_status": check_xwebd_status(serial),
+        "ip": get_device_ip(serial),
+    }
+
+
+@_api_route("GET", "/api/adb/init-status")
+def _api_adb_init_status(handler, xwebd, body, query):
+    serial = query.get("serial", [None])[0] if query else None
+    if not is_adb_available():
+        return {"adb_available": False}
+    result = is_device_initialized(serial)
+    result["adb_available"] = True
+    return result
+
+
+@_api_route("POST", "/api/adb/init-device")
+def _api_adb_init_device(handler, xwebd, body, query):
+    serial = body.get("serial") if body else None
+    logger.info("初始化设备: serial=%s", serial)
+    r = init_device(serial)
+    if r["ok"]:
+        return {"ok": True, "details": r}
+    return {"error": r.get("error", "init failed")}, 500
+
+
+@_api_route("POST", "/api/deploy/xwebd")
+def _api_deploy_xwebd(handler, xwebd, body, query):
+    serial = body.get("serial") if body else None
+    binary_path = body.get("binary_path") if body else None
+    logger.info("通过ADB部署xwebd: serial=%s", serial)
+    r = deploy_xwebd(serial, binary_path)
+    if r["ok"]:
+        fwd = setup_forward(serial)
+        ip = get_device_ip(serial)
+        return {"ok": True, "ip": ip, "forward": fwd}
+    return {"error": r.get("error", "deploy failed")}, 500
+
+
+@_api_route("POST", "/api/xwebd/update")
+def _api_xwebd_update(handler, xwebd, body, query):
+    serial = body.get("serial") if body else None
+    binary_path = body.get("binary_path") if body else None
+    logger.info("通过ADB更新xwebd: serial=%s", serial)
+    r = update_xwebd(serial, binary_path)
+    if r.get("ok"):
+        return r
+    return {"error": r.get("error", "update failed")}, 500
+
+
+@_api_route("POST", "/api/xwebd/upload-update")
+def _api_xwebd_upload_update(handler, xwebd, body, query):
+    logger.info("通过ADB上传更新xwebd")
+    if not is_adb_available():
+        return {"error": "ADB 不可用"}, 503
+    content_type = handler.headers.get('Content-Type', '')
+    if 'multipart/form-data' in content_type:
+        parsed = _parse_multipart(handler.headers, handler.rfile)
+        if not parsed or not parsed["filename"] or not parsed["data"]:
+            return {"error": "no file in form"}, 400
+        import tempfile
+        tmp_dir = tempfile.mkdtemp(prefix="xiaozhi_xwebd_")
+        tmp_path = os.path.join(tmp_dir, "xwebd")
+        with open(tmp_path, "wb") as f:
+            f.write(parsed["data"])
+        serial = parsed["fields"].get("serial")
+        r = update_xwebd(serial, tmp_path)
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+    else:
+        serial = body.get("serial") if body else None
+        binary_path = body.get("binary_path") if body else None
+        r = update_xwebd(serial, binary_path)
+    if r.get("ok"):
+        return r
+    return {"error": r.get("error", "update failed")}, 500
+
+
+@_api_route("POST", "/api/xwebd/remove")
+def _api_xwebd_remove(handler, xwebd, body, query):
+    serial = body.get("serial") if body else None
+    logger.info("通过ADB移除xwebd: serial=%s", serial)
+    r = remove_xwebd(serial)
+    if r["ok"]:
+        return r
+    return {"error": r.get("error", "remove failed")}, 500
+
+
+@_api_route("POST", "/api/xwebd/restart")
+def _api_xwebd_restart(handler, xwebd, body, query):
+    serial = body.get("serial") if body else None
+    logger.info("通过ADB重启xwebd: serial=%s", serial)
+    r = restart_xwebd(serial)
+    if r["ok"]:
+        return r
+    return {"error": r.get("error", "restart failed")}, 500
+
+
+@_api_route("POST", "/api/adb/forward")
+def _api_adb_forward_post(handler, xwebd, body, query):
+    serial = body.get("serial") if body else None
+    logger.info("设置ADB端口转发: serial=%s", serial)
+    return setup_forward(serial)
+
+
+@_api_route("GET", "/api/adb/device-info")
+def _api_adb_device_info(handler, xwebd, body, query):
+    serial = query.get("serial", [None])[0] if query else None
+    return get_device_info(serial)
+
+
+@_api_route("GET", "/api/adb/sair-status")
+def _api_adb_sair_status(handler, xwebd, body, query):
+    serial = query.get("serial", [None])[0] if query else None
+    status = check_sair_status(serial)
+    xwebd_status = check_xwebd_status(serial)
+    return {"ok": True, "sair": status, "xwebd": xwebd_status}
+
+
+@_api_route("POST", "/api/adb/deploy-sair")
+def _api_adb_deploy_sair(handler, xwebd, body, query):
+    serial = body.get("serial") if body else None
+    binary_path = body.get("binary_path") if body else None
+    mode = body.get("mode", "cold") if body else "cold"
+    logger.info("通过ADB部署sair: serial=%s, mode=%s", serial, mode)
+    if mode == "hot":
+        r = hot_update_sair(serial, binary_path)
+    else:
+        r = deploy_sair(serial, binary_path)
+    if r.get("ok"):
+        return r
+    return {"error": r.get("error", "deploy failed")}, 500
+
+
+@_api_route("POST", "/api/adb/reboot")
+def _api_adb_reboot(handler, xwebd, body, query):
+    serial = body.get("serial") if body else None
+    r = reboot_device(serial)
+    if r.get("ok"):
+        return r
+    return {"error": r.get("error", "reboot failed")}, 500
+
+
+@_api_route("POST", "/api/adb/poweroff")
+def _api_adb_poweroff(handler, xwebd, body, query):
+    serial = body.get("serial") if body else None
+    r = poweroff_device(serial)
+    if r.get("ok"):
+        return r
+    return {"error": r.get("error", "poweroff failed")}, 500
+
+
+@_api_route("GET", "/api/adb/logs")
+def _api_adb_logs(handler, xwebd, body, query):
+    serial = query.get("serial", [None])[0] if query else None
+    log_type = query.get("type", ["all"])[0] if query else "all"
+    lines = int(query.get("lines", [100])[0]) if query else 100
+    return get_device_logs(serial, log_type, lines)
+
+
 class ControlPanelHandler(BaseHTTPRequestHandler):
     """控制面板 HTTP 请求处理器
 
@@ -412,755 +1089,30 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             self._send_json({"error": f"Upload failed: {e}"}, 500)
 
     def _handle_api(self, method, path, body, query):
-        """统一 API 请求路由处理器
-
-        根据请求方法和路径，将请求路由到对应的处理逻辑。
-        大部分 API 是对 xwebd 服务的代理转发。
-
-        Args:
-            method: HTTP 方法（GET/POST/PUT/DELETE）
-            path: 请求路径（如 /api/status）
-            body: 请求体数据（POST/PUT 时为 dict，GET 时为 None）
-            query: URL 查询参数（GET 时为 dict，POST/PUT 时为空 dict）
-        """
         xwebd = get_xwebd_api()
-
-        # 以下路径需要 xwebd 连接才能工作
-        if path.startswith("/api/assistant/") or path.startswith("/api/files/") or path == "/api/upload-progress":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-
-        # --- 连接设备 ---
-        if path == "/api/connect":
-            host = body.get("host", "192.168.1.96") if body else "192.168.1.96"
-            is_usb = (host == "localhost" or host == "127.0.0.1")
-            logger.info("连接设备: host=%s, usb=%s", host, is_usb)
-            if is_usb:
-                adb_result = adb_forward_setup()
-                if not adb_result.get("ok"):
-                    self._send_json(adb_result, 502)
-                    return
-            new_xwebd = XwebdAPI(host, XWEBD_PORT)
-            xwebd_ok = new_xwebd.check_connection()
-            if xwebd_ok:
-                sair_status = new_xwebd._request("GET", "/api/assistant/status")
-                sair_ok = sair_status and "error" not in sair_status and sair_status.get("running", False)
-                set_apis(new_xwebd)
-                logger.info("连接结果: xwebd=%s, assistant=%s", xwebd_ok, sair_ok)
-                self._send_json({"ok": True, "host": host, "xwebd_port": XWEBD_PORT,
-                                 "sair_connected": sair_ok, "xwebd_connected": xwebd_ok})
-                return
-
-            set_apis(None)
-            adb_reachable = False
-            adb_serial = None
+        handler = _API_ROUTES.get((method, path))
+        if handler:
             try:
-                devices = detect_devices()
-                if devices:
-                    adb_reachable = True
-                    adb_serial = devices[0]["serial"]
-                    logger.info("xwebd不可达，但ADB设备可用: %s", adb_serial)
+                result = handler(self, xwebd, body, query)
             except Exception as e:
-                logger.debug("ADB检测异常: %s", e)
-
-            if adb_reachable:
-                self._send_json({"ok": True, "host": host, "xwebd_connected": False,
-                                 "sair_connected": False, "adb_reachable": True,
-                                 "adb_serial": adb_serial}, 200)
-            else:
-                logger.warning("连接失败: host=%s", host)
-                self._send_json({"ok": False, "error": "无法连接设备，请检查设备是否开机及IP地址是否正确",
-                                 "host": host, "sair_connected": False, "xwebd_connected": False,
-                                 "adb_reachable": False}, 502)
-            return
-
-        # --- 获取当前连接信息 ---
-        if path == "/api/info":
-            self._send_json({
-                "mode": "LIVE",
-                "xwebd_host": xwebd.host if xwebd else None,
-                "xwebd_port": xwebd.port if xwebd else XWEBD_PORT,
-                "xwebd_connected": xwebd.connected if xwebd else False,
-            })
-            return
-
-        # --- ADB 端口转发 ---
-        if path == "/api/adb-forward":
-            serial = body.get("serial") if body else None
-            result = adb_forward_setup(serial)
-            self._send_json(result)
-            return
-
-        # --- 获取设备状态 ---
-        if method == "GET" and path == "/api/status":
-            result = {}
-            if xwebd:
-                xwebd_status = xwebd._request("GET", "/api/system")
-                if xwebd_status and "error" not in xwebd_status:
-                    result.update(xwebd_status)
-                sair_status = xwebd._request("GET", "/api/assistant/status")
-                if sair_status and "error" not in sair_status:
-                    if "state" in sair_status:
-                        result["state"] = sair_status["state"]
-                    if "version" in sair_status:
-                        result["assistant_version"] = sair_status["version"]
-                    result["assistant_installed"] = sair_status.get("installed", False)
-                    result["assistant_running"] = sair_status.get("running", False)
-            if not result:
-                self._send_json({"error": "Not connected"}, 503)
-                return
-            self._send_json(result)
-            return
-
-        # --- 服务状态 ---
-        if method == "GET" and path == "/api/services":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            self._send_json(xwebd._request("GET", "/api/services"))
-            return
-
-        if method == "GET" and path == "/api/panel/logs/stream":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            try:
-                last_count = len(get_panel_logs(80))
-                while True:
-                    try:
-                        logs = get_panel_logs(80)
-                        current_count = len(logs)
-                        if current_count != last_count:
-                            new_lines = logs[last_count:]
-                            for line in new_lines:
-                                data = json.dumps({"text": line}, ensure_ascii=False)
-                                self.wfile.write(("data: " + data + "\n\n").encode("utf-8"))
-                                self.wfile.flush()
-                            last_count = current_count
-                    except Exception:
-                        pass
-                    time.sleep(1)
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-            return
-
-        # --- 获取 Panel 自身日志 ---
-        if method == "GET" and path == "/api/panel/logs":
-            lines_count = int(query.get("lines", [100])[0])
-            lines_count = max(1, min(lines_count, 500))
-            level = query.get("level", [""])[0]
-            try:
-                all_lines = get_panel_logs(500)
-                if level:
-                    level_map = {"E": ["ERROR", "CRITICAL"], "W": ["WARNING"], "I": ["INFO"], "D": ["DEBUG"]}
-                    targets = level_map.get(level, [level])
-                    all_lines = [l for l in all_lines if any(t in l for t in targets)]
-                result_lines = all_lines[-lines_count:] if len(all_lines) > lines_count else all_lines
-                self._send_json({"lines": result_lines, "source": "panel"})
-            except Exception as e:
-                logger.error("读取Panel日志失败: %s", e)
+                logger.error("API error: %s %s: %s", method, path, e)
                 self._send_json({"error": str(e)}, 500)
-            return
-
-        # --- 清理 Panel 日志文件 ---
-        if method == "POST" and path == "/api/panel/logs/clean":
-            try:
-                log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "panel.log")
-                if os.path.exists(log_path):
-                    with open(log_path, "w", encoding="utf-8") as f:
-                        pass
-                logger.info("Panel日志已清理")
-                self._send_json({"ok": True})
-            except Exception as e:
-                logger.error("清理Panel日志失败: %s", e)
-                self._send_json({"error": str(e)}, 500)
-            return
-
-        # --- 清理设备端日志 ---
-        if method == "POST" and path == "/api/logs/clean":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
                 return
-            source = query.get("source", ["0"])[0] if query else "0"
-            url = "/api/logs/clean"
-            if source and source != "0":
-                url += "?source=" + source
-            logger.info("清理设备端日志: source=%s", source)
-            self._send_json(xwebd._request("POST", url))
-            return
-
-        # --- 获取设备日志 ---
-        if method == "GET" and path.startswith("/api/logs"):
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
+            if result is _STREAM_SENTINEL:
                 return
-            lines = int(query.get("lines", [100])[0])
-            lines = max(1, min(lines, 500))
-            level = query.get("level", [""])[0]
-            source = query.get("source", ["0"])[0]
-            url = f"/api/logs?lines={lines}"
-            if level:
-                url += f"&level={level}"
-            if source and source != "0":
-                url += f"&source={source}"
-            self._send_json(xwebd._request("GET", url))
-            return
-
-        # --- xwebd 自检 ---
-        if method == "GET" and path == "/api/xwebd/diag":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
+            if result is None:
                 return
-            self._send_json(xwebd._request("GET", "/api/diag"))
-            return
-
-        # --- xwebd 版本 ---
-        if method == "GET" and path == "/api/xwebd/version":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            self._send_json(xwebd._request("GET", "/api/version"))
-            return
-
-        # --- Assistant 自检 ---
-        if method == "GET" and path == "/api/assistant/diag":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            self._send_json(xwebd._request("GET", "/api/assistant/diag"))
-            return
-
-        # --- 获取助手配置 ---
-        if method == "GET" and path == "/api/assistant/config":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            self._send_json(xwebd.get_assistant_config())
-            return
-
-        # --- 获取 xwebd 配置 ---
-        if method == "GET" and path == "/api/xwebd/config":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            self._send_json(xwebd.get_config())
-            return
-
-        # --- 获取合并配置 ---
-        if method == "GET" and path == "/api/config":
-            if not xwebd:
-                self._send_json({"error": "Not connected"}, 503)
-                return
-            result = xwebd.get_assistant_config()
-            xwebd_cfg = xwebd.get_config()
-            if "error" not in xwebd_cfg:
-                result.update(xwebd_cfg)
-            self._send_json(result)
-            return
-
-        # --- 更新配置 ---
-        if method == "PUT" and path == "/api/config":
-            if not xwebd:
-                self._send_json({"error": "Not connected"}, 503)
-                return
-            assistant_fields = {}
-            xwebd_fields = {}
-            if body:
-                for k in ("ws_url", "ws_token", "realtime_mode", "aec_enabled"):
-                    if k in body:
-                        assistant_fields[k] = body[k]
-                if "log_level" in body:
-                    xwebd_fields["log_level"] = body["log_level"]
-                if "upload_max_mb" in body:
-                    v, err = _validate_int_range(body["upload_max_mb"], "upload_max_mb", 1, 100)
-                    if err:
-                        self._send_json({"error": err}, 400)
-                        return
-                    xwebd_fields["upload_max_mb"] = v
-            result = {"ok": True}
-            logger.info("更新配置: assistant_fields=%s, xwebd_fields=%s", list(assistant_fields.keys()), list(xwebd_fields.keys()))
-            if assistant_fields:
-                r = xwebd.set_assistant_config(assistant_fields)
-                if "error" in r:
-                    result = r
-            if xwebd_fields:
-                r = xwebd.set_config(xwebd_fields)
-                if "error" in r:
-                    result = r
-            self._send_json(result)
-            return
-
-        # --- Assistant 配置 ---
-        if method == "PUT" and path == "/api/assistant/config":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            self._send_json(xwebd.set_assistant_config(body or {}))
-            return
-
-        # --- xwebd 配置 ---
-        if method == "PUT" and path == "/api/xwebd/config":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            self._send_json(xwebd._request("PUT", "/api/config", body))
-            return
-
-        # --- 获取音量 ---
-        if method == "GET" and path == "/api/volume":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            self._send_json(xwebd._request("GET", "/api/volume"))
-            return
-
-        # --- 设置音量 ---
-        if method == "POST" and path == "/api/volume":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            vol = body.get("volume") if body else None
-            if vol is None:
-                self._send_json({"error": "volume is required"}, 400)
-                return
-            v, err = _validate_int_range(vol, "volume", 0, 80)
-            if err:
-                self._send_json({"error": err}, 400)
-                return
-            logger.info("设置音量: %d", v)
-            self._send_json(xwebd.set_volume(v))
-            return
-
-        # --- 获取亮度 ---
-        if method == "GET" and path == "/api/brightness":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            self._send_json(xwebd._request("GET", "/api/brightness"))
-            return
-
-        # --- 设置亮度 ---
-        if method == "POST" and path == "/api/brightness":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            brt = body.get("brightness") if body else None
-            if brt is None:
-                self._send_json({"error": "brightness is required"}, 400)
-                return
-            v, err = _validate_int_range(brt, "brightness", 0, 900)
-            if err:
-                self._send_json({"error": err}, 400)
-                return
-            logger.info("设置亮度: %d", v)
-            self._send_json(xwebd.set_brightness(v))
-            return
-
-        # --- 获取静音状态 ---
-        if method == "GET" and path == "/api/mute":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            self._send_json(xwebd._request("GET", "/api/mute"))
-            return
-
-        # --- 设置静音 ---
-        if method == "POST" and path == "/api/mute":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            logger.info("设置静音: %s", body.get("muted") if body else None)
-            self._send_json(xwebd.set_mute(body.get("muted", False) if body else False))
-            return
-
-        # --- 重启设备 ---
-        if method == "POST" and path == "/api/reboot":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            logger.warning("重启设备")
-            self._send_json(xwebd.reboot())
-            return
-
-        # --- 关机 ---
-        if method == "POST" and path == "/api/poweroff":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            logger.warning("关机")
-            self._send_json(xwebd._request("POST", "/api/poweroff"))
-            return
-
-        # --- 唤醒助手（sair 服务） ---
-        if method == "POST" and path == "/api/wakeup":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            logger.info("唤醒助手")
-            self._send_json(xwebd.wakeup_assistant())
-            return
-
-        # --- 中止当前对话（sair 服务） ---
-        if method == "POST" and path == "/api/abort":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            logger.info("中止对话")
-            self._send_json(xwebd.abort_assistant())
-            return
-
-        # --- 升级助手（sair 服务） ---
-        if method == "POST" and path == "/api/upgrade":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            logger.info("升级助手")
-            self._send_json(xwebd.upgrade_assistant())
-            return
-
-        # --- 列出设备文件 ---
-        if method == "GET" and path == "/api/files":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            file_path = query.get("path", ["/var/upgrade"])[0] if query else "/var/upgrade"
-            self._send_json(xwebd.list_files(file_path))
-            return
-
-        # --- 下载设备文件 ---
-        if method == "GET" and path.startswith("/api/files/download"):
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            file_path = query.get("path", [""])[0] if query else ""
-            if not file_path:
-                self._send_json({"error": "path parameter required"}, 400)
-                return
-            logger.info("下载设备文件: %s", file_path)
-            try:
-                url = f"http://{xwebd.host}:{xwebd.port}/api/files/download?path={url_quote(file_path, safe='')}"
-                req = Request(url)
-                with urlopen(req, timeout=30) as resp:
-                    content_type = resp.headers.get("Content-Type", "application/octet-stream")
-                    self.send_response(200)
-                    self.send_header("Content-Type", content_type)
-                    self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(file_path)}"')
-                    data = resp.read()
-                    self.send_header("Content-Length", str(len(data)))
-                    self.end_headers()
-                    self.wfile.write(data)
-            except Exception as e:
-                self._send_json({"error": str(e)}, 500)
-            return
-
-        # --- 删除设备文件 ---
-        if method == "DELETE" and path.startswith("/api/files/download"):
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            file_path = query.get("path", [""])[0] if query else ""
-            if not file_path:
-                self._send_json({"error": "path parameter required"}, 400)
-                return
-            logger.info("删除设备文件: %s", file_path)
-            self._send_json(xwebd._request("DELETE", f"/api/files/download?path={url_quote(file_path, safe='')}"))
-            return
-
-        # --- 清理设备临时文件 ---
-        if method == "POST" and path == "/api/files/cleanup":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            logger.info("清理设备临时文件")
-            self._send_json(xwebd.cleanup())
-            return
-
-        # --- 上传文件到设备 ---
-        if method == "POST" and path.startswith("/api/files/upload"):
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            target_path = query.get("path", ["/var/upgrade"])[0] if query else "/var/upgrade"
-            content_type = self.headers.get('Content-Type', '')
-            if 'multipart/form-data' in content_type:
-                parsed = _parse_multipart(self.headers, self.rfile)
-                if not parsed or not parsed["filename"] or not parsed["data"]:
-                    self._send_json({"error": "no file in form"}, 400)
-                    return
-                upload_data = parsed["data"]
-                filename = parsed["filename"]
-                logger.info("文件上传到设备: %s -> %s", filename, target_path)
-                url = f"http://{xwebd.host}:{xwebd.port}/api/files/upload?path={url_quote(target_path, safe='')}"
-                req = Request(url, data=upload_data, headers={'Content-Type': 'application/octet-stream', 'X-Filename': filename})
-                try:
-                    with urlopen(req, timeout=60) as resp:
-                        resp_data = json.loads(resp.read())
-                        self._send_json(resp_data)
-                except Exception as e:
-                    self._send_json({"ok": False, "error": str(e)}, 500)
+            if isinstance(result, tuple):
+                data, status = result
             else:
-                self._send_json({"error": "multipart/form-data required"}, 400)
+                data, status = result, 200
+            self._send_json(data, status)
             return
-
-        # --- 部署助手（sair 二进制文件，平台约束不可改名） ---
-        if method == "POST" and path == "/api/assistant/deploy":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            # sair 是 Assistant 的二进制文件名（平台约束不可改名）
-            file_path = body.get("path", "/var/upgrade/sair_new") if body else "/var/upgrade/sair_new"
-            logger.info("部署助手: path=%s", file_path)
-            self._send_json(xwebd.deploy_assistant(file_path))
+        if not xwebd and (path.startswith("/api/assistant/") or path.startswith("/api/files/") or path == "/api/upload-progress"):
+            self._send_json({"error": "xwebd not connected"}, 503)
             return
-
-        # --- 更新助手（sair 二进制文件，平台约束不可改名） ---
-        if method == "POST" and path == "/api/assistant/update":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            # sair 是 Assistant 的二进制文件名（平台约束不可改名）
-            file_path = body.get("path", "/var/upgrade/sair_new") if body else "/var/upgrade/sair_new"
-            logger.info("更新助手: path=%s", file_path)
-            self._send_json(xwebd.update_assistant(file_path))
-            return
-
-        # --- 卸载助手 ---
-        if method == "POST" and path == "/api/assistant/uninstall":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            logger.info("卸载助手")
-            self._send_json(xwebd.uninstall_assistant())
-            return
-
-        # --- 获取助手状态 ---
-        if method == "GET" and path == "/api/assistant/status":
-            if not xwebd:
-                self._send_json({"error": "xwebd not connected"}, 503)
-                return
-            self._send_json(xwebd.get_assistant_status())
-            return
-
-        # --- 查询上传进度 ---
-        if method == "GET" and path.startswith("/api/upload-progress"):
-            qs = path.split("?", 1)[-1] if "?" in path else ""
-            uid = qs.split("=")[-1] if "upload_id=" in qs else ""
-            info = _upload_progress.get(uid, {"progress": 0, "status": "unknown"})
-            self._send_json(info)
-            return
-
-        # --- 检测 ADB 设备列表 ---
-        if method == "GET" and path == "/api/adb/devices":
-            if not is_adb_available():
-                self._send_json({"error": "ADB not installed", "adb_available": False}, 503)
-                return
-            devices = detect_devices()
-            result = []
-            for d in devices:
-                info = {"serial": d["serial"], "model": d.get("model", "unknown"),
-                        "state": d.get("state", "unknown")}
-                if "device" in d:
-                    info["device"] = d["device"]
-                info["xwebd_installed"] = is_xwebd_installed(d["serial"])
-                info["xwebd_status"] = check_xwebd_status(d["serial"])
-                info["ip"] = get_device_ip(d["serial"])
-                info["initialized"] = is_device_initialized(d["serial"])
-                result.append(info)
-            self._send_json({"adb_available": True, "devices": result})
-            return
-
-        # --- 检查 ADB 和 xwebd 状态 ---
-        if method == "GET" and path == "/api/adb/check":
-            serial = query.get("serial", [None])[0] if query else None
-            if not is_adb_available():
-                self._send_json({"adb_available": False})
-                return
-            self._send_json({
-                "adb_available": True,
-                "xwebd_installed": is_xwebd_installed(serial),
-                "xwebd_status": check_xwebd_status(serial),
-                "ip": get_device_ip(serial),
-            })
-            return
-
-        if method == "GET" and path == "/api/adb/init-status":
-            serial = query.get("serial", [None])[0] if query else None
-            if not is_adb_available():
-                self._send_json({"adb_available": False})
-                return
-            result = is_device_initialized(serial)
-            result["adb_available"] = True
-            self._send_json(result)
-            return
-
-        if method == "POST" and path == "/api/adb/init-device":
-            serial = body.get("serial") if body else None
-            logger.info("初始化设备: serial=%s", serial)
-            r = init_device(serial)
-            if r["ok"]:
-                self._send_json({"ok": True, "details": r})
-            else:
-                self._send_json({"error": r.get("error", "init failed")}, 500)
-            return
-
-        if method == "POST" and path == "/api/deploy/xwebd":
-            serial = body.get("serial") if body else None
-            binary_path = body.get("binary_path") if body else None
-            logger.info("通过ADB部署xwebd: serial=%s", serial)
-            r = deploy_xwebd(serial, binary_path)
-            if r["ok"]:
-                # 部署成功后自动设置端口转发并获取设备 IP
-                fwd = setup_forward(serial)
-                ip = get_device_ip(serial)
-                self._send_json({"ok": True, "ip": ip, "forward": fwd})
-            else:
-                self._send_json({"error": r.get("error", "deploy failed")}, 500)
-            return
-
-        # --- 通过 ADB 更新设备上的 xwebd ---
-        if method == "POST" and path == "/api/xwebd/update":
-            serial = body.get("serial") if body else None
-            binary_path = body.get("binary_path") if body else None
-            logger.info("通过ADB更新xwebd: serial=%s", serial)
-            r = update_xwebd(serial, binary_path)
-            self._send_json(r if r.get("ok") else {"error": r.get("error", "update failed")}, 200 if r.get("ok") else 500)
-            return
-
-        if method == "POST" and path == "/api/xwebd/upload-update":
-            logger.info("通过ADB上传更新xwebd")
-            if not is_adb_available():
-                self._send_json({"error": "ADB 不可用"}, 503)
-                return
-            content_type = self.headers.get('Content-Type', '')
-            if 'multipart/form-data' in content_type:
-                parsed = _parse_multipart(self.headers, self.rfile)
-                if not parsed or not parsed["filename"] or not parsed["data"]:
-                    self._send_json({"error": "no file in form"}, 400)
-                    return
-                import tempfile
-                tmp_dir = tempfile.mkdtemp(prefix="xiaozhi_xwebd_")
-                tmp_path = os.path.join(tmp_dir, "xwebd")
-                with open(tmp_path, "wb") as f:
-                    f.write(parsed["data"])
-                serial = parsed["fields"].get("serial")
-                r = update_xwebd(serial, tmp_path)
-                try:
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
-                except Exception:
-                    pass
-            else:
-                serial = body.get("serial") if body else None
-                binary_path = body.get("binary_path") if body else None
-                r = update_xwebd(serial, binary_path)
-            self._send_json(r if r.get("ok") else {"error": r.get("error", "update failed")}, 200 if r.get("ok") else 500)
-            return
-
-        # --- 通过 ADB 移除设备上的 xwebd ---
-        if method == "POST" and path == "/api/xwebd/remove":
-            serial = body.get("serial") if body else None
-            logger.info("通过ADB移除xwebd: serial=%s", serial)
-            r = remove_xwebd(serial)
-            self._send_json(r if r["ok"] else {"error": r.get("error", "remove failed")}, 200 if r["ok"] else 500)
-            return
-
-        # --- 通过 ADB 重启设备上的 xwebd ---
-        if method == "POST" and path == "/api/xwebd/restart":
-            serial = body.get("serial") if body else None
-            logger.info("通过ADB重启xwebd: serial=%s", serial)
-            r = restart_xwebd(serial)
-            self._send_json(r if r["ok"] else {"error": r.get("error", "restart failed")}, 200 if r["ok"] else 500)
-            return
-
-        # --- 设置 ADB 端口转发 ---
-        if method == "POST" and path == "/api/adb/forward":
-            serial = body.get("serial") if body else None
-            logger.info("设置ADB端口转发: serial=%s", serial)
-            r = setup_forward(serial)
-            self._send_json(r)
-            return
-
-        # --- 有线模式：获取ADB设备信息 ---
-        if method == "GET" and path == "/api/adb/device-info":
-            serial = query.get("serial", [None])[0] if query else None
-            info = get_device_info(serial)
-            self._send_json(info)
-            return
-
-        # --- 有线模式：获取sair状态 ---
-        if method == "GET" and path == "/api/adb/sair-status":
-            serial = query.get("serial", [None])[0] if query else None
-            status = check_sair_status(serial)
-            xwebd_status = check_xwebd_status(serial)
-            self._send_json({"ok": True, "sair": status, "xwebd": xwebd_status})
-            return
-
-        # --- 有线模式：部署sair ---
-        if method == "POST" and path == "/api/adb/deploy-sair":
-            serial = body.get("serial") if body else None
-            binary_path = body.get("binary_path") if body else None
-            mode = body.get("mode", "cold") if body else "cold"
-            logger.info("通过ADB部署sair: serial=%s, mode=%s", serial, mode)
-            if mode == "hot":
-                r = hot_update_sair(serial, binary_path)
-            else:
-                r = deploy_sair(serial, binary_path)
-            if r.get("ok"):
-                self._send_json(r, 200)
-            else:
-                self._send_json({"error": r.get("error", "deploy failed")}, 500)
-            return
-
-        # --- 有线模式：重启设备 ---
-        if method == "POST" and path == "/api/adb/reboot":
-            serial = body.get("serial") if body else None
-            r = reboot_device(serial)
-            self._send_json(r if r.get("ok") else {"error": r.get("error", "reboot failed")}, 200 if r.get("ok") else 500)
-            return
-
-        # --- 有线模式：关机 ---
-        if method == "POST" and path == "/api/adb/poweroff":
-            serial = body.get("serial") if body else None
-            r = poweroff_device(serial)
-            self._send_json(r if r.get("ok") else {"error": r.get("error", "poweroff failed")}, 200 if r.get("ok") else 500)
-            return
-
-        # --- 有线模式：获取设备日志 ---
-        if method == "GET" and path == "/api/adb/logs":
-            serial = query.get("serial", [None])[0] if query else None
-            log_type = query.get("type", ["all"])[0] if query else "all"
-            lines = int(query.get("lines", [100])[0]) if query else 100
-            r = get_device_logs(serial, log_type, lines)
-            self._send_json(r)
-            return
-
         logger.warning("未知API: %s %s", method, path)
         self._send_json({"error": f"Unknown: {method} {path}"}, 404)
-
-
-def _validate_int_range(value, name, min_val, max_val):
-    """验证整数值是否在指定范围内
-
-    Args:
-        value: 待验证的值（可以是字符串或数字）
-        name: 参数名称（用于错误信息）
-        min_val: 允许的最小值
-        max_val: 允许的最大值
-
-    Returns:
-        tuple: (验证后的整数值, 错误信息) 验证成功时错误信息为 None，
-               验证失败时整数值为 None
-    """
-    try:
-        v = int(value)
-    except (ValueError, TypeError):
-        return None, f"{name} must be a number"
-    if v < min_val or v > max_val:
-        return None, f"{name} must be between {min_val} and {max_val}"
-    return v, None
 
 
 def create_server(host="0.0.0.0", port=3000, device_host="192.168.1.96"):
@@ -1209,7 +1161,6 @@ def start_server(host="0.0.0.0", port=3000, device_host="192.168.1.96", open_bro
     print()
 
     if open_browser:
-        # 延迟 0.5 秒后打开浏览器，确保服务器已就绪
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
 
     try:

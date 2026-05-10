@@ -101,6 +101,29 @@ def _adb(args, serial=None, timeout=ADB_TIMEOUT):
         return {"ok": False, "stdout": "", "stderr": "ADB not found. Install Android SDK Platform Tools.", "returncode": -1}
 
 
+def _find_file(candidates):
+    for path in candidates:
+        norm = os.path.normpath(path)
+        if os.path.isfile(norm):
+            return norm
+    return None
+
+
+def _push_binary(local_path, remote_path, serial, timeout=30):
+    r = _adb(["push", local_path, remote_path], serial=serial, timeout=timeout)
+    if not r["ok"]:
+        return {"ok": False, "error": f"adb push failed: {r['stderr']}"}
+    r = _adb(["shell", f"chmod 755 {remote_path}"], serial=serial)
+    if not r["ok"]:
+        return {"ok": False, "error": f"chmod failed: {r['stderr']}"}
+    return {"ok": True}
+
+
+def _shell_test(path, serial):
+    r = _adb(["shell", f"test -f {path} && echo yes || echo no"], serial=serial)
+    return r["ok"] and "yes" in r["stdout"]
+
+
 def is_adb_available():
     adb_path = _find_adb()
     if adb_path == "adb":
@@ -211,10 +234,7 @@ def is_xwebd_installed(serial=None):
     Returns:
         bool: True 表示已安装，False 表示未安装或检查失败
     """
-    r = _adb(["shell", f"test -f {XWEBD_REMOTE_PATH} && echo yes || echo no"], serial=serial)
-    if not r["ok"]:
-        return False
-    return "yes" in r["stdout"]
+    return _shell_test(XWEBD_REMOTE_PATH, serial)
 
 
 def check_xwebd_status(serial=None):
@@ -248,56 +268,41 @@ def _find_xwebd_binary():
         str: 找到的二进制文件路径（已规范化），未找到返回 None
     """
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
+    return _find_file([
         os.path.join(base_dir, "..", "device", "xwebd", "prebuilt", "xwebd"),
         os.path.join(base_dir, "..", "device", "xwebd", "build", "xwebd"),
         os.path.join(base_dir, "device", "prebuilt", "xwebd"),
         os.path.join(base_dir, "device", "build", "xwebd"),
-    ]
-    for path in candidates:
-        if os.path.isfile(path):
-            return os.path.normpath(path)
-    return None
+    ])
 
 
 def _find_watchdog_script():
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
+    return _find_file([
         os.path.join(base_dir, "..", "device", "xwebd", "scripts", "boot_watchdog.sh"),
         os.path.join(base_dir, "device", "scripts", "boot_watchdog.sh"),
-    ]
-    for path in candidates:
-        if os.path.isfile(path):
-            return os.path.normpath(path)
-    return None
+    ])
 
 
 def _find_watchdog_guard_script():
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
+    return _find_file([
         os.path.join(base_dir, "..", "device", "xwebd", "scripts", "watchdog_guard.sh"),
-    ]
-    for path in candidates:
-        if os.path.isfile(path):
-            return os.path.normpath(path)
-    return None
+    ])
 
 
 def is_device_initialized(serial=None):
-    r = _adb(["shell", f"test -f {TEST_SH_PATH} && echo yes || echo no"], serial=serial)
-    test_sh_exists = r["ok"] and "yes" in r["stdout"]
-    r = _adb(["shell", f"test -f {BOOT_WATCHDOG_PATH} && echo yes || echo no"], serial=serial)
-    boot_watchdog_exists = r["ok"] and "yes" in r["stdout"]
-    return {"initialized": test_sh_exists, "test_sh_exists": test_sh_exists, "boot_watchdog_exists": boot_watchdog_exists}
+    return {
+        "initialized": _shell_test(TEST_SH_PATH, serial),
+        "test_sh_exists": _shell_test(TEST_SH_PATH, serial),
+        "boot_watchdog_exists": _shell_test(BOOT_WATCHDOG_PATH, serial),
+    }
 
 
 def init_device(serial=None):
     result = {"ok": True, "error": "", "created_test_sh": False, "pushed_watchdog": False, "pushed_guard": False}
 
-    r = _adb(["shell", f"test -f {TEST_SH_PATH} && echo yes || echo no"], serial=serial)
-    test_sh_exists = r["ok"] and "yes" in r["stdout"]
-
-    if not test_sh_exists:
+    if not _shell_test(TEST_SH_PATH, serial):
         test_sh_content = (
             '#!/bin/sh\n'
             '# 小智·智伴 开机自启脚本\n'
@@ -327,9 +332,7 @@ def init_device(serial=None):
         result["created_test_sh"] = True
         logger.info("test.sh已创建: serial=%s", serial)
 
-    r = _adb(["shell", f"test -f {BOOT_WATCHDOG_PATH} && echo yes || echo no"], serial=serial)
-    boot_watchdog_exists = r["ok"] and "yes" in r["stdout"]
-    if not boot_watchdog_exists:
+    if not _shell_test(BOOT_WATCHDOG_PATH, serial):
         watchdog_script = _find_watchdog_script()
         if watchdog_script:
             r = _adb(["push", watchdog_script, BOOT_WATCHDOG_PATH], serial=serial, timeout=10)
@@ -338,9 +341,7 @@ def init_device(serial=None):
                 result["pushed_watchdog"] = True
                 logger.info("boot_watchdog.sh已推送: serial=%s", serial)
 
-    r = _adb(["shell", f"test -f {WATCHDOG_GUARD_PATH} && echo yes || echo no"], serial=serial)
-    guard_exists = r["ok"] and "yes" in r["stdout"]
-    if not guard_exists:
+    if not _shell_test(WATCHDOG_GUARD_PATH, serial):
         guard_script = _find_watchdog_guard_script()
         if guard_script:
             r = _adb(["push", guard_script, WATCHDOG_GUARD_PATH], serial=serial, timeout=10)
@@ -388,19 +389,10 @@ def deploy_xwebd(serial=None, binary_path=None):
     if not init_result["ok"]:
         logger.warning("设备初始化失败(继续部署): %s", init_result["error"])
 
-    r = _adb(["push", binary_path, XWEBD_REMOTE_PATH], serial=serial, timeout=30)
+    r = _push_binary(binary_path, XWEBD_REMOTE_PATH, serial)
     if not r["ok"]:
-        logger.error("xwebd部署失败: adb push failed: %s", r['stderr'])
-        return {"ok": False, "error": f"adb push failed: {r['stderr']}"}
-
-    logger.debug("adb push成功")
-
-    r = _adb(["shell", f"chmod 755 {XWEBD_REMOTE_PATH}"], serial=serial)
-    if not r["ok"]:
-        logger.error("xwebd部署失败: chmod failed: %s", r['stderr'])
-        return {"ok": False, "error": f"chmod failed: {r['stderr']}"}
-
-    logger.debug("chmod成功")
+        logger.error("xwebd部署失败: %s", r['error'])
+        return {"ok": False, "error": r['error']}
 
     if not init_result["pushed_watchdog"]:
         watchdog_script = _find_watchdog_script()
@@ -455,18 +447,13 @@ def update_xwebd(serial=None, binary_path=None):
 
     logger.info("更新xwebd: serial=%s, binary=%s", serial, binary_path)
 
-    r = stop_xwebd(serial)
+    stop_xwebd(serial)
     time.sleep(1)
 
-    r = _adb(["push", binary_path, XWEBD_REMOTE_PATH], serial=serial, timeout=30)
+    r = _push_binary(binary_path, XWEBD_REMOTE_PATH, serial)
     if not r["ok"]:
-        logger.error("xwebd更新失败: adb push failed: %s", r['stderr'])
-        return {"ok": False, "error": f"adb push failed: {r['stderr']}"}
-
-    r = _adb(["shell", f"chmod 755 {XWEBD_REMOTE_PATH}"], serial=serial)
-    if not r["ok"]:
-        logger.error("xwebd更新失败: chmod failed: %s", r['stderr'])
-        return {"ok": False, "error": f"chmod failed: {r['stderr']}"}
+        logger.error("xwebd更新失败: %s", r['error'])
+        return {"ok": False, "error": r['error']}
 
     r = start_xwebd(serial)
     if not r["ok"]:
@@ -486,7 +473,7 @@ def remove_xwebd(serial=None):
     _adb(["shell", f"rm -f {XWEBD_LOG_PATH}"], serial=serial)
     _remove_xwebd_autostart(serial)
 
-    return {"ok": True}
+    return {"ok": True, "error": ""}
 
 
 def start_xwebd(serial=None):
@@ -536,7 +523,7 @@ def stop_xwebd(serial=None):
         logger.warning("xwebd未响应killall, 使用kill -9")
         _adb(["shell", "killall -9 xwebd 2>/dev/null"], serial=serial)
         time.sleep(0.5)
-    return {"ok": True}
+    return {"ok": True, "error": ""}
 
 
 def restart_xwebd(serial=None):
@@ -603,8 +590,7 @@ def get_device_ip(serial=None):
 
 
 def _ensure_xwebd_autostart(serial=None):
-    r = _adb(["shell", f"test -f {TEST_SH_PATH} && echo yes || echo no"], serial=serial)
-    if not (r["ok"] and "yes" in r["stdout"]):
+    if not _shell_test(TEST_SH_PATH, serial):
         init_result = init_device(serial)
         if not init_result["ok"] and not init_result["created_test_sh"]:
             return {"ok": False, "error": "test.sh not found and init_device failed"}
@@ -613,104 +599,141 @@ def _ensure_xwebd_autostart(serial=None):
     if not r["ok"]:
         return {"ok": False, "error": "cannot read test.sh"}
     if "found" in r["stdout"]:
-        return {"ok": True}
+        return {"ok": True, "error": ""}
     logger.info("添加xwebd自启动到test.sh")
     r = _adb(["shell", f"echo '/var/upgrade/xwebd -d' >> {TEST_SH_PATH}"], serial=serial)
     if not r["ok"]:
         return {"ok": False, "error": "cannot modify test.sh"}
-    return {"ok": True}
+    return {"ok": True, "error": ""}
 
 
 def _remove_xwebd_autostart(serial=None):
     logger.info("移除xwebd自启动")
     _adb(["shell", f"sed -i '/xwebd/d' {TEST_SH_PATH}"], serial=serial)
-    return {"ok": True}
+    return {"ok": True, "error": ""}
+
+
+_INFO_SECTION_DELIMITER = "---SECTION---"
+
+_INFO_SECTIONS = [
+    ("cpu_info", "cat /proc/cpuinfo | grep -iE 'Hardware|model name' | tail -2"),
+    ("kernel", "uname -r"),
+    ("uptime", "cat /proc/uptime | awk '{print $1}'"),
+    ("meminfo", "cat /proc/meminfo | head -3"),
+    ("network", "ifconfig wlan0 2>/dev/null"),
+    ("disk", "df -k /var/upgrade 2>/dev/null | tail -1"),
+    ("model", "getprop ro.product.model 2>/dev/null || echo unknown"),
+]
+
+
+def _parse_cpu_info(text):
+    hardware = ""
+    processor = ""
+    for line in text.strip().split("\n"):
+        line = line.strip()
+        lower = line.lower()
+        if lower.startswith("hardware"):
+            hardware = line.split(":", 1)[1].strip() if ":" in line else ""
+        elif lower.startswith("model name"):
+            processor = line.split(":", 1)[1].strip() if ":" in line else ""
+    return {"cpu": processor or hardware or "unknown", "model": hardware or processor or "unknown"}
+
+
+def _parse_kernel(text):
+    return {"kernel": text.strip() or "unknown"}
+
+
+def _parse_uptime(text):
+    try:
+        return {"uptime_s": float(text.strip().split()[0])}
+    except (ValueError, IndexError):
+        return {"uptime_s": 0}
+
+
+def _parse_meminfo(text):
+    result = {}
+    for line in text.strip().split("\n"):
+        parts = line.split()
+        if len(parts) >= 2:
+            key = parts[0].rstrip(":")
+            try:
+                val = int(parts[1])
+            except ValueError:
+                continue
+            if key == "MemTotal":
+                result["mem_total_kb"] = val
+            elif key == "MemFree":
+                result["mem_free_kb"] = val
+            elif key == "Cached":
+                result["mem_cached_kb"] = val
+    return result
+
+
+def _parse_network(text):
+    ifconfig_out = text.strip()
+    wifi_ip = None
+    interface_up = False
+    if "inet addr:" in ifconfig_out:
+        wifi_ip = ifconfig_out.split("inet addr:")[1].split()[0]
+    for line in ifconfig_out.split("\n"):
+        if "UP" in line and ("BROADCAST" in line or "RUNNING" in line or "MULTICAST" in line):
+            interface_up = True
+            break
+    return {"wifi_ip": wifi_ip, "wifi_connected": interface_up and bool(wifi_ip)}
+
+
+def _parse_disk(text):
+    result = {}
+    disk_parts = text.strip().split()
+    if len(disk_parts) >= 4:
+        try:
+            result["disk_total_kb"] = int(disk_parts[1])
+            result["disk_used_kb"] = int(disk_parts[2])
+            result["disk_free_kb"] = int(disk_parts[3])
+        except (ValueError, IndexError):
+            pass
+    return result
+
+
+def _parse_model(text):
+    prop_model = text.strip()
+    if prop_model and prop_model != "unknown":
+        return {"model": prop_model}
+    return {}
+
+
+_INFO_PARSERS = {
+    "cpu_info": _parse_cpu_info,
+    "kernel": _parse_kernel,
+    "uptime": _parse_uptime,
+    "meminfo": _parse_meminfo,
+    "network": _parse_network,
+    "disk": _parse_disk,
+    "model": _parse_model,
+}
 
 
 def get_device_info(serial=None):
-    cmd = (
-        "cat /proc/cpuinfo | grep -iE 'Hardware|model name' | tail -2"
-        "; echo '---'"
-        "; uname -r"
-        "; echo '---'"
-        "; cat /proc/uptime | awk '{print $1}'"
-        "; echo '---'"
-        "; cat /proc/meminfo | head -3"
-        "; echo '---'"
-        "; ifconfig wlan0 2>/dev/null"
-        "; echo '---'"
-        "; df -k /var/upgrade 2>/dev/null | tail -1"
-        "; echo '---'"
-        "; getprop ro.product.model 2>/dev/null || echo unknown"
-    )
+    commands = [cmd for _, cmd in _INFO_SECTIONS]
+    cmd = f"; echo '{_INFO_SECTION_DELIMITER}'\n; ".join(commands)
     r = _adb(["shell", cmd], serial=serial, timeout=10)
     if not r["ok"]:
         return {"ok": False, "error": r["stderr"]}
-    sections = r["stdout"].split("---")
+    raw_sections = r["stdout"].split(_INFO_SECTION_DELIMITER)
     info = {"ok": True}
-    if len(sections) >= 1:
-        hardware = ""
-        processor = ""
-        for line in sections[0].strip().split("\n"):
-            line = line.strip()
-            lower = line.lower()
-            if lower.startswith("hardware"):
-                hardware = line.split(":", 1)[1].strip() if ":" in line else ""
-            elif lower.startswith("model name"):
-                processor = line.split(":", 1)[1].strip() if ":" in line else ""
-        info["cpu"] = processor or hardware or "unknown"
-        info["model"] = hardware or processor or "unknown"
-    if len(sections) >= 2:
-        info["kernel"] = sections[1].strip() or "unknown"
-    if len(sections) >= 3:
-        try:
-            info["uptime_s"] = float(sections[2].strip().split()[0])
-        except (ValueError, IndexError):
-            info["uptime_s"] = 0
-    if len(sections) >= 4:
-        mem_lines = sections[3].strip().split("\n")
-        for line in mem_lines:
-            parts = line.split()
-            if len(parts) >= 2:
-                key = parts[0].rstrip(":")
-                val = int(parts[1])
-                if key == "MemTotal":
-                    info["mem_total_kb"] = val
-                elif key == "MemFree":
-                    info["mem_free_kb"] = val
-                elif key == "Cached":
-                    info["mem_cached_kb"] = val
-    if len(sections) >= 5:
-        ifconfig_out = sections[4].strip()
-        wifi_ip = None
-        interface_up = False
-        if "inet addr:" in ifconfig_out:
-            wifi_ip = ifconfig_out.split("inet addr:")[1].split()[0]
-        for line in ifconfig_out.split("\n"):
-            if "UP" in line and ("BROADCAST" in line or "RUNNING" in line or "MULTICAST" in line):
-                interface_up = True
-                break
-        info["wifi_ip"] = wifi_ip
-        info["wifi_connected"] = interface_up and bool(wifi_ip)
-    if len(sections) >= 6:
-        disk_parts = sections[5].strip().split()
-        if len(disk_parts) >= 4:
-            try:
-                info["disk_total_kb"] = int(disk_parts[1])
-                info["disk_used_kb"] = int(disk_parts[2])
-                info["disk_free_kb"] = int(disk_parts[3])
-            except (ValueError, IndexError):
-                pass
-    if len(sections) >= 7:
-        prop_model = sections[6].strip()
-        if prop_model and prop_model != "unknown":
-            info["model"] = prop_model
+    section_names = [name for name, _ in _INFO_SECTIONS]
+    for i, section_text in enumerate(raw_sections):
+        if i >= len(section_names):
+            break
+        name = section_names[i]
+        parser = _INFO_PARSERS.get(name)
+        if parser:
+            info.update(parser(section_text))
     return info
 
 
 def check_sair_status(serial=None):
-    r = _adb(["shell", f"test -f {SAIR_REMOTE_PATH} && echo yes || echo no"], serial=serial)
-    custom_installed = r["ok"] and "yes" in r["stdout"]
+    custom_installed = _shell_test(SAIR_REMOTE_PATH, serial)
     version = None
     if custom_installed:
         rv = _adb(["shell", f"stat -c '%Y' {SAIR_REMOTE_PATH} 2>/dev/null"], serial=serial)
@@ -755,13 +778,10 @@ def deploy_sair(serial=None, binary_path=None):
     if not os.path.isfile(binary_path):
         return {"ok": False, "error": f"Binary not found: {binary_path}"}
     logger.info("冷部署sair: serial=%s, binary=%s", serial, binary_path)
-    r = _adb(["push", binary_path, SAIR_REMOTE_PATH], serial=serial, timeout=30)
+    r = _push_binary(binary_path, SAIR_REMOTE_PATH, serial)
     if not r["ok"]:
-        return {"ok": False, "error": f"adb push failed: {r['stderr']}"}
-    r = _adb(["shell", f"chmod 755 {SAIR_REMOTE_PATH}"], serial=serial)
-    if not r["ok"]:
-        return {"ok": False, "error": f"chmod failed: {r['stderr']}"}
-    r = _adb(["shell", "reboot"], serial=serial, timeout=5)
+        return {"ok": False, "error": r['error']}
+    _adb(["shell", "reboot"], serial=serial, timeout=5)
     logger.info("sair冷部署完成，设备重启中: serial=%s", serial)
     return {"ok": True, "binary": binary_path, "mode": "cold", "rebooting": True}
 
@@ -774,12 +794,9 @@ def hot_update_sair(serial=None, binary_path=None):
     if not os.path.isfile(binary_path):
         return {"ok": False, "error": f"Binary not found: {binary_path}"}
     logger.info("热更新sair: serial=%s", serial)
-    r = _adb(["push", binary_path, SAIR_REMOTE_PATH + "_new"], serial=serial, timeout=30)
+    r = _push_binary(binary_path, SAIR_REMOTE_PATH + "_new", serial)
     if not r["ok"]:
-        return {"ok": False, "error": f"adb push failed: {r['stderr']}"}
-    r = _adb(["shell", f"chmod 755 {SAIR_REMOTE_PATH}_new"], serial=serial)
-    if not r["ok"]:
-        return {"ok": False, "error": f"chmod failed: {r['stderr']}"}
+        return {"ok": False, "error": r['error']}
     r = _adb(["shell", "kill -USR2 $(pidof sair)"], serial=serial, timeout=10)
     if not r["ok"]:
         return {"ok": False, "error": f"SIGUSR2 failed: {r['stderr']}"}
@@ -789,23 +806,18 @@ def hot_update_sair(serial=None, binary_path=None):
 
 def _find_sair_binary():
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
+    return _find_file([
         os.path.join(base_dir, "..", "device", "assistant", "build", "sair"),
         os.path.join(base_dir, "device", "build", "sair"),
         os.path.join(base_dir, "..", "device", "assistant", "sair"),
         os.path.join(base_dir, "device", "assistant", "sair"),
-    ]
-    for path in candidates:
-        norm = os.path.normpath(path)
-        if os.path.isfile(norm):
-            return norm
-    return None
+    ])
 
 
 def reboot_device(serial=None):
     logger.warning("通过ADB重启设备: serial=%s", serial)
     r = _adb(["shell", "reboot"], serial=serial, timeout=10)
-    return {"ok": r["ok"], "error": r["stderr"] if not r["ok"] else None}
+    return {"ok": r["ok"], "error": r["stderr"] if not r["ok"] else ""}
 
 
 def poweroff_device(serial=None):
@@ -813,7 +825,7 @@ def poweroff_device(serial=None):
     r = _adb(["shell", "poweroff"], serial=serial, timeout=10)
     if not r["ok"]:
         r = _adb(["shell", "echo o > /proc/sysrq-trigger"], serial=serial, timeout=10)
-    return {"ok": r["ok"], "error": r["stderr"] if not r["ok"] else None}
+    return {"ok": r["ok"], "error": r["stderr"] if not r["ok"] else ""}
 
 
 def get_device_logs(serial=None, log_type="all", lines=100):
