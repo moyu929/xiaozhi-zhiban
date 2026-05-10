@@ -618,11 +618,11 @@ _INFO_SECTION_DELIMITER = "---SECTION---"
 _INFO_SECTIONS = [
     ("cpu_info", "cat /proc/cpuinfo | grep -iE 'Hardware|model name' | tail -2"),
     ("kernel", "uname -r"),
-    ("uptime", "cat /proc/uptime | awk '{print $1}'"),
+    ("uptime", "cat /proc/uptime"),
     ("meminfo", "cat /proc/meminfo | head -3"),
     ("network", "ifconfig wlan0 2>/dev/null"),
     ("disk", "df -k /var/upgrade 2>/dev/null | tail -1"),
-    ("model", "getprop ro.product.model 2>/dev/null || echo unknown"),
+    ("model", "cat /proc/device-tree/model 2>/dev/null || echo unknown"),
 ]
 
 
@@ -645,7 +645,8 @@ def _parse_kernel(text):
 
 def _parse_uptime(text):
     try:
-        return {"uptime_s": float(text.strip().split()[0])}
+        first_val = text.strip().split()[0]
+        return {"uptime_s": float(first_val)}
     except (ValueError, IndexError):
         return {"uptime_s": 0}
 
@@ -671,10 +672,22 @@ def _parse_meminfo(text):
 
 def _parse_network(text):
     ifconfig_out = text.strip()
+    if not ifconfig_out:
+        return {"wifi_ip": None, "wifi_connected": False}
     wifi_ip = None
     interface_up = False
     if "inet addr:" in ifconfig_out:
         wifi_ip = ifconfig_out.split("inet addr:")[1].split()[0]
+    elif "inet " in ifconfig_out:
+        for line in ifconfig_out.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("inet "):
+                parts = stripped.split()
+                for i, p in enumerate(parts):
+                    if p == "inet" and i + 1 < len(parts):
+                        wifi_ip = parts[i + 1]
+                        break
+                break
     for line in ifconfig_out.split("\n"):
         if "UP" in line and ("BROADCAST" in line or "RUNNING" in line or "MULTICAST" in line):
             interface_up = True
@@ -696,7 +709,7 @@ def _parse_disk(text):
 
 
 def _parse_model(text):
-    prop_model = text.strip()
+    prop_model = text.strip().rstrip('\x00')
     if prop_model and prop_model != "unknown":
         return {"model": prop_model}
     return {}
@@ -715,7 +728,7 @@ _INFO_PARSERS = {
 
 def get_device_info(serial=None):
     commands = [cmd for _, cmd in _INFO_SECTIONS]
-    cmd = f"; echo '{_INFO_SECTION_DELIMITER}'\n; ".join(commands)
+    cmd = f"; echo '{_INFO_SECTION_DELIMITER}'; ".join(commands)
     r = _adb(["shell", cmd], serial=serial, timeout=10)
     if not r["ok"]:
         return {"ok": False, "error": r["stderr"]}

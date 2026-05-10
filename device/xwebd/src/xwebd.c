@@ -538,20 +538,15 @@ static int handle_get_system(int fd, const char *body, const char *query) {
 
     {
         char buf2[64];
-        if (read_file_string("/proc/uptime", buf2, sizeof(buf2)) > 0) uptime = atof(buf2);
+        if (read_file_string("/proc/uptime", buf2, sizeof(buf2)) > 0) {
+            char *sp = strchr(buf2, ' ');
+            if (sp) *sp = '\0';
+            uptime = atof(buf2);
+        }
     }
     {
         char buf2[16];
         if (read_file_string("/sys/class/power_supply/battery/capacity", buf2, sizeof(buf2)) > 0) battery = atoi(buf2);
-    }
-
-    {
-        FILE *f = fopen("/proc/net/wireless", "r");
-        if (f) {
-            char line[256];
-            if (fgets(line, sizeof(line), f) && fgets(line, sizeof(line), f)) wifi_connected = 1;
-            fclose(f);
-        }
     }
 
     {
@@ -560,20 +555,24 @@ static int handle_get_system(int fd, const char *body, const char *query) {
             struct ifreq ifr;
             memset(&ifr, 0, sizeof(ifr));
             strncpy(ifr.ifr_name, "wlan0", IFNAMSIZ - 1);
-            if (ioctl(sock, SIOCGIFADDR, &ifr) == 0) {
-                struct sockaddr_in *sin = (struct sockaddr_in *)&ifr.ifr_addr;
-                strncpy(wifi_ip, inet_ntoa(sin->sin_addr), sizeof(wifi_ip) - 1);
+            if (ioctl(sock, SIOCGIFFLAGS, &ifr) == 0 && (ifr.ifr_flags & IFF_UP) && (ifr.ifr_flags & IFF_RUNNING)) {
+                wifi_connected = 1;
+                if (ioctl(sock, SIOCGIFADDR, &ifr) == 0) {
+                    struct sockaddr_in *sin = (struct sockaddr_in *)&ifr.ifr_addr;
+                    strncpy(wifi_ip, inet_ntoa(sin->sin_addr), sizeof(wifi_ip) - 1);
+                }
             }
             close(sock);
         }
     }
 
     {
-        struct statfs st;
-        if (statfs(XWEBD_BASE_DIR, &st) == 0) {
+        struct statvfs st;
+        if (statvfs(XWEBD_BASE_DIR, &st) == 0) {
             disk_total = (long)((long long)st.f_blocks * st.f_bsize / 1024);
-            disk_free = (long)((long long)st.f_bfree * st.f_bsize / 1024);
-            disk_used = disk_total - disk_free;
+            disk_free = (long)((long long)st.f_bavail * st.f_bsize / 1024);
+            disk_used = disk_total - (long)((long long)st.f_bfree * st.f_bsize / 1024) + disk_free;
+            if (disk_used < 0) disk_used = disk_total - disk_free;
         }
     }
 
@@ -1161,7 +1160,7 @@ static int handle_cleanup(int fd, const char *body, const char *query) {
     closedir(dir);
 
     char buf[64];
-    snprintf(buf, sizeof(buf), "{\"cleaned_bytes\":%ld,\"cleaned_files\":%d}", cleaned_bytes, cleaned_files);
+    snprintf(buf, sizeof(buf), "{\"ok\":true,\"cleaned_bytes\":%ld,\"cleaned_files\":%d}", cleaned_bytes, cleaned_files);
     return send_json(fd, 200, buf);
 }
 
@@ -1357,6 +1356,101 @@ static int handle_post_assistant_logs_clear(int fd, const char *body, const char
     return send_error(fd, 500, "Failed to clear log file");
 }
 
+static int handle_post_logs_clean(int fd, const char *body, const char *query) {
+    int source = 0;
+    if (query) {
+        const char *p = strstr(query, "source=");
+        if (p) source = atoi(p + 7);
+    }
+
+    const char *paths[] = {
+        NULL,
+        XWEBD_SAIR_LOG,
+        XWEBD_LOG_PATH
+    };
+    const char *names[] = {"", "sair", "xwebd"};
+
+    if (source < 1 || source > 2)
+        return send_error(fd, 400, "Invalid source (1=sair, 2=xwebd)");
+
+    if (truncate(paths[source], 0) == 0) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "{\"ok\":true,\"source\":\"%s\"}", names[source]);
+        return send_json(fd, 200, buf);
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"ok\":false,\"source\":\"%s\",\"error\":\"truncate failed\"}", names[source]);
+    return send_json(fd, 200, buf);
+}
+
+static int handle_post_assistant_upgrade(int fd, const char *body, const char *query) {
+    if (access(XWEBD_SAIR_BIN, X_OK) != 0)
+        return send_error(fd, 404, "sair not installed");
+
+    char sair_new_path[PATH_MAX] = XWEBD_BASE_DIR "/sair_new";
+    if (access(sair_new_path, R_OK) != 0)
+        return send_error(fd, 404, "sair_new not found, upload first");
+
+    int sair_running = 0;
+    pid_t sair_pid = 0;
+    {
+        char pbuf[16];
+        FILE *pf = popen("pidof sair 2>/dev/null", "r");
+        if (pf) {
+            if (fgets(pbuf, sizeof(pbuf), pf)) { sair_running = 1; sair_pid = atoi(pbuf); }
+            pclose(pf);
+        }
+    }
+
+    if (sair_running && sair_pid > 0) {
+        if (rename(XWEBD_SAIR_BIN, XWEBD_SAIR_BACKUP) != 0)
+            XLOG_W(TAG, "备份助手程序失败: %s", strerror(errno));
+        if (rename(sair_new_path, XWEBD_SAIR_BIN) != 0)
+            return send_error(fd, 500, "Failed to rename sair_new to sair");
+        XLOG_I(TAG, "助手升级: 发送SIGUSR2信号到pid %d进行热更新", sair_pid);
+        kill(sair_pid, SIGUSR2);
+        return send_json(fd, 200, "{\"ok\":true,\"method\":\"hot_update\"}");
+    }
+
+    if (rename(XWEBD_SAIR_BIN, XWEBD_SAIR_BACKUP) != 0)
+        XLOG_W(TAG, "备份助手程序失败: %s", strerror(errno));
+    if (rename(sair_new_path, XWEBD_SAIR_BIN) != 0)
+        return send_error(fd, 500, "Failed to rename sair_new to sair");
+    chmod(XWEBD_SAIR_BIN, 0755);
+    XLOG_I(TAG, "助手升级: sair未运行, 二进制文件已替换");
+    return send_json(fd, 200, "{\"ok\":true,\"method\":\"cold_update\"}");
+}
+
+static int handle_post_assistant_wakeup(int fd, const char *body, const char *query) {
+    char pbuf[16];
+    FILE *pf = popen("pidof sair 2>/dev/null", "r");
+    if (!pf) return send_error(fd, 500, "Cannot check sair process");
+    int found = 0;
+    pid_t sair_pid = 0;
+    if (fgets(pbuf, sizeof(pbuf), pf)) { found = 1; sair_pid = atoi(pbuf); }
+    pclose(pf);
+
+    if (!found) return send_error(fd, 404, "sair not running");
+    kill(sair_pid, SIGUSR1);
+    XLOG_I(TAG, "唤醒助手: SIGUSR1 -> pid %d", sair_pid);
+    return send_json(fd, 200, "{\"ok\":true}");
+}
+
+static int handle_post_assistant_abort(int fd, const char *body, const char *query) {
+    char pbuf[16];
+    FILE *pf = popen("pidof sair 2>/dev/null", "r");
+    if (!pf) return send_error(fd, 500, "Cannot check sair process");
+    int found = 0;
+    pid_t sair_pid = 0;
+    if (fgets(pbuf, sizeof(pbuf), pf)) { found = 1; sair_pid = atoi(pbuf); }
+    pclose(pf);
+
+    if (!found) return send_error(fd, 404, "sair not running");
+    kill(sair_pid, SIGUSR1);
+    XLOG_I(TAG, "中止对话: SIGUSR1 -> pid %d (唤醒主循环处理)", sair_pid);
+    return send_json(fd, 200, "{\"ok\":true}");
+}
+
 /* ===== 路由表 ===== */
 
 static const route_t g_routes[] = {
@@ -1366,6 +1460,7 @@ static const route_t g_routes[] = {
     {"PUT",    "/api/config",              handle_put_config},
     {"GET",    "/api/system",              handle_get_system},
     {"GET",    "/api/logs",                handle_get_logs},
+    {"POST",   "/api/logs/clean",          handle_post_logs_clean},
     {"GET",    "/api/volume",              handle_get_volume},
     {"POST",   "/api/volume",              handle_post_volume},
     {"GET",    "/api/brightness",          handle_get_brightness},
@@ -1386,6 +1481,9 @@ static const route_t g_routes[] = {
     {"GET",    "/api/assistant/logs",        handle_get_assistant_logs},
     {"POST",   "/api/assistant/deploy",      handle_post_assistant_deploy},
     {"POST",   "/api/assistant/update",      handle_post_assistant_update},
+    {"POST",   "/api/assistant/upgrade",     handle_post_assistant_upgrade},
+    {"POST",   "/api/assistant/wakeup",      handle_post_assistant_wakeup},
+    {"POST",   "/api/assistant/abort",       handle_post_assistant_abort},
     {"POST",   "/api/assistant/uninstall",   handle_post_assistant_uninstall},
     {"POST",   "/api/assistant/logs/clear",  handle_post_assistant_logs_clear},
     {NULL, NULL, NULL}

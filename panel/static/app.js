@@ -4,10 +4,11 @@ var S = {
     wl: { host: '', connected: false, xwebd: false, sair: false },
     volume: 20, brightness: 80, muted: false,
     currentPath: '/var/upgrade',
-    timers: { log: null, status: null, volume: null, brightness: null, reboot: null },
+    timers: { status: null, volume: null, brightness: null, reboot: null },
     rebootStart: 0,
     confirmResolve: null,
-    panelSSE: null
+    panelSSE: null,
+    deviceSSE: {}
 };
 
 var LOG = {
@@ -653,12 +654,14 @@ function updateSairLocks() {
 function startPolling() {
     stopPolling();
     S.timers.status = setInterval(refreshStatus, 3000);
-    S.timers.log = setInterval(refreshDeviceLogs, 2000);
+    connectDeviceSSE('xwebd');
+    connectDeviceSSE('assistant');
 }
 
 function stopPolling() {
     if (S.timers.status) { clearInterval(S.timers.status); S.timers.status = null; }
-    if (S.timers.log) { clearInterval(S.timers.log); S.timers.log = null; }
+    disconnectDeviceSSE('xwebd');
+    disconnectDeviceSSE('assistant');
 }
 
 function refreshAll() {
@@ -856,14 +859,15 @@ async function doPoweroff() {
 }
 
 async function doCleanup() {
-    if (!await showConfirm('确定清理垃圾文件？', {icon: '🧹'})) return;
+    if (!await showConfirm('确定清理垃圾文件？\n\n将清理：日志文件(截断清空)、旧版本备份(sair_old)、临时上传文件(.upload_pid)、临时文件(.tmp)\n\n不会删除：sair、xwebd、test.sh 等受保护文件', {icon: '🧹'})) return;
     toast('清理中...', 'info');
     var r = await api('/api/files/cleanup', { method: 'POST' });
     if (r.ok) {
-        var freed = r.freed_bytes ? (r.freed_bytes / 1024).toFixed(1) + ' KB' : '';
-        toast('清理完成' + (freed ? '，释放 ' + freed : ''), 'success');
+        var freed = r.cleaned_bytes ? (r.cleaned_bytes / 1024).toFixed(1) + ' KB' : '';
+        var count = r.cleaned_files || 0;
+        toast('清理完成' + (count ? '，清理 ' + count + ' 个文件' : '') + (freed ? '，释放 ' + freed : ''), 'success');
         refreshFiles();
-    } else toast('清理失败', 'error');
+    } else toast('清理失败: ' + (r.error || ''), 'error');
 }
 
 async function saveAssistantConfig() {
@@ -893,17 +897,19 @@ async function saveXwebdConfig() {
     else toast('保存失败', 'error');
 }
 
-function restoreAssistantDefaults() {
+async function restoreAssistantDefaults() {
+    if (!await showConfirm('确定恢复助手配置为默认值？', {icon: '🔄'})) return;
     $('cfgWsUrl').value = 'wss://api.tenclass.net/xiaozhi/v1/';
     $('cfgRealtime').checked = false;
     $('cfgAec').checked = false;
-    toast('已恢复默认值', 'info');
+    await saveAssistantConfig();
 }
 
-function restoreXwebdDefaults() {
-    $('cfgLogLevel').value = 'DEBUG';
-    $('cfgUploadMax').value = '10';
-    toast('已恢复默认值', 'info');
+async function restoreXwebdDefaults() {
+    if (!await showConfirm('确定恢复面板内核配置为默认值？', {icon: '🔄'})) return;
+    $('cfgLogLevel').value = 'INFO';
+    $('cfgUploadMax').value = '20';
+    await saveXwebdConfig();
 }
 
 async function doHotUpdate() {
@@ -1237,11 +1243,47 @@ function disconnectPanelSSE() {
     if (S.panelSSE) { S.panelSSE.close(); S.panelSSE = null; }
 }
 
-function refreshDeviceLogs() {
-    if (S.mode === 'wired') return;
-    if (!S.wl.connected) return;
-    if ($('autoRefreshXwebd') && $('autoRefreshXwebd').checked) refreshLogPanel('xwebd', false);
-    if ($('autoRefreshAssistant') && $('autoRefreshAssistant').checked) refreshLogPanel('assistant', false);
+function connectDeviceSSE(source) {
+    if (S.deviceSSE[source]) return;
+    var sourceNum = source === 'xwebd' ? '2' : '1';
+    try {
+        var es = new EventSource('/api/device/logs/stream?source=' + sourceNum);
+        S.deviceSSE[source] = es;
+        es.onmessage = function(e) {
+            var autoEl = source === 'xwebd' ? $('autoRefreshXwebd') : $('autoRefreshAssistant');
+            if (!autoEl || !autoEl.checked) return;
+            try {
+                var data = JSON.parse(e.data);
+                var containerId = getLogContainerId(source);
+                var container = $(containerId);
+                if (!container) return;
+                var emptyState = container.querySelector('.empty-state');
+                if (emptyState) emptyState.remove();
+                var cls = 'log-info';
+                if (data.level === 'ERROR' || data.level === 'E') cls = 'log-error';
+                else if (data.level === 'WARN' || data.level === 'W') cls = 'log-warn';
+                else if (data.level === 'DEBUG' || data.level === 'D') cls = 'log-debug';
+                var src = data.source ? '<span class="log-source">[' + data.source + ']</span> ' : '';
+                var div = document.createElement('div');
+                div.className = 'log-line ' + cls;
+                div.innerHTML = src + escapeHtml(stripAnsi(data.text || ''));
+                container.appendChild(div);
+                if (container.children.length > 500) container.removeChild(container.firstChild);
+                container.scrollTop = container.scrollHeight;
+            } catch(ex) {}
+        };
+        es.onerror = function() {
+            es.close();
+            S.deviceSSE[source] = null;
+            setTimeout(function() {
+                if (S.wl.connected) connectDeviceSSE(source);
+            }, 5000);
+        };
+    } catch(e) {}
+}
+
+function disconnectDeviceSSE(source) {
+    if (S.deviceSSE[source]) { S.deviceSSE[source].close(); S.deviceSSE[source] = null; }
 }
 
 // ==================== File Management ====================

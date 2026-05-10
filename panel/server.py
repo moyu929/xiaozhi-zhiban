@@ -383,6 +383,53 @@ def _api_logs(handler, xwebd, body, query):
     return xwebd._request("GET", url)
 
 
+@_api_route("GET", "/api/device/logs/stream")
+def _api_device_logs_stream(handler, xwebd, body, query):
+    if not xwebd:
+        return {"error": "xwebd not connected"}, 503
+    source = query.get("source", ["0"])[0] if query else "0"
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/event-stream")
+    handler.send_header("Cache-Control", "no-cache")
+    handler.send_header("Connection", "keep-alive")
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.end_headers()
+    last_line_count = 0
+    try:
+        while True:
+            url = "/api/logs?lines=100"
+            if source and source != "0":
+                url += f"&source={source}"
+            result = xwebd._request("GET", url)
+            if result and "error" not in result:
+                logs = result.get("logs", [])
+                current_count = len(logs)
+                if current_count > last_line_count and last_line_count > 0:
+                    new_logs = logs[last_line_count:]
+                    for log_entry in new_logs:
+                        data = json.dumps(log_entry, ensure_ascii=False)
+                        handler.wfile.write(f"data: {data}\n\n".encode("utf-8"))
+                    handler.wfile.flush()
+                elif last_line_count == 0 and current_count > 0:
+                    handler.wfile.write(f"data: {json.dumps({'type': 'init', 'count': current_count}, ensure_ascii=False)}\n\n".encode("utf-8"))
+                    handler.wfile.flush()
+                last_line_count = current_count
+            else:
+                handler.wfile.write(b": ping\n\n")
+                handler.wfile.flush()
+            import select
+            r, _, _ = select.select([handler.rfile], [], [], 2)
+            if r:
+                line = handler.rfile.readline()
+                if not line or line.strip() == b"":
+                    break
+    except (BrokenPipeError, ConnectionResetError, OSError):
+        pass
+    except Exception as e:
+        logger.debug("设备日志SSE断开: %s", e)
+    return _STREAM_SENTINEL
+
+
 @_api_route("GET", "/api/xwebd/diag")
 @_requires_xwebd
 def _api_xwebd_diag(handler, xwebd, body, query):
