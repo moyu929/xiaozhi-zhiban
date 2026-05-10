@@ -27,7 +27,7 @@ python control_panel.py
 ### 2. 连接设备
 
 1. 确保设备通过USB连接到电脑
-2. 浏览器打开 `http://localhost:8080`
+2. 浏览器打开 `http://localhost:3000`
 3. 在面板中完成设备连接
 
 ### 3. 部署固件
