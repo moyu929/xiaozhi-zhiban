@@ -12,7 +12,9 @@
 
 ## 支持设备
 
-- GS705B（Cortex-A5, uClibc 0.9.33.2）
+- **GS705B** 早教机器人（ACTIONS OWL SoC, ARM Cortex-A5 四核 900MHz）
+- 内存: ~56MB | 存储: NAND Flash 9.8MB可写分区 | 网络: WiFi
+- C库: uClibc 0.9.33.2 | 内核: Linux 3.10.52 | 浮点ABI: hard-float
 
 ## 编译
 
@@ -20,6 +22,7 @@
 
 - Linux环境（WSL即可）
 - ARM soft-float uClibc交叉编译工具链
+- 设备原生动态库（见下方说明）
 
 ### 获取工具链
 
@@ -32,6 +35,26 @@ toolchain/
     ├── arm-buildroot-linux-uclibcgnueabi/
     └── ...
 ```
+
+### 设备原生库
+
+assistant 运行时依赖设备固件自带的闭源动态库，这些库由设备原生系统提供，无需手动安装：
+
+| 库 | 来源 | 用途 |
+|----|------|------|
+| libapplib.so | /usr/lib | 应用框架 |
+| libapconfig.so | /usr/lib | 配置管理 |
+| libconfigpart.so | /usr/lib | 配置分区 |
+| libaudio_service_api.so | /usr/lib | 音频服务 |
+| libaudio_recorder.so | /usr/lib | 音频录制 |
+| libdds.so | /usr/lib | DDS消息服务 |
+| libsair_asr.so | /usr/lib | ASR引擎（运行时dlopen加载） |
+
+编译时通过 `-Wl,--unresolved-symbols=ignore-all` 跳过这些库的链接检查，运行时由设备动态链接器自动加载。
+
+### 云端服务
+
+assistant 需要连接 `api.tenclass.net` 云端API完成设备激活和WebSocket通信。已认证的设备可直接使用，未认证设备需先完成激活流程。
 
 ### 编译 assistant
 
@@ -58,8 +81,10 @@ bash build.sh
 通过Panel控制面板部署，无需手动操作设备。
 
 1. 启动Panel：`cd panel && python control_panel.py`
-2. 浏览器打开 `http://localhost:8080`
+2. 浏览器打开 `http://localhost:3000`
 3. 在面板中完成设备连接和固件部署
+
+也支持USB连接（通过ADB端口转发），面板会自动检测ADB设备。
 
 ## 项目结构
 
@@ -71,12 +96,10 @@ device/
 │   │   └── reverse/     # 逆向还原的设备原生API头文件
 │   ├── lib/             # 第三方库头文件（cJSON, mbedtls, opus）
 │   ├── lib_sf/          # soft-float预编译静态库（.a）
-│   ├── prebuilt/        # 预编译二进制（可直接部署）
 │   └── build.sh         # 编译脚本
 ├── xwebd/               # Web控制守护进程
 │   ├── src/             # C源码
 │   ├── include/         # 头文件
-│   ├── prebuilt/        # 预编译二进制
 │   ├── scripts/         # 设备端脚本（看门狗等）
 │   └── build.sh         # 编译脚本
 panel/                    # PC端控制面板
@@ -84,7 +107,7 @@ panel/                    # PC端控制面板
 ├── device_api.py         # xwebd API客户端
 ├── assistant_api.py      # assistant API客户端
 ├── adb_manager.py        # ADB设备管理
-├── control_panel.py      # 控制面板逻辑
+├── control_panel.py      # 控制面板启动入口
 └── static/              # 前端（HTML/CSS/JS）
 ```
 

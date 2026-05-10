@@ -2,8 +2,10 @@ build/
 __pycache__/
 *.o
 *.pyc
+*.log
 *.tar.bz2
 *.tar.xz
 toolchain/
+prebuilt/
 .DS_Store
 Thumbs.db

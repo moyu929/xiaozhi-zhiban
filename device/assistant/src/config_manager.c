@@ -103,6 +103,11 @@ int config_manager_check_wifi(void) {
         void* lib = dlopen("libwifi_client.so", RTLD_LAZY);
         if (lib) {
             wifi_func = (wifi_get_wifi_info_func_t)dlsym(lib, "wifi_get_wifi_info");
+            if (!wifi_func) {
+                PLOG_W("CFG", "dlsym wifi_get_wifi_info failed: %s", dlerror());
+            }
+        } else {
+            PLOG_W("CFG", "dlopen libwifi_client.so failed: %s", dlerror());
         }
     }
 
@@ -374,8 +379,12 @@ int config_manager_get_or_create_client_id(char* buf, int buf_size) {
     int fd = open("/dev/urandom", O_RDONLY);
     unsigned int r1 = 0, r2 = 0, r3 = 0, r4 = 0, r5 = 0, r6 = 0;
     if (fd >= 0) {
-        read(fd, &r1, 4); read(fd, &r2, 4); read(fd, &r3, 4);
-        read(fd, &r4, 4); read(fd, &r5, 4); read(fd, &r6, 4);
+        if (read(fd, &r1, 4) != 4) r1 = 0;
+        if (read(fd, &r2, 4) != 4) r2 = 0;
+        if (read(fd, &r3, 4) != 4) r3 = 0;
+        if (read(fd, &r4, 4) != 4) r4 = 0;
+        if (read(fd, &r5, 4) != 4) r5 = 0;
+        if (read(fd, &r6, 4) != 4) r6 = 0;
         close(fd);
     } else {
         /* urandom不可用时使用伪随机数 */

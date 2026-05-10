@@ -1388,10 +1388,14 @@ static void do_upload_child(int client_fd, const char *boundary, int content_len
                 found_file = 1;
                 int hdr_size = (int)(hdr_end - fbuf) + 4;
                 int body_data = n - hdr_size;
-                if (body_data > 0) write(tmp_fd, fbuf + hdr_size, body_data);
+                if (body_data > 0) {
+                    ssize_t w = write(tmp_fd, fbuf + hdr_size, body_data);
+                    if (w != body_data) { close(tmp_fd); remove(tmp_path); send_error(client_fd, 500, "Write failed"); _exit(1); }
+                }
             }
         } else if (found_file) {
-            write(tmp_fd, fbuf, n);
+            ssize_t w = write(tmp_fd, fbuf, n);
+            if (w != n) { close(tmp_fd); remove(tmp_path); send_error(client_fd, 500, "Write failed"); _exit(1); }
         }
     }
 
@@ -1491,7 +1495,10 @@ static void do_upload_raw_child(int client_fd, const char *filename, int content
             n = recv(client_fd, fbuf, to_read, 0);
             if (n <= 0) break;
         }
-        if (n > 0) write(tmp_fd, fbuf, n);
+        if (n > 0) {
+            ssize_t w = write(tmp_fd, fbuf, n);
+            if (w != n) { close(tmp_fd); remove(tmp_path); send_error(client_fd, 500, "Write failed"); _exit(1); }
+        }
         total_read += n;
     }
 
@@ -2007,6 +2014,7 @@ static int handle_get_assistant_status(int fd) {
     int pid = 0;
     int backup_exists = (access(XWEBD_SAIR_BACKUP, F_OK) == 0);
     char version[32] = "";
+    char state[32] = "";
 
     if (installed) {
         char cmd[64];
@@ -2018,28 +2026,26 @@ static int handle_get_assistant_status(int fd) {
             pclose(pf);
         }
 
-        /* 通过sair内部API获取版本号 */
         if (running) {
-            char api_resp[256] = "";
-            snprintf(cmd, sizeof(cmd),
-                "wget -q -O - -T 2 http://127.0.0.1:8081/api/status 2>/dev/null");
-            FILE *wf = popen(cmd, "r");
-            if (wf) {
-                if (fgets(api_resp, sizeof(api_resp), wf)) {
-                    char vbuf[32] = "";
-                    if (parse_json_str(api_resp, "version", vbuf, sizeof(vbuf)) == 0)
-                        strncpy(version, vbuf, sizeof(version) - 1);
+            char state_buf[256] = "";
+            int sfd = open("/tmp/sair_state.json", O_RDONLY);
+            if (sfd >= 0) {
+                int n = read(sfd, state_buf, sizeof(state_buf) - 1);
+                close(sfd);
+                if (n > 0) {
+                    state_buf[n] = '\0';
+                    parse_json_str(state_buf, "state", state, sizeof(state));
+                    parse_json_str(state_buf, "version", version, sizeof(version));
                 }
-                pclose(wf);
             }
         }
     }
 
-    char buf[256];
+    char buf[512];
     snprintf(buf, sizeof(buf),
-        "{\"installed\":%s,\"running\":%s,\"pid\":%d,\"native_backup_exists\":%s,\"api_port\":8081,\"version\":\"%s\"}",
+        "{\"installed\":%s,\"running\":%s,\"pid\":%d,\"native_backup_exists\":%s,\"state\":\"%s\",\"version\":\"%s\"}",
         installed ? "true" : "false", running ? "true" : "false", pid,
-        backup_exists ? "true" : "false", version);
+        backup_exists ? "true" : "false", state, version);
     return send_json(fd, 200, buf);
 }
 

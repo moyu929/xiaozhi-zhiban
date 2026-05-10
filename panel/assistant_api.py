@@ -1,3 +1,6 @@
+# DEPRECATED: SairAPI is no longer used. All communication goes through xwebd.
+# This file is kept for reference only.
+
 """
 assistant_api.py — Assistant API 封装（SairAPI 类）
 
@@ -10,7 +13,10 @@ assistant_api.py — Assistant API 封装（SairAPI 类）
 """
 
 import json
+import logging
 from urllib.request import Request, urlopen
+
+logger = logging.getLogger("panel.assistant_api")
 
 
 class SairAPI:
@@ -41,8 +47,10 @@ class SairAPI:
         body = json.dumps(data).encode("utf-8") if data is not None else None
         headers = {"Content-Type": "application/json"}
         req = Request(url, data=body, method=method, headers=headers)
+        logger.debug("-> %s %s", method, path)
         try:
             with urlopen(req, timeout=5) as resp:
+                logger.debug("<- %s %s: ok", method, path)
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as e:
             err_str = str(e)
@@ -50,9 +58,12 @@ class SairAPI:
                                            "远程主机强迫关闭", "10054", "10053",
                                            "Remote end closed")):
                 if method == "POST" and path in ("/api/abort", "/api/wakeup", "/api/upgrade"):
+                    logger.info("<- %s %s: 连接重置(视为成功)", method, path)
                     return {"ok": True}
                 if method == "PUT" and path == "/api/config":
+                    logger.info("<- %s %s: 连接重置(视为成功)", method, path)
                     return {"ok": True, "note": "config applied, sair restarting"}
+            logger.warning("<- %s %s: %s", method, path, err_str)
             return {"error": err_str}
 
     def get_status(self):
@@ -81,30 +92,19 @@ class SairAPI:
         Returns:
             dict: {"ok": True} 成功，{"error": "..."} 失败
         """
+        logger.info("更新sair配置: %s", list(config.keys()))
         return self._request("PUT", "/api/config", config)
 
     def wakeup(self):
-        """唤醒助手，触发语音识别
-
-        Returns:
-            dict: {"ok": True} 成功，{"error": "..."} 失败
-        """
+        logger.info("唤醒助手")
         return self._request("POST", "/api/wakeup", {})
 
     def abort(self):
-        """中止当前对话
-
-        Returns:
-            dict: {"ok": True} 成功，{"error": "..."} 失败
-        """
+        logger.info("中止对话")
         return self._request("POST", "/api/abort", {})
 
     def upgrade(self):
-        """触发助手升级
-
-        Returns:
-            dict: {"ok": True, "status": "upgrading"} 成功，{"error": "..."} 失败
-        """
+        logger.info("升级助手")
         return self._request("POST", "/api/upgrade", {})
 
     def check_connection(self):
@@ -118,7 +118,12 @@ class SairAPI:
         try:
             result = self._request("GET", "/api/status")
             self.connected = "state" in result
+            if self.connected:
+                logger.info("sair连接成功: %s:%d", self.host, self.port)
+            else:
+                logger.warning("sair连接失败: %s:%d", self.host, self.port)
             return self.connected
         except Exception:
             self.connected = False
+            logger.warning("sair连接失败: %s:%d", self.host, self.port)
             return False

@@ -11,6 +11,8 @@
 #include "plog.h"
 #include <string.h>
 #include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 /* 状态名称字符串表，用于日志输出 */
 static const char* state_names[] = {
@@ -33,6 +35,17 @@ const char* state_machine_get_state_name(xiaozhi_state_t state) {
         return state_names[state];
     }
     return "Unknown";
+}
+
+static void state_machine_write_state_file(xiaozhi_state_t state) {
+    const char* state_name = state_machine_get_state_name(state);
+    char buf[256];
+    int len = snprintf(buf, sizeof(buf), "{\"state\":\"%s\"}\n", state_name);
+    int fd = open("/tmp/sair_state.json", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) {
+        write(fd, buf, len);
+        close(fd);
+    }
 }
 
 /**
@@ -168,6 +181,8 @@ int state_machine_transition(state_machine_t* sm, xiaozhi_state_t new_state) {
 
     PLOG_I("SM", "%s -> %s", state_machine_get_state_name(old_state),
            state_machine_get_state_name(new_state));
+
+    state_machine_write_state_file(new_state);
 
     /* 按优先级顺序通知匹配的观察者 */
     for (int i = 0; i < obs_count; i++) {

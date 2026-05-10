@@ -1,7 +1,7 @@
 """
 control_panel.py — 控制面板启动入口
 
-本模块是小智值班控制面板的命令行启动入口，主要功能：
+本模块是小智智伴控制面板的命令行启动入口，主要功能：
 1. 解析命令行参数（监听地址、端口、设备 IP 等）
 2. 调用 server.start_server() 启动 HTTP 服务器
 
@@ -9,7 +9,7 @@ control_panel.py — 控制面板启动入口
     python control_panel.py                          # 默认配置启动
     python control_panel.py --device-host 10.0.0.1   # 指定设备 IP
     python control_panel.py --no-browser             # 不自动打开浏览器
-    python control_panel.py --port 8080              # 指定监听端口
+    python control_panel.py --port 3000              # 指定监听端口
 """
 
 import sys
@@ -18,10 +18,13 @@ import argparse
 import socket
 import subprocess
 import time
+import logging
+
+logger = logging.getLogger("panel.control_panel")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from server import start_server, XWEBD_PORT, SAIR_PORT
+from server import start_server, XWEBD_PORT
 
 
 def _kill_port_owner(port):
@@ -44,6 +47,7 @@ def _kill_port_owner(port):
                 if len(parts) >= 5:
                     pid = parts[-1]
                     subprocess.run(f"taskkill /PID {pid} /F", capture_output=True, timeout=5, shell=True)
+                    logger.info("终止占用端口 %d 的进程 (PID: %s)", port, pid)
                     print(f"  已终止占用端口 {port} 的进程 (PID: {pid})")
                     time.sleep(0.5)
         else:
@@ -53,10 +57,11 @@ def _kill_port_owner(port):
             for pid in r.stdout.strip().split("\n"):
                 if pid.strip():
                     subprocess.run(f"kill -9 {pid.strip()}", capture_output=True, timeout=5, shell=True)
+                    logger.info("终止占用端口 %d 的进程 (PID: %s)", port, pid.strip())
                     print(f"  已终止占用端口 {port} 的进程 (PID: {pid.strip()})")
                     time.sleep(0.5)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("终止端口占用进程异常: %s", e)
 
 
 def _is_port_in_use(port):
@@ -72,6 +77,7 @@ def _is_port_in_use(port):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(1)
             result = s.connect_ex(("127.0.0.1", port))
+            logger.debug("端口 %d 检查: %s", port, "占用" if result == 0 else "空闲")
             return result == 0
     except Exception:
         return False
@@ -86,6 +92,9 @@ def main():
     --device-host: 设备 IP 地址（默认 192.168.1.96）
     --no-browser: 不自动打开浏览器
     """
+    from log_config import setup_logging
+    setup_logging()
+
     parser = argparse.ArgumentParser(description="xiaozhi-zhiban 控制面板")
     parser.add_argument("--host", default="0.0.0.0", help="监听地址 (默认: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=3000, help="监听端口 (默认: 3000)")
@@ -93,11 +102,15 @@ def main():
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     args = parser.parse_args()
 
+    logger.info("启动参数: host=%s, port=%d, device=%s, browser=%s", args.host, args.port, args.device_host, not args.no_browser)
+
     if _is_port_in_use(args.port):
+        logger.warning("端口 %d 已被占用, 正在关闭已有服务器", args.port)
         print(f"检测到端口 {args.port} 已被占用，正在关闭已有服务器...")
         _kill_port_owner(args.port)
         time.sleep(1)
         if _is_port_in_use(args.port):
+            logger.warning("端口 %d 仍被占用, 尝试强制启动", args.port)
             print(f"警告：端口 {args.port} 仍被占用，尝试强制启动")
 
     start_server(

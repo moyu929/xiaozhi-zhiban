@@ -12,9 +12,12 @@ device_api.py — 设备 API 封装（XwebdAPI 类）
 
 import json
 import time
+import logging
 import threading
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
+
+logger = logging.getLogger("panel.device_api")
 
 
 def check_device_alive(host, port, timeout=3):
@@ -43,9 +46,12 @@ def check_device_alive(host, port, timeout=3):
         with urlopen(req, timeout=timeout) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
-                return check_key in data
+                if check_key in data:
+                    logger.debug("设备存活检查: %s:%d = True", host, port)
+                    return True
     except Exception:
         pass
+    logger.debug("设备存活检查: %s:%d = False", host, port)
     return False
 
 
@@ -88,10 +94,14 @@ class XwebdAPI:
         body = json.dumps(data).encode("utf-8") if data is not None else None
         headers = {"Content-Type": "application/json"}
         req = Request(url, data=body, method=method, headers=headers)
+        logger.debug("-> %s %s", method, path)
         try:
             with urlopen(req, timeout=5) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                result = json.loads(resp.read().decode("utf-8"))
+                logger.debug("<- %s %s: ok", method, path)
+                return result
         except Exception as e:
+            logger.warning("<- %s %s: %s", method, path, e)
             return {"error": str(e)}
 
     def get_status(self):
@@ -141,6 +151,7 @@ class XwebdAPI:
         Returns:
             dict: {"ok": True} 成功，{"error": "..."} 失败
         """
+        logger.info("设置音量: %d", volume)
         return self._request("POST", "/api/volume", {"volume": volume})
 
     def set_brightness(self, brightness):
@@ -152,9 +163,11 @@ class XwebdAPI:
         Returns:
             dict: {"ok": True} 成功，{"error": "..."} 失败
         """
+        logger.info("设置亮度: %d", brightness)
         return self._request("POST", "/api/brightness", {"brightness": brightness})
 
     def set_mute(self, muted):
+        logger.info("设置静音: %s", muted)
         return self._request("POST", "/api/mute", {"muted": 1 if muted else 0})
 
     def reboot(self):
@@ -163,6 +176,7 @@ class XwebdAPI:
         Returns:
             dict: {"ok": True} 成功，{"error": "..."} 失败
         """
+        logger.warning("重启设备")
         return self._request("POST", "/api/reboot", {})
 
     def list_files(self, path="/var/upgrade"):
@@ -194,6 +208,7 @@ class XwebdAPI:
         Returns:
             dict: {"ok": True, "message": "..."} 成功，{"error": "..."} 失败
         """
+        logger.info("部署助手: path=%s", path)
         return self._request("POST", "/api/assistant/deploy", {"path": path})
 
     def update_assistant(self, path="/var/upgrade/sair_new"):
@@ -206,6 +221,7 @@ class XwebdAPI:
         Returns:
             dict: {"ok": True, "message": "..."} 成功，{"error": "..."} 失败
         """
+        logger.info("更新助手: path=%s", path)
         return self._request("POST", "/api/assistant/update", {"path": path})
 
     def uninstall_assistant(self):
@@ -214,6 +230,7 @@ class XwebdAPI:
         Returns:
             dict: {"ok": True, "message": "..."} 成功，{"error": "..."} 失败
         """
+        logger.info("卸载助手")
         return self._request("POST", "/api/assistant/uninstall", {})
 
     def assistant_status(self):
@@ -223,6 +240,28 @@ class XwebdAPI:
             dict: {"installed": True/False, "version": "...", "running": True/False}
         """
         return self._request("GET", "/api/assistant/status")
+
+    def wakeup_assistant(self):
+        logger.info("唤醒助手")
+        return self._request("POST", "/api/assistant/wakeup")
+
+    def abort_assistant(self):
+        logger.info("中止对话")
+        return self._request("POST", "/api/assistant/abort")
+
+    def upgrade_assistant(self):
+        logger.info("升级助手")
+        return self._request("POST", "/api/assistant/upgrade")
+
+    def get_assistant_status(self):
+        return self._request("GET", "/api/assistant/status")
+
+    def get_assistant_config(self):
+        return self._request("GET", "/api/assistant/config")
+
+    def set_assistant_config(self, config):
+        logger.info("更新助手配置: %s", list(config.keys()))
+        return self._request("PUT", "/api/assistant/config", config)
 
     def poweroff(self):
         return self._request("POST", "/api/poweroff")
@@ -244,7 +283,12 @@ class XwebdAPI:
         try:
             result = self._request("GET", "/api/system")
             self.connected = "cpu" in result
+            if self.connected:
+                logger.info("xwebd连接成功: %s:%d", self.host, self.port)
+            else:
+                logger.warning("xwebd连接失败: %s:%d", self.host, self.port)
             return self.connected
         except Exception:
             self.connected = False
+            logger.warning("xwebd连接失败: %s:%d", self.host, self.port)
             return False

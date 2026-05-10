@@ -1751,13 +1751,8 @@ int main(int argc, char* argv[]) {
     g_running = 1;
     app->running = 1;
 
-    /* 启动API服务器 */
-    ret = api_server_start();
-    if (ret == 0) {
-        PLOG_I("INIT", "api_server 已在端口 8081 启动");
-    } else {
-        PLOG_W("INIT", "api_server 启动失败 (非致命错误)");
-    }
+    /* api_server_start(); */
+    PLOG_I("INIT", "api_server disabled, xwebd is the sole gateway");
 
     /* 初始化看门狗 */
     watchdog_init(&app->watchdog);
