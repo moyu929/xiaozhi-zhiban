@@ -24,7 +24,7 @@
 #define XWEBD_LOG_MAX_SIZE    (128 * 1024)             /* 日志文件最大大小(128KB)，超过后触发轮转 */
 #define XWEBD_LOG_KEEP_SIZE   (64 * 1024)              /* 日志轮转时保留的尾部大小(64KB) */
 
-#define XWEBD_UPLOAD_MAX_MB_DEFAULT  20                         /* 默认上传文件大小限制(MB) */
+#define XWEBD_UPLOAD_MAX_MB_DEFAULT  10                         /* 默认上传文件大小限制(MB) */
 #define XWEBD_UPLOAD_PID_FILE        "/var/upgrade/.upload_pid" /* 上传进程PID记录文件路径 */
 
 #define XWEBD_BASE_DIR       "/var/upgrade" /* 文件操作根目录，所有文件读写均限制在此目录下 */

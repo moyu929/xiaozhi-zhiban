@@ -907,17 +907,17 @@ async function restoreAssistantDefaults() {
 
 async function restoreXwebdDefaults() {
     if (!await showConfirm('确定恢复面板内核配置为默认值？', {icon: '🔄'})) return;
-    $('cfgLogLevel').value = 'INFO';
-    $('cfgUploadMax').value = '20';
+    $('cfgLogLevel').value = 'DEBUG';
+    $('cfgUploadMax').value = '10';
     await saveXwebdConfig();
 }
 
 async function doHotUpdate() {
     if (!await showConfirm('确定进行热更新？')) return;
     toast('正在检查更新...', 'info');
-    var r = await api('/api/upgrade', { method: 'POST' });
+    var r = await api('/api/assistant/upgrade', { method: 'POST' });
     if (r.ok) toast('热更新指令已发送', 'success');
-    else toast('热更新失败', 'error');
+    else toast('热更新失败: ' + (r.error || ''), 'error');
 }
 
 async function doDeploy() {
@@ -1295,7 +1295,6 @@ async function refreshFiles() {
     var d = r.data || r;
     var files = d.files || [];
     var container = $('fileContainer');
-    if (!files.length) { container.innerHTML = '<div class="empty-state">空目录</div>'; return; }
 
     var parts = S.currentPath.split('/').filter(Boolean);
     var navHtml = '<span class="file-nav-dim">/</span>';
@@ -1309,6 +1308,8 @@ async function refreshFiles() {
     });
 
     var html = '<div class="file-nav">' + navHtml + '</div>';
+
+    if (!files.length) { container.innerHTML = html + '<div class="empty-state">空目录</div>'; return; }
     html += '<table class="file-table"><thead><tr><th>名称</th><th>大小</th><th>修改时间</th><th>操作</th></tr></thead><tbody>';
     files.forEach(function(f) {
         var nameClass = f.is_dir ? 'file-dir-link' : (f.protected ? 'file-name-cell file-protected' : 'file-name-cell');
@@ -1440,7 +1441,6 @@ document.addEventListener('DOMContentLoaded', function() {
     applyMode();
     updateSairLocks();
     connectPanelSSE();
-    S.timers.log = setInterval(refreshDeviceLogs, 2000);
     window.addEventListener('resize', updateViewportHeight);
 
     $('cfgRealtime').addEventListener('change', function() {

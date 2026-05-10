@@ -418,7 +418,7 @@ def _api_device_logs_stream(handler, xwebd, body, query):
                 handler.wfile.write(b": ping\n\n")
                 handler.wfile.flush()
             import select
-            r, _, _ = select.select([handler.rfile], [], [], 2)
+            r, _, _ = select.select([handler.rfile], [], [], 3)
             if r:
                 line = handler.rfile.readline()
                 if not line or line.strip() == b"":

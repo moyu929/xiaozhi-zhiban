@@ -64,7 +64,7 @@ static int g_upload_max_mb = XWEBD_UPLOAD_MAX_MB_DEFAULT;
 static volatile pid_t g_upload_pid = 0;
 
 static int g_plog_fd = -1;
-static int g_plog_level = 2;
+static int g_plog_level = 3;
 static pthread_mutex_t g_plog_mutex = PTHREAD_MUTEX_INITIALIZER;
 static off_t g_plog_size = 0;
 static char g_plog_path[256] = XWEBD_LOG_PATH;
@@ -749,20 +749,29 @@ static int handle_get_services(int fd, const char *body, const char *query) {
         int n = read_file_string(XWEBD_TEST_SH, buf2, sizeof(buf2));
         if (n > 0 && strstr(buf2, "xwebd")) xwebd_autostart = 1;
     }
+    int volume_ok = (get_volume() >= 0);
+    int brightness_ok = (get_brightness() >= 0);
+    int mute_val = get_mute();
 
     char buf[512];
     int len = snprintf(buf, sizeof(buf),
         "{\"telnet\":{\"running\":%s},"
         "\"boot_watchdog\":{\"deployed\":%s},"
-        "\"xwebd_autostart\":{\"enabled\":%s}}",
+        "\"xwebd_autostart\":{\"enabled\":%s},"
+        "\"volume_control\":{\"available\":%s},"
+        "\"brightness_control\":{\"available\":%s},"
+        "\"mute_control\":{\"available\":%s}}",
         telnet_running ? "true" : "false",
         watchdog_exists ? "true" : "false",
-        xwebd_autostart ? "true" : "false");
+        xwebd_autostart ? "true" : "false",
+        volume_ok ? "true" : "false",
+        brightness_ok ? "true" : "false",
+        mute_val >= 0 ? "true" : "false");
     return send_response(fd, 200, "application/json", buf, len);
 }
 
 static int handle_get_diag(int fd, const char *body, const char *query) {
-    char buf[2048];
+    char buf[4096];
     int pos = 0;
     int ok_count = 0, fail_count = 0;
     int first = 1;
@@ -771,86 +780,109 @@ static int handle_get_diag(int fd, const char *body, const char *query) {
     pos += snprintf(buf + pos, sizeof(buf) - pos, "{\"items\":[");
 
     pos = diag_append(buf, pos, sizeof(buf), first,
-        "HTTP服务", 1, "HTTP服务运行正常", &ok_count, &fail_count);
+        "/var/upgrade分区", access(XWEBD_BASE_DIR, W_OK) == 0,
+        access(XWEBD_BASE_DIR, W_OK) == 0 ? "可读写" : "不可写",
+        &ok_count, &fail_count);
     first = 0;
-
-    {
-        const char *test_path = XWEBD_BASE_DIR "/.diag_test";
-        int fs_ok = 0;
-        int tfd = open(test_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (tfd >= 0) {
-            const char *test_data = "diag_ok";
-            int wlen = strlen(test_data);
-            if (write(tfd, test_data, wlen) == wlen) {
-                close(tfd);
-                char read_buf[16];
-                int n = read_file_string(test_path, read_buf, sizeof(read_buf));
-                if (n == wlen && memcmp(read_buf, test_data, wlen) == 0) {
-                    fs_ok = 1;
-                    snprintf(msg, sizeof(msg), "文件系统读写正常");
-                } else {
-                    snprintf(msg, sizeof(msg), "文件系统读验证失败");
-                }
-            } else {
-                snprintf(msg, sizeof(msg), "文件系统写入失败: %s", strerror(errno));
-                close(tfd);
-            }
-            unlink(test_path);
-        } else {
-            snprintf(msg, sizeof(msg), "文件系统读写失败: %s", strerror(errno));
-        }
-        pos = diag_append(buf, pos, sizeof(buf), first, "文件系统", fs_ok, msg, &ok_count, &fail_count);
-    }
-
-    {
-        char tmp[64];
-        int v_ok = (read_file_string("/proc/version", tmp, sizeof(tmp)) >= 0);
-        int m_ok = (read_file_string("/proc/meminfo", tmp, sizeof(tmp)) >= 0);
-        pos = diag_append(buf, pos, sizeof(buf), first,
-            "系统信息", v_ok && m_ok,
-            (v_ok && m_ok) ? "系统信息读取正常" : "系统信息读取失败",
-            &ok_count, &fail_count);
-    }
-
-    {
-        int vol = get_volume();
-        if (vol >= 0) snprintf(msg, sizeof(msg), "音量控制接口正常（当前音量: %d）", vol);
-        else snprintf(msg, sizeof(msg), "音量控制接口不可用");
-        pos = diag_append(buf, pos, sizeof(buf), first, "音量控制", vol >= 0, msg, &ok_count, &fail_count);
-    }
-
-    {
-        int br = get_brightness();
-        if (br >= 0) snprintf(msg, sizeof(msg), "亮度控制接口正常（当前亮度: %d）", br);
-        else snprintf(msg, sizeof(msg), "亮度控制接口不可用");
-        pos = diag_append(buf, pos, sizeof(buf), first, "亮度控制", br >= 0, msg, &ok_count, &fail_count);
-    }
-
-    pos = diag_append(buf, pos, sizeof(buf), first,
-        "Assistant状态", access(XWEBD_SAIR_BIN, F_OK) == 0,
-        (access(XWEBD_SAIR_BIN, F_OK) == 0) ? "助手程序已部署" : "助手程序未部署",
-        &ok_count, &fail_count);
-
-    pos = diag_append(buf, pos, sizeof(buf), first,
-        "看门狗脚本", access(XWEBD_WATCHDOG_SH, F_OK) == 0,
-        (access(XWEBD_WATCHDOG_SH, F_OK) == 0) ? "看门狗脚本已部署" : "看门狗脚本未部署",
-        &ok_count, &fail_count);
 
     {
         struct statvfs vfs;
         if (statvfs(XWEBD_BASE_DIR, &vfs) == 0) {
-            long free_kb = (long)((long long)vfs.f_bfree * vfs.f_bsize / 1024);
+            long free_kb = (long)((long long)vfs.f_bavail * vfs.f_bsize / 1024);
             int ok = (free_kb >= 1024);
-            if (ok) snprintf(msg, sizeof(msg), "磁盘空间充足（%ldKB可用）", free_kb);
-            else snprintf(msg, sizeof(msg), "磁盘空间不足（仅%ldKB可用）", free_kb);
+            if (ok) snprintf(msg, sizeof(msg), "%ldKB可用", free_kb);
+            else snprintf(msg, sizeof(msg), "仅%ldKB可用", free_kb);
             pos = diag_append(buf, pos, sizeof(buf), first, "磁盘空间", ok, msg, &ok_count, &fail_count);
         } else {
-            pos = diag_append(buf, pos, sizeof(buf), first, "磁盘空间", 0, "磁盘空间查询失败", &ok_count, &fail_count);
+            pos = diag_append(buf, pos, sizeof(buf), first, "磁盘空间", 0, "查询失败", &ok_count, &fail_count);
         }
     }
 
+    pos = diag_append(buf, pos, sizeof(buf), first,
+        "tinymix音频控制", access(XWEBD_TINYMIX_PATH, X_OK) == 0,
+        access(XWEBD_TINYMIX_PATH, X_OK) == 0 ? "tinymix可用" : "tinymix不可用",
+        &ok_count, &fail_count);
+
+    pos = diag_append(buf, pos, sizeof(buf), first,
+        "背光控制", access(XWEBD_BACKLIGHT_PATH, W_OK) == 0,
+        access(XWEBD_BACKLIGHT_PATH, W_OK) == 0 ? "亮度sysfs可写" : "亮度sysfs不可写",
+        &ok_count, &fail_count);
+
+    pos = diag_append(buf, pos, sizeof(buf), first,
+        "test.sh自启动", access(XWEBD_TEST_SH, X_OK) == 0,
+        access(XWEBD_TEST_SH, X_OK) == 0 ? "自启动脚本已配置" : "自启动脚本未配置",
+        &ok_count, &fail_count);
+
+    pos = diag_append(buf, pos, sizeof(buf), first,
+        "boot_watchdog.sh", access(XWEBD_WATCHDOG_SH, X_OK) == 0,
+        access(XWEBD_WATCHDOG_SH, X_OK) == 0 ? "看门狗脚本已部署" : "看门狗脚本未部署",
+        &ok_count, &fail_count);
+
+    pos = diag_append(buf, pos, sizeof(buf), first,
+        "sair助手程序", access(XWEBD_SAIR_BIN, X_OK) == 0,
+        access(XWEBD_SAIR_BIN, X_OK) == 0 ? "助手程序已部署" : "助手程序未部署",
+        &ok_count, &fail_count);
+
+    {
+        char pbuf[16] = "";
+        FILE *pf = popen("pidof manager 2>/dev/null", "r");
+        if (pf) { fgets(pbuf, sizeof(pbuf), pf); pclose(pf); }
+        int mgr_running = (pbuf[0] != '\0');
+        pos = diag_append(buf, pos, sizeof(buf), first,
+            "Manager进程", mgr_running,
+            mgr_running ? "Manager运行中" : "Manager未运行",
+            &ok_count, &fail_count);
+    }
+
+    {
+        char pbuf[16] = "";
+        FILE *pf = popen("pidof audio_service 2>/dev/null", "r");
+        if (pf) { fgets(pbuf, sizeof(pbuf), pf); pclose(pf); }
+        int audio_running = (pbuf[0] != '\0');
+        pos = diag_append(buf, pos, sizeof(buf), first,
+            "audio_service", audio_running,
+            audio_running ? "音频服务运行中" : "音频服务未运行",
+            &ok_count, &fail_count);
+    }
+
+    {
+        char pbuf[16] = "";
+        FILE *pf = popen("pidof launcher 2>/dev/null", "r");
+        if (pf) { fgets(pbuf, sizeof(pbuf), pf); pclose(pf); }
+        int launcher_running = (pbuf[0] != '\0');
+        pos = diag_append(buf, pos, sizeof(buf), first,
+            "Launcher进程", launcher_running,
+            launcher_running ? "Launcher运行中" : "Launcher未运行",
+            &ok_count, &fail_count);
+    }
+
+    {
+        int wifi_ok = 0;
+        int sock = socket(AF_INET, SOCK_DGRAM, 0);
+        if (sock >= 0) {
+            struct ifreq ifr;
+            memset(&ifr, 0, sizeof(ifr));
+            strncpy(ifr.ifr_name, "wlan0", IFNAMSIZ - 1);
+            if (ioctl(sock, SIOCGIFFLAGS, &ifr) == 0 && (ifr.ifr_flags & IFF_UP))
+                wifi_ok = 1;
+            close(sock);
+        }
+        pos = diag_append(buf, pos, sizeof(buf), first,
+            "WiFi网络", wifi_ok,
+            wifi_ok ? "wlan0接口已启用" : "wlan0接口未启用",
+            &ok_count, &fail_count);
+    }
+
+    {
+        int touch_ok = (access("/dev/input/event2", R_OK) == 0);
+        pos = diag_append(buf, pos, sizeof(buf), first,
+            "触摸屏设备", touch_ok,
+            touch_ok ? "/dev/input/event2可访问" : "/dev/input/event2不可访问",
+            &ok_count, &fail_count);
+    }
+
     pos += snprintf(buf + pos, sizeof(buf) - pos,
-        "],\"ok_count\":%d,\"fail_count\":%d,\"total\":8,"
+        "],\"ok_count\":%d,\"fail_count\":%d,\"total\":11,"
         "\"summary\":\"%d项正常, %d项异常\"}",
         ok_count, fail_count, ok_count, fail_count);
 
@@ -1191,9 +1223,19 @@ static int handle_get_assistant_status(int fd, const char *body, const char *que
                 if (n > 0) {
                     state_buf[n] = '\0';
                     parse_json_str(state_buf, "state", state, sizeof(state));
-                    parse_json_str(state_buf, "version", version, sizeof(version));
                 }
             }
+        }
+
+        FILE *vf = popen("strings " XWEBD_SAIR_BIN " 2>/dev/null | grep -m1 '^v[0-9]\\.'", "r");
+        if (vf) {
+            char vbuf[64];
+            if (fgets(vbuf, sizeof(vbuf), vf)) {
+                int vlen = strlen(vbuf);
+                while (vlen > 0 && (vbuf[vlen-1] == '\n' || vbuf[vlen-1] == '\r')) vbuf[--vlen] = '\0';
+                strncpy(version, vbuf, sizeof(version) - 1);
+            }
+            pclose(vf);
         }
     }
 
@@ -1295,6 +1337,7 @@ static int handle_post_assistant_deploy(int fd, const char *body, const char *qu
         }
         if (rename(sair_new_path, XWEBD_SAIR_BIN) != 0)
             return send_error(fd, 500, "Failed to rename sair_new to sair");
+        chmod(XWEBD_SAIR_BIN, 0755);
         XLOG_I(TAG, "助手部署: 发送SIGUSR2信号到pid %d进行热更新", sair_pid);
         kill(sair_pid, SIGUSR2);
         return send_json(fd, 200, "{\"ok\":true,\"method\":\"hot_update\",\"pid\":0}");
@@ -1306,15 +1349,47 @@ static int handle_post_assistant_deploy(int fd, const char *body, const char *qu
     }
     if (rename(sair_new_path, XWEBD_SAIR_BIN) != 0)
         return send_error(fd, 500, "Failed to rename sair_new to sair");
-
     chmod(XWEBD_SAIR_BIN, 0755);
 
-    XLOG_I(TAG, "助手部署: sair未运行, 二进制文件已放置到 %s", XWEBD_SAIR_BIN);
+    XLOG_I(TAG, "助手部署: sair未运行, 已放置到 %s, 通知manager启动", XWEBD_SAIR_BIN);
+    system("killall -USR1 manager 2>/dev/null");
+
     return send_json(fd, 200, "{\"ok\":true,\"method\":\"cold_deploy\"}");
 }
 
 static int handle_post_assistant_update(int fd, const char *body, const char *query) {
-    return handle_post_assistant_deploy(fd, body, query);
+    char sair_new_path[PATH_MAX] = XWEBD_BASE_DIR "/sair_new";
+    if (access(sair_new_path, R_OK) != 0)
+        return send_error(fd, 404, "sair_new not found, upload first");
+
+    int sair_running = 0;
+    {
+        char pbuf[16];
+        FILE *pf = popen("pidof sair 2>/dev/null", "r");
+        if (pf) {
+            if (fgets(pbuf, sizeof(pbuf), pf)) sair_running = 1;
+            pclose(pf);
+        }
+    }
+
+    if (sair_running) {
+        XLOG_I(TAG, "助手冷更新: sair运行中, 先停止");
+        system("killall sair 2>/dev/null");
+        usleep(500000);
+    }
+
+    if (access(XWEBD_SAIR_BIN, F_OK) == 0) {
+        if (rename(XWEBD_SAIR_BIN, XWEBD_SAIR_BACKUP) != 0)
+            XLOG_W(TAG, "备份助手程序失败: %s", strerror(errno));
+    }
+    if (rename(sair_new_path, XWEBD_SAIR_BIN) != 0)
+        return send_error(fd, 500, "Failed to rename sair_new to sair");
+    chmod(XWEBD_SAIR_BIN, 0755);
+
+    XLOG_I(TAG, "助手冷更新: 文件已替换, 重启设备");
+    send_json(fd, 200, "{\"ok\":true,\"method\":\"cold_update\"}");
+    system("reboot");
+    return 0;
 }
 
 static int handle_post_assistant_uninstall(int fd, const char *body, const char *query) {
@@ -1407,6 +1482,7 @@ static int handle_post_assistant_upgrade(int fd, const char *body, const char *q
             XLOG_W(TAG, "备份助手程序失败: %s", strerror(errno));
         if (rename(sair_new_path, XWEBD_SAIR_BIN) != 0)
             return send_error(fd, 500, "Failed to rename sair_new to sair");
+        chmod(XWEBD_SAIR_BIN, 0755);
         XLOG_I(TAG, "助手升级: 发送SIGUSR2信号到pid %d进行热更新", sair_pid);
         kill(sair_pid, SIGUSR2);
         return send_json(fd, 200, "{\"ok\":true,\"method\":\"hot_update\"}");
@@ -1417,7 +1493,8 @@ static int handle_post_assistant_upgrade(int fd, const char *body, const char *q
     if (rename(sair_new_path, XWEBD_SAIR_BIN) != 0)
         return send_error(fd, 500, "Failed to rename sair_new to sair");
     chmod(XWEBD_SAIR_BIN, 0755);
-    XLOG_I(TAG, "助手升级: sair未运行, 二进制文件已替换");
+    XLOG_I(TAG, "助手升级: sair未运行, 已替换, 通知manager启动");
+    system("killall -USR1 manager 2>/dev/null");
     return send_json(fd, 200, "{\"ok\":true,\"method\":\"cold_update\"}");
 }
 
