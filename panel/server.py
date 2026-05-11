@@ -285,6 +285,10 @@ def _api_status(handler, xwebd, body, query):
                 result["assistant_version"] = sair_status["version"]
             result["assistant_installed"] = sair_status.get("installed", False)
             result["assistant_running"] = sair_status.get("running", False)
+            if "activation_code" in sair_status:
+                result["activation_code"] = sair_status["activation_code"]
+            if "ws_url" in sair_status:
+                result["ws_url"] = sair_status["ws_url"]
     if not result:
         return {"error": "Not connected"}, 503
     return result
@@ -578,6 +582,34 @@ def _api_poweroff(handler, xwebd, body, query):
     return xwebd._request("POST", "/api/poweroff")
 
 
+@_api_route("POST", "/api/assistant/upgrade")
+@_requires_xwebd
+def _api_assistant_upgrade(handler, xwebd, body, query):
+    logger.info("升级助手(热更新)")
+    return xwebd.upgrade_assistant()
+
+
+@_api_route("POST", "/api/assistant/wakeup")
+@_requires_xwebd
+def _api_assistant_wakeup(handler, xwebd, body, query):
+    logger.info("唤醒助手")
+    return xwebd.wakeup_assistant()
+
+
+@_api_route("POST", "/api/assistant/abort")
+@_requires_xwebd
+def _api_assistant_abort(handler, xwebd, body, query):
+    logger.info("中止对话")
+    return xwebd.abort_assistant()
+
+
+@_api_route("POST", "/api/upgrade")
+@_requires_xwebd
+def _api_upgrade(handler, xwebd, body, query):
+    logger.info("升级助手")
+    return xwebd.upgrade_assistant()
+
+
 @_api_route("POST", "/api/wakeup")
 @_requires_xwebd
 def _api_wakeup(handler, xwebd, body, query):
@@ -590,13 +622,6 @@ def _api_wakeup(handler, xwebd, body, query):
 def _api_abort(handler, xwebd, body, query):
     logger.info("中止对话")
     return xwebd.abort_assistant()
-
-
-@_api_route("POST", "/api/upgrade")
-@_requires_xwebd
-def _api_upgrade(handler, xwebd, body, query):
-    logger.info("升级助手")
-    return xwebd.upgrade_assistant()
 
 
 @_api_route("GET", "/api/files")
@@ -989,15 +1014,16 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         """
         parsed = urlparse(self.path)
         path = parsed.path
+        query = parse_qs(parsed.query)
         if path == "/api/upload":
             self._handle_upload()
         elif path.startswith("/api/"):
             content_type = self.headers.get("Content-Type", "")
             if "multipart/form-data" in content_type:
-                self._handle_api("POST", path, None, {})
+                self._handle_api("POST", path, None, query)
             else:
                 data = self._read_body()
-                self._handle_api("POST", path, data, {})
+                self._handle_api("POST", path, data, query)
         else:
             self.send_error(404)
 
@@ -1010,9 +1036,10 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         """
         parsed = urlparse(self.path)
         path = parsed.path
+        query = parse_qs(parsed.query)
         if path.startswith("/api/"):
             data = self._read_body()
-            self._handle_api("PUT", path, data, {})
+            self._handle_api("PUT", path, data, query)
         else:
             self.send_error(404)
 

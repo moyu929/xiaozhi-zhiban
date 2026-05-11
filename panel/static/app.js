@@ -306,6 +306,18 @@ function adbDisconnect() {
 }
 
 async function selectAdbDevice(serial) {
+    if (S.wl.connected) {
+        stopPolling();
+        S.wl.connected = false;
+        S.wl.xwebd = false;
+        S.wl.sair = false;
+        updateConnUI(false);
+        updateConnStatus('xwebdConnStatus', false);
+        updateConnStatus('assistantConnStatus', false);
+        $('btnConnect').textContent = '连接';
+        $('btnConnect').disabled = false;
+        toast('已断开无线连接', 'info');
+    }
     S.adb.serial = serial;
     S.adb.connected = true;
     $('btnAdbDisconnect').style.display = '';
@@ -725,6 +737,8 @@ async function refreshAssistantStatus() {
     $('btnDeploy').disabled = d.installed;
     $('btnUpdate').disabled = false;
     if (d.activation_code) $('assistantActivation').textContent = d.activation_code;
+    else $('assistantActivation').textContent = '--';
+    if (d.ws_url) $('cfgWsUrl').value = d.ws_url;
     var wasConnected = S.wl.sair;
     S.wl.sair = d.running;
     updateConnStatus('assistantConnStatus', d.running);
@@ -1444,6 +1458,20 @@ document.addEventListener('DOMContentLoaded', function() {
     window.addEventListener('resize', updateViewportHeight);
 
     $('cfgRealtime').addEventListener('change', function() {
-        $('cfgWsUrl').value = this.checked ? 'wss://api.tenclass.net/xiaozhi/v1/realtime' : 'wss://api.tenclass.net/xiaozhi/v1/';
+        updateWsUrlFromOptions();
+    });
+    $('cfgAec').addEventListener('change', function() {
+        updateWsUrlFromOptions();
     });
 });
+
+function updateWsUrlFromOptions() {
+    var realtime = $('cfgRealtime').checked;
+    var aec = $('cfgAec').checked;
+    var baseUrl = 'wss://api.tenclass.net/xiaozhi/v1/';
+    if (realtime) {
+        $('cfgWsUrl').value = baseUrl + 'realtime';
+    } else {
+        $('cfgWsUrl').value = baseUrl;
+    }
+}

@@ -177,12 +177,13 @@ static int parse_json_bool(const char* json, const char* key, int* out) {
  */
 static int handle_get_status(int fd) {
     xiaozhi_state_t state = state_machine_get_state(&g_app.sm);
-    char buf[512];
+    char buf[768];
     int len = snprintf(buf, sizeof(buf),
-        "{\"state\":\"%s\",\"version\":\"%s\",\"realtime_mode\":%s,\"aec_enabled\":true}",
+        "{\"state\":\"%s\",\"version\":\"%s\",\"realtime_mode\":%s,\"aec_enabled\":true,\"activation_code\":\"%s\"}",
         state_to_string(state),
         XIAOZHI_VERSION,
-        g_app.realtime_mode ? "true" : "false");
+        g_app.realtime_mode ? "true" : "false",
+        g_app.config.activation_code);
     return send_response(fd, 200, "application/json", buf, len);
 }
 

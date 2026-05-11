@@ -10,6 +10,7 @@ typedef struct {
     char client_id[64];
     char ws_url[512];
     char ws_token[512];
+    char activation_code[64];
     int has_ws_config;
     int needs_activation;
     int realtime_mode;

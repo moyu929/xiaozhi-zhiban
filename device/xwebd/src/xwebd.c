@@ -571,8 +571,7 @@ static int handle_get_system(int fd, const char *body, const char *query) {
         if (statvfs(XWEBD_BASE_DIR, &st) == 0) {
             disk_total = (long)((long long)st.f_blocks * st.f_bsize / 1024);
             disk_free = (long)((long long)st.f_bavail * st.f_bsize / 1024);
-            disk_used = disk_total - (long)((long long)st.f_bfree * st.f_bsize / 1024) + disk_free;
-            if (disk_used < 0) disk_used = disk_total - disk_free;
+            disk_used = disk_total - disk_free;
         }
     }
 
@@ -1205,6 +1204,8 @@ static int handle_get_assistant_status(int fd, const char *body, const char *que
     int backup_exists = (access(XWEBD_SAIR_BACKUP, F_OK) == 0);
     char version[32] = "";
     char state[32] = "";
+    char activation_code[64] = "";
+    char ws_url[512] = "";
 
     if (installed) {
         FILE *pf = popen("pidof sair 2>/dev/null", "r");
@@ -1225,6 +1226,29 @@ static int handle_get_assistant_status(int fd, const char *body, const char *que
                     parse_json_str(state_buf, "state", state, sizeof(state));
                 }
             }
+
+            FILE *sf = popen("wget -q -O - http://127.0.0.1:8081/api/status 2>/dev/null", "r");
+            if (sf) {
+                char sbuf[1024];
+                int sn = fread(sbuf, 1, sizeof(sbuf) - 1, sf);
+                pclose(sf);
+                if (sn > 0) {
+                    sbuf[sn] = '\0';
+                    parse_json_str(sbuf, "activation_code", activation_code, sizeof(activation_code));
+                    if (state[0] == '\0') parse_json_str(sbuf, "state", state, sizeof(state));
+                }
+            }
+
+            FILE *cf = popen("wget -q -O - http://127.0.0.1:8081/api/config 2>/dev/null", "r");
+            if (cf) {
+                char cbuf[1024];
+                int cn = fread(cbuf, 1, sizeof(cbuf) - 1, cf);
+                pclose(cf);
+                if (cn > 0) {
+                    cbuf[cn] = '\0';
+                    parse_json_str(cbuf, "ws_url", ws_url, sizeof(ws_url));
+                }
+            }
         }
 
         FILE *vf = popen("strings " XWEBD_SAIR_BIN " 2>/dev/null | grep -m1 '^v[0-9]\\.'", "r");
@@ -1239,11 +1263,11 @@ static int handle_get_assistant_status(int fd, const char *body, const char *que
         }
     }
 
-    char buf[512];
+    char buf[1024];
     snprintf(buf, sizeof(buf),
-        "{\"installed\":%s,\"running\":%s,\"pid\":%d,\"native_backup_exists\":%s,\"state\":\"%s\",\"version\":\"%s\"}",
+        "{\"installed\":%s,\"running\":%s,\"pid\":%d,\"native_backup_exists\":%s,\"state\":\"%s\",\"version\":\"%s\",\"activation_code\":\"%s\",\"ws_url\":\"%s\"}",
         installed ? "true" : "false", running ? "true" : "false", pid,
-        backup_exists ? "true" : "false", state, version);
+        backup_exists ? "true" : "false", state, version, activation_code, ws_url);
     return send_json(fd, 200, buf);
 }
 

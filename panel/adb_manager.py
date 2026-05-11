@@ -110,13 +110,18 @@ def _find_file(candidates):
 
 
 def _push_binary(local_path, remote_path, serial, timeout=30):
-    r = _adb(["push", local_path, remote_path], serial=serial, timeout=timeout)
-    if not r["ok"]:
-        return {"ok": False, "error": f"adb push failed: {r['stderr']}"}
-    r = _adb(["shell", f"chmod 755 {remote_path}"], serial=serial)
-    if not r["ok"]:
-        return {"ok": False, "error": f"chmod failed: {r['stderr']}"}
-    return {"ok": True}
+    max_retries = 3
+    for attempt in range(max_retries):
+        r = _adb(["push", local_path, remote_path], serial=serial, timeout=timeout)
+        if r["ok"]:
+            r = _adb(["shell", f"chmod 755 {remote_path}"], serial=serial)
+            if r["ok"]:
+                return {"ok": True}
+            return {"ok": False, "error": f"chmod failed: {r['stderr']}"}
+        if attempt < max_retries - 1:
+            logger.warning("adb push失败(第%d次), 1秒后重试: %s", attempt + 1, r['stderr'])
+            time.sleep(1)
+    return {"ok": False, "error": f"adb push failed after {max_retries} retries: {r['stderr']}"}
 
 
 def _shell_test(path, serial):

@@ -291,6 +291,7 @@ int config_manager_check_activation(config_manager_t* cfg) {
     } else if (activation_code[0]) {
         /* 设备未激活，需要用户输入激活码 */
         cfg->needs_activation = 1;
+        strncpy(cfg->activation_code, activation_code, sizeof(cfg->activation_code) - 1);
         PLOG_W("CFG", "OTA: 设备未激活, 激活码=%s", activation_code);
 
         if (cfg->has_ws_config) {
