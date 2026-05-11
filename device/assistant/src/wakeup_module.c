@@ -50,10 +50,10 @@ static char g_major_config[256] = {0};
 /* 双重检测配置文件路径 */
 static char g_dcheck_config[256] = {0};
 /* 商城模式标志 */
-static int  g_malls_mode = 0;
+static int g_malls_mode = 0;
 
-/* 全局唤醒模块实例指针，供ASR回调使用 */
-static wakeup_module_t* g_wakeup_mod = NULL;
+/* 全局唤醒模块实例指针，供ASR回调使用（volatile防止编译器优化） */
+static volatile wakeup_module_t *g_wakeup_mod = NULL;
 
 /**
  * @brief 解析资源文件路径
@@ -65,17 +65,20 @@ static wakeup_module_t* g_wakeup_mod = NULL;
  * @param path_size 缓冲区大小
  * @return 0=成功，-1=资源文件未找到
  */
-static int resolve_resource_path(char* path, int path_size) {
+static int resolve_resource_path(char *path, int path_size)
+{
     char temp[512];
 
     /* 已经是绝对路径，直接返回 */
-    if (path[0] == '/') {
+    if (path[0] == '/')
+    {
         return 0;
     }
 
     /* 优先从升级目录查找 */
     snprintf(temp, sizeof(temp), "/var/upgrade/%s", path);
-    if (access(temp, R_OK) == 0) {
+    if (access(temp, R_OK) == 0)
+    {
         strncpy(path, temp, path_size - 1);
         path[path_size - 1] = '\0';
         return 0;
@@ -83,7 +86,8 @@ static int resolve_resource_path(char* path, int path_size) {
 
     /* 其次从默认资源目录查找 */
     snprintf(temp, sizeof(temp), "/usr/local/resource/duilite/%s", path);
-    if (access(temp, R_OK) == 0) {
+    if (access(temp, R_OK) == 0)
+    {
         strncpy(path, temp, path_size - 1);
         path[path_size - 1] = '\0';
         return 0;
@@ -101,12 +105,14 @@ static int resolve_resource_path(char* path, int path_size) {
  *
  * @return 0=成功，-1=关键资源缺失
  */
-static int load_config(void) {
+static int load_config(void)
+{
     int ret;
 
     /* 读取产品ID，缺失时使用默认值 */
     ret = get_config("DUI_AI_PRODUCT_ID", g_product_id, sizeof(g_product_id));
-    if (ret < 0 || g_product_id[0] == '\0') {
+    if (ret < 0 || g_product_id[0] == '\0')
+    {
         strncpy(g_product_id, "278577032", sizeof(g_product_id) - 1);
     }
 
@@ -116,7 +122,8 @@ static int load_config(void) {
 
     /* 读取主唤醒词，缺失时使用默认唤醒词集合 */
     ret = get_config("MAIN_WAKE_WORD", g_main_wake_word, sizeof(g_main_wake_word));
-    if (ret < 0 || g_main_wake_word[0] == '\0') {
+    if (ret < 0 || g_main_wake_word[0] == '\0')
+    {
         strncpy(g_main_wake_word,
                 "zhi ban zhi ban,sheng yin da yi dian,sheng yin xiao yi dian,"
                 "ting zhi bo fang,ji xu bo fang,shang yi shou,xia yi shou,ni hao zhi dao",
@@ -125,7 +132,8 @@ static int load_config(void) {
 
     /* 读取主唤醒词阈值，缺失时使用默认0.5 */
     ret = get_config("MAIN_WAKE_THRESH", g_main_wake_thresh, sizeof(g_main_wake_thresh));
-    if (ret < 0 || g_main_wake_thresh[0] == '\0') {
+    if (ret < 0 || g_main_wake_thresh[0] == '\0')
+    {
         strncpy(g_main_wake_thresh, "0.5", sizeof(g_main_wake_thresh) - 1);
     }
 
@@ -137,21 +145,24 @@ static int load_config(void) {
 
     /* 读取并解析唤醒模型资源路径 */
     ret = get_config("DUILITE_WAKEUP_RES", g_wakeup_res_path, sizeof(g_wakeup_res_path));
-    if (ret < 0 || g_wakeup_res_path[0] == '\0') {
+    if (ret < 0 || g_wakeup_res_path[0] == '\0')
+    {
         strncpy(g_wakeup_res_path, "/usr/local/resource/duilite/wakeup.bin", sizeof(g_wakeup_res_path) - 1);
     }
     resolve_resource_path(g_wakeup_res_path, sizeof(g_wakeup_res_path));
 
     /* 读取并解析VAD资源路径 */
     ret = get_config("DUILITE_VAD_RES", g_vad_res_path, sizeof(g_vad_res_path));
-    if (ret < 0 || g_vad_res_path[0] == '\0') {
+    if (ret < 0 || g_vad_res_path[0] == '\0')
+    {
         strncpy(g_vad_res_path, "/usr/local/resource/duilite/vad_aihome_v0.9b.bin", sizeof(g_vad_res_path) - 1);
     }
     resolve_resource_path(g_vad_res_path, sizeof(g_vad_res_path));
 
-    /* 读取并解析AEC资源路径 */
+    /* 读取并解析本地AEC资源路径（唤醒词检测的回声消除前处理，非云端AEC） */
     ret = get_config("DUILITE_AEC_RES", g_aec_res_path, sizeof(g_aec_res_path));
-    if (ret < 0 || g_aec_res_path[0] == '\0') {
+    if (ret < 0 || g_aec_res_path[0] == '\0')
+    {
         strncpy(g_aec_res_path,
                 "/usr/local/resource/duilite/AEC_ch3-2-ch2_1ref_common_20181226_v0.9.4.bin",
                 sizeof(g_aec_res_path) - 1);
@@ -160,7 +171,8 @@ static int load_config(void) {
 
     /* 读取并解析UDA资源路径 */
     ret = get_config("DUILITE_UDA_RES", g_uda_res_path, sizeof(g_uda_res_path));
-    if (ret < 0 || g_uda_res_path[0] == '\0') {
+    if (ret < 0 || g_uda_res_path[0] == '\0')
+    {
         strncpy(g_uda_res_path,
                 "/usr/local/resource/duilite/UDA_asr_ch2_2_ch2_40mm_20181226_v1.1.0.8_wkppost1_asrpost0_v2.bin",
                 sizeof(g_uda_res_path) - 1);
@@ -168,7 +180,8 @@ static int load_config(void) {
     resolve_resource_path(g_uda_res_path, sizeof(g_uda_res_path));
 
     /* 检查唤醒模型文件是否存在，这是关键资源 */
-    if (access(g_wakeup_res_path, F_OK) != 0) {
+    if (access(g_wakeup_res_path, F_OK) != 0)
+    {
         PLOG_E("WAKEUP", "唤醒模型文件未找到: %s", g_wakeup_res_path);
         return -1;
     }
@@ -190,19 +203,23 @@ static int load_config(void) {
  * @param event_type 事件类型（ASR_EVENT_INIT_DONE等）
  * @param result     事件结果值
  */
-static void asr_callback(int event_type, int result) {
-    if (!g_wakeup_mod) return;
+static void asr_callback(int event_type, int result)
+{
+    volatile wakeup_module_t *mod = g_wakeup_mod;
+    if (!mod || !mod->initialized)
+        return;
 
-    switch (event_type) {
+    switch (event_type)
+    {
     case ASR_EVENT_INIT_DONE:
         PLOG_I("ASR", "初始化完成: result=%d", result);
-        g_wakeup_mod->asr_init_done = 1;
+        mod->asr_init_done = 1;
         break;
     case ASR_EVENT_WAKEUP:
         PLOG_I("ASR", "检测到唤醒! type=%d", result);
-        /* 触发上层唤醒回调 */
-        if (g_wakeup_mod->on_wakeup) {
-            g_wakeup_mod->on_wakeup(result, g_wakeup_mod->wakeup_user_data);
+        if (mod->on_wakeup)
+        {
+            mod->on_wakeup(result, mod->wakeup_user_data);
         }
         break;
     case ASR_EVENT_DIFF_WORD:
@@ -233,10 +250,13 @@ static void asr_callback(int event_type, int result) {
  * @param len       采样点数
  * @param user_data 用户数据（wakeup_module_t指针）
  */
-static void wakeup_audio_callback(const int16_t* data, int len, void* user_data) {
-    wakeup_module_t* mod = (wakeup_module_t*)user_data;
-    if (!mod || mod->paused || !mod->started || !mod->asr_handle) return;
-    if (mod->f_asr_feed_data) {
+static void wakeup_audio_callback(const int16_t *data, int len, void *user_data)
+{
+    wakeup_module_t *mod = (wakeup_module_t *)user_data;
+    if (!mod || mod->paused || !mod->started || !mod->asr_handle)
+        return;
+    if (mod->f_asr_feed_data)
+    {
         mod->f_asr_feed_data(mod->asr_handle, data, len * 2);
     }
 }
@@ -254,53 +274,58 @@ static void wakeup_audio_callback(const int16_t* data, int len, void* user_data)
  * @param user_data 回调用户数据
  * @return 0=成功，-1=失败
  */
-int wakeup_init(wakeup_module_t* mod, audio_dispatcher_t* disp,
-                void (*on_wakeup)(int wakeup_type, void* user_data),
-                void* user_data) {
-    if (!mod) return -1;
+int wakeup_init(wakeup_module_t *mod, audio_dispatcher_t *disp,
+                void (*on_wakeup)(int wakeup_type, void *user_data),
+                void *user_data)
+{
+    if (!mod)
+        return -1;
     memset(mod, 0, sizeof(wakeup_module_t));
 
     mod->dispatcher = disp;
     mod->on_wakeup = on_wakeup;
     mod->wakeup_user_data = user_data;
 
-    g_wakeup_mod = mod;
-
     /* 加载配置，资源缺失时仅警告不中断 */
-    if (load_config() < 0) {
+    if (load_config() < 0)
+    {
         PLOG_W("WAKEUP", "加载配置失败, 部分资源可能缺失");
     }
 
     /* 加载libalooper.so依赖库（非致命） */
-    void* alooper_lib = dlopen("libalooper.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!alooper_lib) {
+    void *alooper_lib = dlopen("libalooper.so", RTLD_NOW | RTLD_GLOBAL);
+    if (!alooper_lib)
+    {
         PLOG_W("WAKEUP", "dlopen libalooper.so失败: %s (非致命)", dlerror());
     }
 
     /* 加载libstream_source.so依赖库（非致命） */
-    void* stream_lib = dlopen("libstream_source.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!stream_lib) {
+    void *stream_lib = dlopen("libstream_source.so", RTLD_NOW | RTLD_GLOBAL);
+    if (!stream_lib)
+    {
         PLOG_W("WAKEUP", "dlopen libstream_source.so失败: %s (非致命)", dlerror());
     }
 
     /* 加载ASR引擎核心动态库（致命错误） */
     mod->asr_lib = dlopen("libsair_asr.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!mod->asr_lib) {
+    if (!mod->asr_lib)
+    {
         PLOG_E("WAKEUP", "dlopen libsair_asr.so失败: %s", dlerror());
         return -1;
     }
 
     /* 解析ASR引擎函数符号 */
     mod->f_asr_set_params = (asr_set_params_t)dlsym(mod->asr_lib, "asr_engine_set_params");
-    mod->f_asr_init       = (asr_init_t)dlsym(mod->asr_lib, "asr_engine_init");
-    mod->f_asr_finalize   = (asr_finalize_t)dlsym(mod->asr_lib, "asr_engine_finalize");
-    mod->f_asr_start      = (asr_start_t)dlsym(mod->asr_lib, "asr_engine_start");
-    mod->f_asr_stop       = (asr_stop_t)dlsym(mod->asr_lib, "asr_engine_stop");
-    mod->f_asr_feed_data  = (asr_feed_data_t)dlsym(mod->asr_lib, "asr_engine_feed_data");
+    mod->f_asr_init = (asr_init_t)dlsym(mod->asr_lib, "asr_engine_init");
+    mod->f_asr_finalize = (asr_finalize_t)dlsym(mod->asr_lib, "asr_engine_finalize");
+    mod->f_asr_start = (asr_start_t)dlsym(mod->asr_lib, "asr_engine_start");
+    mod->f_asr_stop = (asr_stop_t)dlsym(mod->asr_lib, "asr_engine_stop");
+    mod->f_asr_feed_data = (asr_feed_data_t)dlsym(mod->asr_lib, "asr_engine_feed_data");
 
     /* 检查所有必要符号是否解析成功 */
     if (!mod->f_asr_set_params || !mod->f_asr_init || !mod->f_asr_start ||
-        !mod->f_asr_feed_data || !mod->f_asr_stop || !mod->f_asr_finalize) {
+        !mod->f_asr_feed_data || !mod->f_asr_stop || !mod->f_asr_finalize)
+    {
         PLOG_E("WAKEUP", "ASR引擎函数符号解析失败");
         dlclose(mod->asr_lib);
         mod->asr_lib = NULL;
@@ -310,7 +335,8 @@ int wakeup_init(wakeup_module_t* mod, audio_dispatcher_t* disp,
     PLOG_I("WAKEUP", "ASR引擎符号加载完成");
 
     /* 设置ASR引擎参数：通道数4，注册回调 */
-    if (mod->f_asr_set_params(0, 4, (void*)asr_callback) != 0) {
+    if (mod->f_asr_set_params(0, 4, (void *)asr_callback) != 0)
+    {
         PLOG_E("WAKEUP", "asr_engine_set_params失败");
         dlclose(mod->asr_lib);
         mod->asr_lib = NULL;
@@ -328,12 +354,14 @@ int wakeup_init(wakeup_module_t* mod, audio_dispatcher_t* disp,
     strncpy(asr_cfg.main_wake_word, g_main_wake_word, sizeof(asr_cfg.main_wake_word) - 1);
     strncpy(asr_cfg.main_wake_thresh, g_main_wake_thresh, sizeof(asr_cfg.main_wake_thresh) - 1);
     /* 可选：自定义唤醒词 */
-    if (g_custom_wake_word[0]) {
+    if (g_custom_wake_word[0])
+    {
         strncpy(asr_cfg.custom_wake_word, g_custom_wake_word, sizeof(asr_cfg.custom_wake_word) - 1);
         strncpy(asr_cfg.custom_wake_thresh, g_custom_wake_thresh, sizeof(asr_cfg.custom_wake_thresh) - 1);
     }
     /* 可选：本地命令词 */
-    if (g_local_command_word[0]) {
+    if (g_local_command_word[0])
+    {
         strncpy(asr_cfg.local_command_word, g_local_command_word, sizeof(asr_cfg.local_command_word) - 1);
         strncpy(asr_cfg.local_command_thresh, g_local_command_thresh, sizeof(asr_cfg.local_command_thresh) - 1);
     }
@@ -346,7 +374,8 @@ int wakeup_init(wakeup_module_t* mod, audio_dispatcher_t* disp,
     asr_cfg.malls_mode = g_malls_mode;
 
     mod->asr_handle = mod->f_asr_init(&asr_cfg);
-    if (!mod->asr_handle) {
+    if (!mod->asr_handle)
+    {
         PLOG_E("WAKEUP", "asr_engine_init失败");
         dlclose(mod->asr_lib);
         mod->asr_lib = NULL;
@@ -355,9 +384,11 @@ int wakeup_init(wakeup_module_t* mod, audio_dispatcher_t* disp,
     PLOG_I("WAKEUP", "asr_engine_init成功, handle=%p", mod->asr_handle);
 
     mod->initialized = 1;
+    g_wakeup_mod = mod;
 
     /* 注册音频分发器回调，接收音频数据 */
-    if (disp) {
+    if (disp)
+    {
         audio_dispatcher_register(disp, wakeup_audio_callback, mod);
         PLOG_I("WAKEUP", "已注册音频分发器回调");
     }
@@ -374,29 +405,39 @@ int wakeup_init(wakeup_module_t* mod, audio_dispatcher_t* disp,
  * @param mod 唤醒模块实例
  * @return 0=成功，-1=失败
  */
-int wakeup_start(wakeup_module_t* mod) {
-    if (!mod || !mod->initialized) return -1;
-    if (mod->started) return 0;
+int wakeup_start(wakeup_module_t *mod)
+{
+    if (!mod || !mod->initialized)
+        return -1;
+    if (mod->started)
+        return 0;
 
     /* 等待ASR引擎初始化完成通知 */
-    if (!mod->asr_init_done) {
+    if (!mod->asr_init_done)
+    {
         PLOG_I("WAKEUP", "等待ASR初始化完成...");
         int wait_count = 0;
-        while (!mod->asr_init_done && wait_count < 50) {
+        while (!mod->asr_init_done && wait_count < 50)
+        {
             usleep(100000);
             wait_count++;
         }
-        if (!mod->asr_init_done) {
+        if (!mod->asr_init_done)
+        {
             PLOG_W("WAKEUP", "ASR初始化超时(5秒), 仍尝试启动");
-        } else {
+        }
+        else
+        {
             PLOG_I("WAKEUP", "ASR初始化完成, 等待耗时%dms", wait_count * 100);
         }
     }
 
     /* 启动ASR引擎 */
-    if (mod->asr_handle && mod->f_asr_start) {
+    if (mod->asr_handle && mod->f_asr_start)
+    {
         int ret = mod->f_asr_start(mod->asr_handle);
-        if (ret != 0) {
+        if (ret != 0)
+        {
             PLOG_E("WAKEUP", "asr_engine_start失败: %d", ret);
             return -1;
         }
@@ -415,9 +456,12 @@ int wakeup_start(wakeup_module_t* mod) {
  *
  * @param mod 唤醒模块实例
  */
-void wakeup_stop(wakeup_module_t* mod) {
-    if (!mod || !mod->started) return;
-    if (mod->asr_handle && mod->f_asr_stop) {
+void wakeup_stop(wakeup_module_t *mod)
+{
+    if (!mod || !mod->started)
+        return;
+    if (mod->asr_handle && mod->f_asr_stop)
+    {
         mod->f_asr_stop(mod->asr_handle);
     }
     mod->started = 0;
@@ -432,12 +476,16 @@ void wakeup_stop(wakeup_module_t* mod) {
  *
  * @param mod 唤醒模块实例
  */
-void wakeup_close(wakeup_module_t* mod) {
-    if (!mod) return;
-    if (mod->started) {
+void wakeup_close(wakeup_module_t *mod)
+{
+    if (!mod)
+        return;
+    if (mod->started)
+    {
         wakeup_stop(mod);
     }
-    if (mod->asr_handle && mod->f_asr_finalize) {
+    if (mod->asr_handle && mod->f_asr_finalize)
+    {
         mod->f_asr_finalize(mod->asr_handle);
     }
     mod->asr_handle = NULL;
@@ -452,8 +500,10 @@ void wakeup_close(wakeup_module_t* mod) {
  *
  * @param mod 唤醒模块实例
  */
-void wakeup_pause_feed(wakeup_module_t* mod) {
-    if (!mod) return;
+void wakeup_pause_feed(wakeup_module_t *mod)
+{
+    if (!mod)
+        return;
     mod->paused = 1;
     PLOG_D("WAKEUP", "音频输入已暂停");
 }
@@ -463,8 +513,10 @@ void wakeup_pause_feed(wakeup_module_t* mod) {
  *
  * @param mod 唤醒模块实例
  */
-void wakeup_resume_feed(wakeup_module_t* mod) {
-    if (!mod) return;
+void wakeup_resume_feed(wakeup_module_t *mod)
+{
+    if (!mod)
+        return;
     mod->paused = 0;
     PLOG_D("WAKEUP", "音频输入已恢复");
 }
@@ -475,8 +527,10 @@ void wakeup_resume_feed(wakeup_module_t* mod) {
  * @param mod 唤醒模块实例
  * @return 1=活跃（已启动且未暂停），0=不活跃
  */
-int wakeup_is_feed_active(wakeup_module_t* mod) {
-    if (!mod) return 0;
+int wakeup_is_feed_active(wakeup_module_t *mod)
+{
+    if (!mod)
+        return 0;
     return mod->started && !mod->paused;
 }
 
@@ -487,17 +541,23 @@ int wakeup_is_feed_active(wakeup_module_t* mod) {
  *
  * @param mod 唤醒模块实例
  */
-void wakeup_destroy(wakeup_module_t* mod) {
-    if (!mod) return;
+void wakeup_destroy(wakeup_module_t *mod)
+{
+    if (!mod)
+        return;
+    /* 先置空全局指针，防止ASR回调访问正在销毁的模块 */
+    g_wakeup_mod = NULL;
+    mod->initialized = 0;
     /* 注销音频分发器回调 */
-    if (mod->dispatcher) {
+    if (mod->dispatcher)
+    {
         audio_dispatcher_unregister(mod->dispatcher, wakeup_audio_callback);
     }
     wakeup_close(mod);
     /* 卸载ASR引擎动态库 */
-    if (mod->asr_lib) {
+    if (mod->asr_lib)
+    {
         dlclose(mod->asr_lib);
         mod->asr_lib = NULL;
     }
-    g_wakeup_mod = NULL;
 }

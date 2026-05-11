@@ -1,6 +1,8 @@
 #ifndef DIAG_MODULE_H
 #define DIAG_MODULE_H
 
+#define DIAG_MAX_ITEMS 24
+
 typedef struct {
     const char *name;
     int ok;
@@ -9,7 +11,7 @@ typedef struct {
 
 typedef struct {
     int count;
-    diag_item_t items[16];
+    diag_item_t items[DIAG_MAX_ITEMS];
     char summary[256];
 } diag_result_t;
 

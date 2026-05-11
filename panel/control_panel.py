@@ -25,6 +25,7 @@ logger = logging.getLogger("panel.control_panel")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from server import start_server, XWEBD_PORT
+from config import DEFAULT_DEVICE_HOST, DEFAULT_PANEL_PORT
 
 
 def _kill_port_owner(port):
@@ -89,7 +90,7 @@ def main():
     支持的命令行参数：
     --host: 服务器监听地址（默认 0.0.0.0，即所有网卡）
     --port: 服务器监听端口（默认 3000）
-    --device-host: 设备 IP 地址（默认 192.168.1.96）
+    --device-host: 设备 IP 地址（默认从环境变量 XIAOZHI_DEVICE_HOST 读取，未设置则需手动指定）
     --no-browser: 不自动打开浏览器
     """
     from log_config import setup_logging
@@ -97,8 +98,8 @@ def main():
 
     parser = argparse.ArgumentParser(description="xiaozhi-zhiban 控制面板")
     parser.add_argument("--host", default="0.0.0.0", help="监听地址 (默认: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=3000, help="监听端口 (默认: 3000)")
-    parser.add_argument("--device-host", default="192.168.1.96", help="设备IP地址 (默认: 192.168.1.96)")
+    parser.add_argument("--port", type=int, default=DEFAULT_PANEL_PORT, help=f"监听端口 (默认: {DEFAULT_PANEL_PORT})")
+    parser.add_argument("--device-host", default=DEFAULT_DEVICE_HOST, help="设备IP地址 (环境变量: XIAOZHI_DEVICE_HOST)")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     args = parser.parse_args()
 

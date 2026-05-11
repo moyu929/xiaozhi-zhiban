@@ -7,7 +7,8 @@
 typedef struct {
     int fd;
     pthread_t thread;
-    int running;
+    int thread_created;
+    volatile int running;
     volatile int pending_key;
     void (*on_key)(int key_code, void* user_data);
     void* user_data;

@@ -16,6 +16,7 @@ server.py — Panel HTTP 服务器
 import json
 import logging
 import os
+import socket
 import sys
 import time
 from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -32,20 +33,24 @@ logger = logging.getLogger("panel.server")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from device_api import XwebdAPI
+from config import DEFAULT_DEVICE_HOST, DEFAULT_PANEL_PORT, DEFAULT_XWEBD_PORT
 from adb_manager import (is_adb_available, detect_devices, is_xwebd_installed,
                           check_xwebd_status, deploy_xwebd, update_xwebd,
                           remove_xwebd, start_xwebd, stop_xwebd, restart_xwebd,
                           setup_forward, get_device_ip, get_device_info,
                           check_sair_status, deploy_sair, hot_update_sair, reboot_device,
                           poweroff_device, get_device_logs, _find_adb,
-                          init_device, is_device_initialized)
+                          init_device, is_device_initialized, factory_reset_device,
+                          check_xwebd_env)
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 XWEBD_PORT = 8080
 
 _xwebd_api = None
+_xwebd_lock = threading.Lock()
 _upload_progress = {}
+_upload_progress_lock = threading.Lock()
 
 
 def get_panel_logs(lines_count=100):
@@ -153,22 +158,14 @@ def adb_forward_setup(serial=None):
 
 
 def get_xwebd_api():
-    """获取当前 xwebd API 实例
-
-    Returns:
-        XwebdAPI: 当前的 xwebd API 实例，未连接时为 None
-    """
-    return _xwebd_api
+    with _xwebd_lock:
+        return _xwebd_api
 
 
 def set_apis(xwebd_api):
-    """设置全局 API 实例
-
-    Args:
-        xwebd_api: XwebdAPI 实例
-    """
     global _xwebd_api
-    _xwebd_api = xwebd_api
+    with _xwebd_lock:
+        _xwebd_api = xwebd_api
     logger.info("API实例更新: xwebd=%s", xwebd_api is not None)
 
 
@@ -215,7 +212,7 @@ def _requires_xwebd(func):
 
 @_api_route("POST", "/api/connect")
 def _api_connect(handler, xwebd, body, query):
-    host = body.get("host", "192.168.1.96") if body else "192.168.1.96"
+    host = body.get("host", DEFAULT_DEVICE_HOST) if body else DEFAULT_DEVICE_HOST
     is_usb = (host == "localhost" or host == "127.0.0.1")
     logger.info("连接设备: host=%s, usb=%s", host, is_usb)
     if is_usb:
@@ -233,21 +230,22 @@ def _api_connect(handler, xwebd, body, query):
                 "sair_connected": sair_ok, "xwebd_connected": xwebd_ok}
 
     set_apis(None)
-    adb_reachable = False
-    adb_serial = None
-    try:
-        devices = detect_devices()
-        if devices:
-            adb_reachable = True
-            adb_serial = devices[0]["serial"]
-            logger.info("xwebd不可达，但ADB设备可用: %s", adb_serial)
-    except Exception as e:
-        logger.debug("ADB检测异常: %s", e)
+    if is_usb:
+        adb_reachable = False
+        adb_serial = None
+        try:
+            devices = detect_devices()
+            if devices:
+                adb_reachable = True
+                adb_serial = devices[0]["serial"]
+                logger.info("xwebd不可达，但ADB设备可用: %s", adb_serial)
+        except Exception as e:
+            logger.debug("ADB检测异常: %s", e)
 
-    if adb_reachable:
-        return {"ok": True, "host": host, "xwebd_connected": False,
-                "sair_connected": False, "adb_reachable": True,
-                "adb_serial": adb_serial}, 200
+        if adb_reachable:
+            return {"ok": True, "host": host, "xwebd_connected": False,
+                    "sair_connected": False, "adb_reachable": True,
+                    "adb_serial": adb_serial}, 200
     logger.warning("连接失败: host=%s", host)
     return {"ok": False, "error": "无法连接设备，请检查设备是否开机及IP地址是否正确",
             "host": host, "sair_connected": False, "xwebd_connected": False,
@@ -274,10 +272,10 @@ def _api_adb_forward(handler, xwebd, body, query):
 def _api_status(handler, xwebd, body, query):
     result = {}
     if xwebd:
-        xwebd_status = xwebd._request("GET", "/api/system")
+        xwebd_status = xwebd._request("GET", "/api/system", timeout=10)
         if xwebd_status and "error" not in xwebd_status:
             result.update(xwebd_status)
-        sair_status = xwebd._request("GET", "/api/assistant/status")
+        sair_status = xwebd._request("GET", "/api/assistant/status", timeout=5)
         if sair_status and "error" not in sair_status:
             if "state" in sair_status:
                 result["state"] = sair_status["state"]
@@ -309,7 +307,12 @@ def _api_panel_logs_stream(handler, xwebd, body, query):
     handler.send_header("Access-Control-Allow-Origin", "*")
     handler.end_headers()
     try:
-        last_count = len(get_panel_logs(80))
+        logs = get_panel_logs(80)
+        last_count = len(logs)
+        for line in logs:
+            data = json.dumps({"text": line}, ensure_ascii=False)
+            handler.wfile.write(("data: " + data + "\n\n").encode("utf-8"))
+        handler.wfile.flush()
         while True:
             try:
                 logs = get_panel_logs(80)
@@ -319,7 +322,7 @@ def _api_panel_logs_stream(handler, xwebd, body, query):
                     for line in new_lines:
                         data = json.dumps({"text": line}, ensure_ascii=False)
                         handler.wfile.write(("data: " + data + "\n\n").encode("utf-8"))
-                        handler.wfile.flush()
+                    handler.wfile.flush()
                     last_count = current_count
             except Exception:
                 pass
@@ -421,12 +424,7 @@ def _api_device_logs_stream(handler, xwebd, body, query):
             else:
                 handler.wfile.write(b": ping\n\n")
                 handler.wfile.flush()
-            import select
-            r, _, _ = select.select([handler.rfile], [], [], 3)
-            if r:
-                line = handler.rfile.readline()
-                if not line or line.strip() == b"":
-                    break
+            time.sleep(5)
     except (BrokenPipeError, ConnectionResetError, OSError):
         pass
     except Exception as e:
@@ -450,6 +448,12 @@ def _api_xwebd_version(handler, xwebd, body, query):
 @_requires_xwebd
 def _api_assistant_diag(handler, xwebd, body, query):
     return xwebd._request("GET", "/api/assistant/diag")
+
+
+@_api_route("GET", "/api/assistant/env")
+@_requires_xwebd
+def _api_assistant_env(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/assistant/env")
 
 
 @_api_route("GET", "/api/assistant/config")
@@ -482,7 +486,7 @@ def _api_config_put(handler, xwebd, body, query):
     assistant_fields = {}
     xwebd_fields = {}
     if body:
-        for k in ("ws_url", "ws_token", "realtime_mode", "aec_enabled"):
+        for k in ("ws_url", "ws_token"):
             if k in body:
                 assistant_fields[k] = body[k]
         if "log_level" in body:
@@ -696,6 +700,41 @@ def _api_files_upload(handler, xwebd, body, query):
         return {"error": "multipart/form-data required"}, 400
 
 
+@_api_route("POST", "/api/assistant/smart-deploy")
+@_requires_xwebd
+def _api_assistant_smart_deploy(handler, xwebd, body, query):
+    from adb_manager import _find_sair_binary
+    binary_path = _find_sair_binary()
+    if not binary_path:
+        return {"error": "sair 二进制文件不存在，请先编译"}, 404
+    logger.info("智能部署助手: binary=%s", binary_path)
+    with open(binary_path, "rb") as f:
+        binary_data = f.read()
+    upload_r = xwebd._request("POST", "/api/upload",
+                               body=binary_data,
+                               headers={"Content-Type": "application/octet-stream",
+                                        "X-Filename": "sair_new"},
+                               timeout=30)
+    if not upload_r or upload_r.get("error"):
+        return {"error": "上传sair文件失败: " + (upload_r.get("error", "") if upload_r else "连接失败")}, 500
+    time.sleep(2)
+    sair_status = xwebd.get_assistant_status()
+    if sair_status and sair_status.get("installed"):
+        deploy_r = xwebd.update_assistant("/var/upgrade/sair_new")
+        logger.info("助手已安装，执行更新: %s", deploy_r)
+    else:
+        deploy_r = xwebd.deploy_assistant("/var/upgrade/sair_new")
+        logger.info("助手未安装，执行部署: %s", deploy_r)
+    if deploy_r and deploy_r.get("ok"):
+        return {"ok": True, "method": deploy_r.get("method", "deploy"), "rebooting": True}
+    if not deploy_r:
+        return {"ok": True, "method": "deploy", "rebooting": True}
+    err_str = str(deploy_r.get("error", "")).lower()
+    if any(kw in err_str for kw in ["connection", "timed out", "reset", "refused", "broken", "errno"]):
+        return {"ok": True, "method": "deploy", "rebooting": True}
+    return deploy_r
+
+
 @_api_route("POST", "/api/assistant/deploy")
 @_requires_xwebd
 def _api_assistant_deploy(handler, xwebd, body, query):
@@ -729,7 +768,8 @@ def _api_assistant_status(handler, xwebd, body, query):
 @_requires_xwebd
 def _api_upload_progress(handler, xwebd, body, query):
     uid = query.get("upload_id", [""])[0] if query else ""
-    info = _upload_progress.get(uid, {"progress": 0, "status": "unknown"})
+    with _upload_progress_lock:
+        info = _upload_progress.get(uid, {"progress": 0, "status": "unknown"}).copy()
     return info
 
 
@@ -839,6 +879,27 @@ def _api_xwebd_upload_update(handler, xwebd, body, query):
     return {"error": r.get("error", "update failed")}, 500
 
 
+@_api_route("POST", "/api/xwebd/wireless-update")
+@_requires_xwebd
+def _api_xwebd_wireless_update(handler, xwebd, body, query):
+    logger.info("无线模式更新xwebd")
+    local_binary = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "device", "xwebd", "build", "xwebd")
+    if not os.path.exists(local_binary):
+        return {"error": "xwebd二进制文件不存在，请先编译"}, 404
+    with open(local_binary, "rb") as f:
+        binary_data = f.read()
+    r = xwebd._request("POST", "/api/upload", body=binary_data,
+                        headers={"Content-Type": "application/octet-stream",
+                                 "X-Filename": "xwebd_new"})
+    if not r or r.get("error"):
+        return {"error": "上传xwebd_new失败: " + (r.get("error", "") if r else "连接失败")}, 500
+    time.sleep(1)
+    r2 = xwebd._request("POST", "/api/self-update")
+    if not r2 or r2.get("error"):
+        return {"error": "自更新失败: " + (r2.get("error", "") if r2 else "连接失败")}, 500
+    return {"ok": True}
+
+
 @_api_route("POST", "/api/xwebd/remove")
 def _api_xwebd_remove(handler, xwebd, body, query):
     serial = body.get("serial") if body else None
@@ -913,12 +974,29 @@ def _api_adb_poweroff(handler, xwebd, body, query):
     return {"error": r.get("error", "poweroff failed")}, 500
 
 
+@_api_route("POST", "/api/adb/factory-reset")
+def _api_adb_factory_reset(handler, xwebd, body, query):
+    serial = body.get("serial") if body else None
+    r = factory_reset_device(serial)
+    if r.get("ok"):
+        return r
+    return {"error": r.get("error", "factory reset failed")}, 500
+
+
 @_api_route("GET", "/api/adb/logs")
 def _api_adb_logs(handler, xwebd, body, query):
     serial = query.get("serial", [None])[0] if query else None
     log_type = query.get("type", ["all"])[0] if query else "all"
     lines = int(query.get("lines", [100])[0]) if query else 100
     return get_device_logs(serial, log_type, lines)
+
+
+@_api_route("GET", "/api/adb/xwebd-env")
+def _api_adb_xwebd_env(handler, xwebd, body, query):
+    serial = query.get("serial", [None])[0] if query else None
+    if not is_adb_available():
+        return {"error": "ADB not installed", "adb_available": False}, 503
+    return check_xwebd_env(serial)
 
 
 class ControlPanelHandler(BaseHTTPRequestHandler):
@@ -934,7 +1012,8 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         msg = format % args
-        skip_paths = ['/api/panel/logs/stream', '/api/logs?', '/api/panel/logs?',
+        skip_paths = ['/api/panel/logs/stream', '/api/device/logs/stream',
+                      '/api/logs?', '/api/panel/logs?',
                       '/api/status', '/api/assistant/status', '/api/services']
         for p in skip_paths:
             if p in msg:
@@ -1085,7 +1164,8 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             self._send_json({"error": f"File too large, max {upload_max // (1024*1024)}MB"}, 400)
             return
         upload_id = str(uuid.uuid4())[:8]
-        _upload_progress[upload_id] = {"progress": 0, "status": "receiving", "method": "proxy"}
+        with _upload_progress_lock:
+            _upload_progress[upload_id] = {"progress": 0, "status": "receiving", "method": "proxy"}
         chunk_size = 65536
         received = 0
         chunks = []
@@ -1097,7 +1177,8 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             chunks.append(chunk)
             received += len(chunk)
             pct = int(received / content_length * 50) if content_length > 0 else 50
-            _upload_progress[upload_id] = {"progress": pct, "status": "receiving", "method": "proxy"}
+            with _upload_progress_lock:
+                _upload_progress[upload_id] = {"progress": pct, "status": "receiving", "method": "proxy"}
         raw = b"".join(chunks)
         boundary_bytes = b"--" + boundary.encode()
         parts = raw.split(boundary_bytes)
@@ -1120,7 +1201,8 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             break
         logger.info("上传开始: %s (%d bytes), upload_id=%s", filename, content_length, upload_id)
         if not file_data or not filename:
-            _upload_progress[upload_id] = {"progress": 0, "status": "error", "error": "No file found"}
+            with _upload_progress_lock:
+                _upload_progress[upload_id] = {"progress": 0, "status": "error", "error": "No file found"}
             self._send_json({"error": "No file found in upload"}, 400)
             return
         try:
@@ -1130,19 +1212,22 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             with open(tmp_path, "wb") as f:
                 f.write(file_data)
             logger.debug("上传接收完成: %d bytes", len(file_data))
-            _upload_progress[upload_id] = {"progress": 55, "status": "forwarding", "method": "http"}
+            with _upload_progress_lock:
+                _upload_progress[upload_id] = {"progress": 55, "status": "forwarding", "method": "http"}
             url = f"http://{xwebd.host}:{xwebd.port}/api/upload"
             logger.info("上传转发到设备: %s -> %s", filename, url)
             with open(tmp_path, "rb") as f:
                 req_data = f.read()
-            req = __import__("urllib.request", fromlist=["Request"]).Request(
+            req = Request(
                 url, data=req_data, method="POST",
                 headers={"Content-Type": "application/octet-stream",
                          "X-Filename": os.path.basename(filename)})
-            _upload_progress[upload_id] = {"progress": 75, "status": "forwarding", "method": "http"}
-            with __import__("urllib.request", fromlist=["urlopen"]).urlopen(req, timeout=120) as resp:
+            with _upload_progress_lock:
+                _upload_progress[upload_id] = {"progress": 75, "status": "forwarding", "method": "http"}
+            with urlopen(req, timeout=120) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-            _upload_progress[upload_id] = {"progress": 100, "status": "uploaded", "method": "http"}
+            with _upload_progress_lock:
+                _upload_progress[upload_id] = {"progress": 100, "status": "uploaded", "method": "http"}
             logger.info("上传成功: %s (%d bytes)", filename, len(file_data))
             self._send_json({"ok": True, "upload_id": upload_id, "file_size": len(file_data), "method": "http"})
             try:
@@ -1152,7 +1237,8 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
                 pass
         except Exception as e:
             logger.error("上传失败: %s", e)
-            _upload_progress[upload_id] = {"progress": 0, "status": "error", "error": str(e)}
+            with _upload_progress_lock:
+                _upload_progress[upload_id] = {"progress": 0, "status": "error", "error": str(e)}
             try:
                 if tmp_path and os.path.exists(tmp_path):
                     os.unlink(tmp_path)
@@ -1189,7 +1275,7 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         self._send_json({"error": f"Unknown: {method} {path}"}, 404)
 
 
-def create_server(host="0.0.0.0", port=3000, device_host="192.168.1.96"):
+def create_server(host="0.0.0.0", port=DEFAULT_PANEL_PORT, device_host=DEFAULT_DEVICE_HOST):
     """创建 HTTP 服务器实例
 
     始终使用 LIVE 模式，连接真实设备。
@@ -1197,8 +1283,8 @@ def create_server(host="0.0.0.0", port=3000, device_host="192.168.1.96"):
 
     Args:
         host: 服务器监听地址，默认 "0.0.0.0"（所有网卡）
-        port: 服务器监听端口，默认 3000
-        device_host: 设备 IP 地址，默认 "192.168.1.96"
+        port: 服务器监听端口（默认 3000）
+        device_host: 设备 IP 地址（默认从 XIAOZHI_DEVICE_HOST 环境变量读取）
 
     Returns:
         ThreadingHTTPServer: 已配置好的 HTTP 服务器实例
@@ -1212,7 +1298,7 @@ def create_server(host="0.0.0.0", port=3000, device_host="192.168.1.96"):
     return server
 
 
-def start_server(host="0.0.0.0", port=3000, device_host="192.168.1.96", open_browser=True):
+def start_server(host="0.0.0.0", port=DEFAULT_PANEL_PORT, device_host=DEFAULT_DEVICE_HOST, open_browser=True):
     """启动控制面板 HTTP 服务器
 
     创建服务器实例，打印启动信息，可选自动打开浏览器，
@@ -1220,8 +1306,8 @@ def start_server(host="0.0.0.0", port=3000, device_host="192.168.1.96", open_bro
 
     Args:
         host: 服务器监听地址，默认 "0.0.0.0"
-        port: 服务器监听端口，默认 3000
-        device_host: 设备 IP 地址，默认 "192.168.1.96"
+        port: 服务器监听端口（默认 3000）
+        device_host: 设备 IP 地址（默认从 XIAOZHI_DEVICE_HOST 环境变量读取）
         open_browser: 是否自动打开浏览器，默认 True
     """
     server = create_server(host, port, device_host)

@@ -28,5 +28,6 @@ int plog_read_last_lines(char* buf, int buf_size, int max_lines);
 #define PLOG_W(tag, fmt, ...) plog_write(PLOG_LEVEL_WARN,  tag, fmt, ##__VA_ARGS__)
 #define PLOG_I(tag, fmt, ...) plog_write(PLOG_LEVEL_INFO,  tag, fmt, ##__VA_ARGS__)
 #define PLOG_D(tag, fmt, ...) plog_write(PLOG_LEVEL_DEBUG, tag, fmt, ##__VA_ARGS__)
+#define PLOG_FLUSH() plog_flush()
 
 #endif

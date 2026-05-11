@@ -9,9 +9,9 @@ typedef struct {
     void* asr_lib;
     void* asr_handle;
     int initialized;
-    int started;
-    int paused;
-    int asr_init_done;
+    volatile int started;
+    volatile int paused;
+    volatile int asr_init_done;
 
     asr_set_params_t  f_asr_set_params;
     asr_init_t        f_asr_init;

@@ -9,7 +9,8 @@
 
 typedef struct {
     pthread_t thread;
-    int running;
+    int thread_created;
+    volatile int running;
     void* sair_app_info;
     int shm_fd;
     void* shm_ptr;

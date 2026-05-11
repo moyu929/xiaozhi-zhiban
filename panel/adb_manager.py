@@ -11,7 +11,7 @@ adb_manager.py — ADB 设备管理
 
 关键概念：
 - xwebd：设备端 HTTP 守护进程，部署在 /var/upgrade/xwebd
-- sair：Assistant 的二进制文件名（平台约束不可改名），端口 8081
+- sair：Assistant 的二进制文件名（平台约束不可改名），所有请求通过 xwebd 转发
 - ADB forward：通过 USB 将本地端口映射到设备端口，实现网络通信
 """
 
@@ -306,6 +306,10 @@ def is_device_initialized(serial=None):
 
 def init_device(serial=None):
     result = {"ok": True, "error": "", "created_test_sh": False, "pushed_watchdog": False, "pushed_guard": False}
+
+    r = _adb(["shell", "mkdir -p /var/upgrade"], serial=serial, timeout=5)
+    if not r["ok"]:
+        logger.warning("创建/var/upgrade目录失败: %s", r.get("stderr", ""))
 
     if not _shell_test(TEST_SH_PATH, serial):
         test_sh_content = (
@@ -618,6 +622,25 @@ def _remove_xwebd_autostart(serial=None):
     return {"ok": True, "error": ""}
 
 
+def _ensure_sair_autostart(serial=None):
+    r = _adb(["shell", f"grep -q '{SAIR_REMOTE_PATH}' {TEST_SH_PATH} && echo found || echo missing"], serial=serial)
+    if not r["ok"]:
+        return {"ok": False, "error": "cannot read test.sh"}
+    if "found" in r["stdout"]:
+        return {"ok": True, "error": ""}
+    logger.info("添加sair自启动到test.sh")
+    r = _adb(["shell", f"echo 'sleep 3 && LD_LIBRARY_PATH=/usr/lib:/lib:$LD_LIBRARY_PATH {SAIR_REMOTE_PATH} >> /var/upgrade/sair_boot.log 2>&1 &' >> {TEST_SH_PATH}"], serial=serial)
+    if not r["ok"]:
+        return {"ok": False, "error": "cannot modify test.sh"}
+    return {"ok": True, "error": ""}
+
+
+def _remove_sair_autostart(serial=None):
+    logger.info("移除sair自启动")
+    _adb(["shell", f"sed -i '/{SAIR_REMOTE_PATH}/d' {TEST_SH_PATH}"], serial=serial)
+    return {"ok": True, "error": ""}
+
+
 _INFO_SECTION_DELIMITER = "---SECTION---"
 
 _INFO_SECTIONS = [
@@ -799,6 +822,7 @@ def deploy_sair(serial=None, binary_path=None):
     r = _push_binary(binary_path, SAIR_REMOTE_PATH, serial)
     if not r["ok"]:
         return {"ok": False, "error": r['error']}
+    _ensure_sair_autostart(serial)
     _adb(["shell", "reboot"], serial=serial, timeout=5)
     logger.info("sair冷部署完成，设备重启中: serial=%s", serial)
     return {"ok": True, "binary": binary_path, "mode": "cold", "rebooting": True}
@@ -844,6 +868,92 @@ def poweroff_device(serial=None):
     if not r["ok"]:
         r = _adb(["shell", "echo o > /proc/sysrq-trigger"], serial=serial, timeout=10)
     return {"ok": r["ok"], "error": r["stderr"] if not r["ok"] else ""}
+
+
+def factory_reset_device(serial=None):
+    logger.warning("恢复出厂设置(清空/var/upgrade): serial=%s", serial)
+    r = _adb(["shell",
+        "killall sair 2>/dev/null; "
+        "killall xwebd 2>/dev/null; "
+        "umount /var/upgrade 2>/dev/null; "
+        "rm -rf /var/upgrade/* 2>/dev/null; "
+        "rm -rf /var/upgrade 2>/dev/null; "
+        "mkdir -p /var/upgrade; "
+        "reboot"
+    ], serial=serial, timeout=15)
+    return {"ok": True, "error": ""}
+
+
+def check_xwebd_env(serial=None):
+    """通过 ADB 检查设备是否满足 xwebd 运行环境要求
+
+    在部署 xwebd 之前，通过 ADB shell 命令检查设备环境，
+    避免部署后才发现环境不兼容的问题。
+
+    检查项与 xwebd 的 /api/diag 保持一致：
+    - /var/upgrade 分区可读写
+    - 磁盘空间充足（>= 1024KB）
+    - test.sh 自启动脚本
+    - tinymix 音频控制
+    - 背光控制
+    - WiFi 网络接口
+    - Launcher 进程
+
+    Args:
+        serial: 设备序列号，为 None 时不指定设备
+
+    Returns:
+        dict: {"section": "xwebd_env", "items": [...], "ok_count": N, "fail_count": N, ...}
+    """
+    items = []
+
+    def _add(name, ok, message):
+        items.append({"name": name, "ok": ok, "message": message})
+
+    r = _adb(["shell", "test -w /var/upgrade && echo yes || echo no"], serial=serial)
+    writable = r["ok"] and "yes" in r["stdout"]
+    _add("/var/upgrade分区", writable, writable and "可读写" or "不可写")
+
+    r = _adb(["shell", "df -k /var/upgrade 2>/dev/null | tail -1 | awk '{print $4}'"], serial=serial)
+    free_kb = 0
+    if r["ok"] and r["stdout"].strip():
+        try:
+            free_kb = int(r["stdout"].strip())
+        except ValueError:
+            free_kb = 0
+    disk_ok = free_kb >= 1024
+    _add("磁盘空间", disk_ok, disk_ok and f"{free_kb}KB可用" or f"仅{free_kb}KB可用" if free_kb > 0 else "查询失败")
+
+    r = _adb(["shell", f"test -x {TEST_SH_PATH} && echo yes || echo no"], serial=serial)
+    test_sh_ok = r["ok"] and "yes" in r["stdout"]
+    _add("test.sh自启动", test_sh_ok, test_sh_ok and "自启动脚本已配置" or "自启动脚本未配置")
+
+    r = _adb(["shell", "which tinymix 2>/dev/null && echo yes || echo no"], serial=serial)
+    tinymix_ok = r["ok"] and "yes" in r["stdout"]
+    _add("tinymix音频控制", tinymix_ok, tinymix_ok and "tinymix可用" or "tinymix不可用")
+
+    r = _adb(["shell", "test -w /sys/class/backlight/owl_backlight/brightness && echo yes || echo no"], serial=serial)
+    backlight_ok = r["ok"] and "yes" in r["stdout"]
+    _add("背光控制", backlight_ok, backlight_ok and "亮度sysfs可写" or "亮度sysfs不可写")
+
+    r = _adb(["shell", "ifconfig wlan0 2>/dev/null | grep -qE 'inet addr:|inet [0-9]' && echo yes || echo no"], serial=serial)
+    wifi_ok = r["ok"] and "yes" in r["stdout"]
+    _add("WiFi网络", wifi_ok, wifi_ok and "WiFi已连接" or "WiFi未连接")
+
+    r = _adb(["shell", "pidof launcher 2>/dev/null"], serial=serial)
+    launcher_ok = r["ok"] and bool(r["stdout"].strip())
+    _add("Launcher进程", launcher_ok, launcher_ok and "Launcher运行中" or "Launcher未运行")
+
+    ok_count = sum(1 for i in items if i["ok"])
+    fail_count = len(items) - ok_count
+    return {
+        "section": "xwebd_env",
+        "items": items,
+        "ok_count": ok_count,
+        "fail_count": fail_count,
+        "total": len(items),
+        "summary": f"{ok_count}项正常, {fail_count}项异常"
+    }
 
 
 def get_device_logs(serial=None, log_type="all", lines=100):

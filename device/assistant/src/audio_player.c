@@ -21,8 +21,8 @@
 
 #include "opus.h"
 
-#define DECODE_BUF_SAMPLES 5760   /* Opus解码输出缓冲区样本数（最大120ms@48kHz） */
-#define S32_BUF_SAMPLES 960       /* int32格式转换缓冲区样本数 */
+#define DECODE_BUF_SAMPLES 5760 /* Opus解码输出缓冲区样本数（最大120ms@48kHz） */
+#define S32_BUF_SAMPLES 960     /* int32格式转换缓冲区样本数 */
 
 /**
  * @brief 打开音频播放轨道
@@ -31,9 +31,11 @@
  *
  * 如果有待关闭或已打开的轨道，先释放再创建新轨道
  */
-static int do_open_track(audio_player_t *player) {
+static int do_open_track(audio_player_t *player)
+{
     /* 释放待关闭的轨道 */
-    if (player->pending_close && player->track_handle) {
+    if (player->pending_close && player->track_handle)
+    {
         audio_track_flush(player->track_handle);
         audio_track_stop(player->track_handle);
         audio_track_delete(player->track_handle);
@@ -43,7 +45,8 @@ static int do_open_track(audio_player_t *player) {
     }
 
     /* 释放仍然打开的轨道 */
-    if (player->track_handle) {
+    if (player->track_handle)
+    {
         PLOG_W("PLAYER", "轨道仍然打开，强制完全释放（flush+stop+delete）");
         audio_track_flush(player->track_handle);
         audio_track_stop(player->track_handle);
@@ -53,20 +56,23 @@ static int do_open_track(audio_player_t *player) {
 
     /* 创建新的音频轨道 */
     void *handle = audio_track_create(NULL);
-    if (!handle) {
+    if (!handle)
+    {
         PLOG_E("PLAYER", "audio_track_create 创建失败");
         return -1;
     }
 
     int ret = audio_track_init(handle, player->channels, player->track_sample_rate, AUDIO_TRACK_TYPE_MUSIC);
-    if (ret != 0) {
+    if (ret != 0)
+    {
         PLOG_E("PLAYER", "audio_track_init 初始化失败: %d (声道=%d 采样率=%d)", ret, player->channels, player->sample_rate);
         audio_track_delete(handle);
         return -1;
     }
 
     ret = audio_track_play(handle);
-    if (ret != 0) {
+    if (ret != 0)
+    {
         PLOG_E("PLAYER", "audio_track_play 播放启动失败: %d", ret);
         audio_track_delete(handle);
         return -1;
@@ -87,8 +93,10 @@ static int do_open_track(audio_player_t *player) {
  * 只执行flush操作，将轨道标记为待关闭状态，
  * 实际的stop和delete在下次打开轨道时执行，避免播放中断
  */
-static void do_deferred_close(audio_player_t *player) {
-    if (!player->track_handle) return;
+static void do_deferred_close(audio_player_t *player)
+{
+    if (!player->track_handle)
+        return;
 
     audio_track_flush(player->track_handle);
     player->track_open = false;
@@ -104,8 +112,10 @@ static void do_deferred_close(audio_player_t *player) {
  * @param channels 声道数（默认1）
  * @return 0成功，-1失败
  */
-int audio_player_init(audio_player_t *player, int sample_rate, int channels) {
-    if (!player) return -1;
+int audio_player_init(audio_player_t *player, int sample_rate, int channels)
+{
+    if (!player)
+        return -1;
 
     memset(player, 0, sizeof(audio_player_t));
     player->sample_rate = sample_rate > 0 ? sample_rate : 24000;
@@ -121,7 +131,8 @@ int audio_player_init(audio_player_t *player, int sample_rate, int channels) {
     /* 创建Opus解码器 */
     int error;
     player->opus_decoder = opus_decoder_create(player->sample_rate, player->channels, &error);
-    if (!player->opus_decoder || error != OPUS_OK) {
+    if (!player->opus_decoder || error != OPUS_OK)
+    {
         PLOG_E("PLAYER", "opus_decoder_create 创建失败: %d (%s)", error, opus_strerror(error));
         pthread_mutex_destroy(&player->mutex);
         return -1;
@@ -130,9 +141,11 @@ int audio_player_init(audio_player_t *player, int sample_rate, int channels) {
     /* 分配解码和格式转换缓冲区 */
     player->decode_buf = (int16_t *)malloc(DECODE_BUF_SAMPLES * sizeof(int16_t));
     player->s32_buf = (int32_t *)malloc(S32_BUF_SAMPLES * sizeof(int32_t));
-    if (!player->decode_buf || !player->s32_buf) {
+    if (!player->decode_buf || !player->s32_buf)
+    {
         PLOG_E("PLAYER", "缓冲区分配失败");
-        if (player->opus_decoder) opus_decoder_destroy((OpusDecoder *)player->opus_decoder);
+        if (player->opus_decoder)
+            opus_decoder_destroy((OpusDecoder *)player->opus_decoder);
         free(player->decode_buf);
         free(player->s32_buf);
         pthread_mutex_destroy(&player->mutex);
@@ -148,14 +161,17 @@ int audio_player_init(audio_player_t *player, int sample_rate, int channels) {
  * @brief 销毁音频播放器，释放所有资源
  * @param player 音频播放器实例指针
  */
-void audio_player_destroy(audio_player_t *player) {
-    if (!player) return;
+void audio_player_destroy(audio_player_t *player)
+{
+    if (!player)
+        return;
 
     audio_player_stop(player);
 
     /* 释放音频轨道 */
     pthread_mutex_lock(&player->mutex);
-    if (player->track_handle) {
+    if (player->track_handle)
+    {
         audio_track_flush(player->track_handle);
         audio_track_stop(player->track_handle);
         audio_track_delete(player->track_handle);
@@ -166,7 +182,8 @@ void audio_player_destroy(audio_player_t *player) {
     pthread_mutex_unlock(&player->mutex);
 
     /* 销毁Opus解码器 */
-    if (player->opus_decoder) {
+    if (player->opus_decoder)
+    {
         opus_decoder_destroy((OpusDecoder *)player->opus_decoder);
         player->opus_decoder = NULL;
     }
@@ -184,14 +201,18 @@ void audio_player_destroy(audio_player_t *player) {
  * @param player 音频播放器实例指针
  * @return 0成功，-1失败
  */
-int audio_player_start(audio_player_t *player) {
-    if (!player) return -1;
+int audio_player_start(audio_player_t *player)
+{
+    if (!player)
+        return -1;
 
     pthread_mutex_lock(&player->mutex);
 
     /* 如果轨道未打开，先打开 */
-    if (!player->track_open) {
-        if (do_open_track(player) != 0) {
+    if (!player->track_open)
+    {
+        if (do_open_track(player) != 0)
+        {
             pthread_mutex_unlock(&player->mutex);
             return -1;
         }
@@ -209,7 +230,8 @@ int audio_player_start(audio_player_t *player) {
  * @param player 音频播放器实例指针
  * @return 0成功，-1失败
  */
-int audio_player_stop(audio_player_t *player) {
+int audio_player_stop(audio_player_t *player)
+{
     return audio_player_stop_with_wait(player, false);
 }
 
@@ -219,21 +241,26 @@ int audio_player_stop(audio_player_t *player) {
  * @param wait_for_completion 是否等待播放完成
  * @return 0成功，-1失败
  */
-int audio_player_stop_with_wait(audio_player_t *player, bool wait_for_completion) {
-    if (!player) return -1;
+int audio_player_stop_with_wait(audio_player_t *player, bool wait_for_completion)
+{
+    if (!player)
+        return -1;
 
     pthread_mutex_lock(&player->mutex);
     player->playing = false;
 
-    if (wait_for_completion && player->track_handle && player->track_open) {
+    if (wait_for_completion && player->track_handle && player->track_open)
+    {
         pthread_mutex_unlock(&player->mutex);
 
         /* 轮询等待轨道播放完成（最多2秒） */
         PLOG_I("PLAYER", "等待播放完成...");
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; i < 100; i++)
+        {
             usleep(20000);
             pthread_mutex_lock(&player->mutex);
-            if (!player->track_open || !player->track_handle) {
+            if (!player->track_open || !player->track_handle)
+            {
                 pthread_mutex_unlock(&player->mutex);
                 break;
             }
@@ -255,12 +282,15 @@ int audio_player_stop_with_wait(audio_player_t *player, bool wait_for_completion
  * @brief 立即释放音频轨道资源（保留解码器）
  * @param player 音频播放器实例指针
  */
-void audio_player_release_track(audio_player_t *player) {
-    if (!player) return;
+void audio_player_release_track(audio_player_t *player)
+{
+    if (!player)
+        return;
 
     pthread_mutex_lock(&player->mutex);
     player->playing = false;
-    if (player->track_handle) {
+    if (player->track_handle)
+    {
         audio_track_flush(player->track_handle);
         audio_track_stop(player->track_handle);
         audio_track_delete(player->track_handle);
@@ -283,24 +313,30 @@ void audio_player_release_track(audio_player_t *player) {
  *
  * 流程：Opus解码 → int16转int32 → 写入AudioTrack
  */
-int audio_player_write_opus(audio_player_t *player, const uint8_t *opus_data, size_t opus_len, uint32_t timestamp) {
-    if (!player || !opus_data) return -1;
+int audio_player_write_opus(audio_player_t *player, const uint8_t *opus_data, size_t opus_len, uint32_t timestamp)
+{
+    if (!player || !opus_data)
+        return -1;
 
     pthread_mutex_lock(&player->mutex);
 
-    if (!player->playing) {
+    if (!player->playing)
+    {
         pthread_mutex_unlock(&player->mutex);
         return -1;
     }
 
-    if (player->aborted) {
+    if (player->aborted)
+    {
         pthread_mutex_unlock(&player->mutex);
         return -1;
     }
 
     /* 如果轨道未打开，先打开 */
-    if (!player->track_open || !player->track_handle) {
-        if (do_open_track(player) != 0) {
+    if (!player->track_open || !player->track_handle)
+    {
+        if (do_open_track(player) != 0)
+        {
             pthread_mutex_unlock(&player->mutex);
             return -1;
         }
@@ -312,7 +348,8 @@ int audio_player_write_opus(audio_player_t *player, const uint8_t *opus_data, si
                               player->decode_buf, DECODE_BUF_SAMPLES,
                               0);
 
-    if (samples < 0) {
+    if (samples < 0)
+    {
         PLOG_W("PLAYER", "opus_decode 解码失败: %d", samples);
         pthread_mutex_unlock(&player->mutex);
         return -1;
@@ -320,12 +357,15 @@ int audio_player_write_opus(audio_player_t *player, const uint8_t *opus_data, si
 
     /* 分块将int16转换为int32并写入播放轨道 */
     int offset = 0;
-    while (offset < samples) {
+    while (offset < samples)
+    {
         int chunk = samples - offset;
-        if (chunk > S32_BUF_SAMPLES) chunk = S32_BUF_SAMPLES;
+        if (chunk > S32_BUF_SAMPLES)
+            chunk = S32_BUF_SAMPLES;
 
         /* int16左移转换为int32格式 */
-        for (int i = 0; i < chunk; i++) {
+        for (int i = 0; i < chunk; i++)
+        {
             player->s32_buf[i] = (int32_t)player->decode_buf[offset + i] << player->s16_to_s32_shift;
         }
 
@@ -337,7 +377,8 @@ int audio_player_write_opus(audio_player_t *player, const uint8_t *opus_data, si
         params.shift_bits = 0;
 
         int ret = audio_track_write_data(player->track_handle, &params);
-        if (ret != 0) {
+        if (ret != 0)
+        {
             PLOG_W("PLAYER", "audio_track_write_data 写入失败: %d", ret);
             pthread_mutex_unlock(&player->mutex);
             return ret;
@@ -346,8 +387,9 @@ int audio_player_write_opus(audio_player_t *player, const uint8_t *opus_data, si
         offset += chunk;
     }
 
-    /* 将时间戳推入AEC队列 */
-    if (player->ts_queue && timestamp > 0) {
+    /* 将时间戳推入时间戳队列 */
+    if (player->ts_queue && timestamp > 0)
+    {
         timestamp_queue_push(player->ts_queue, timestamp);
     }
 
@@ -359,11 +401,14 @@ int audio_player_write_opus(audio_player_t *player, const uint8_t *opus_data, si
  * @brief 清空音频播放缓冲区
  * @param player 音频播放器实例指针
  */
-void audio_player_clear_buffer(audio_player_t *player) {
-    if (!player) return;
+void audio_player_clear_buffer(audio_player_t *player)
+{
+    if (!player)
+        return;
 
     pthread_mutex_lock(&player->mutex);
-    if (player->track_handle) {
+    if (player->track_handle)
+    {
         audio_track_flush(player->track_handle);
     }
     pthread_mutex_unlock(&player->mutex);
@@ -375,33 +420,40 @@ void audio_player_clear_buffer(audio_player_t *player) {
  *
  * 销毁并重新创建解码器，同时清空播放缓冲区和时间戳队列
  */
-void audio_player_reset_decoder(audio_player_t *player) {
-    if (!player) return;
+void audio_player_reset_decoder(audio_player_t *player)
+{
+    if (!player)
+        return;
 
     pthread_mutex_lock(&player->mutex);
 
     /* 重建Opus解码器 */
-    if (player->opus_decoder) {
-        opus_decoder_destroy((OpusDecoder *)player->opus_decoder);
+    if (player->opus_decoder)
+    {
         int error;
-        player->opus_decoder = opus_decoder_create(
+        void *new_decoder = opus_decoder_create(
             player->sample_rate, player->channels, &error);
-        if (!player->opus_decoder || error != OPUS_OK) {
-            PLOG_E("PLAYER", "解码器重置失败: %d", error);
+        if (!new_decoder || error != OPUS_OK)
+        {
+            PLOG_E("PLAYER", "解码器重置失败: %d，保留旧解码器", error);
+        }
+        else
+        {
+            opus_decoder_destroy((OpusDecoder *)player->opus_decoder);
+            player->opus_decoder = new_decoder;
         }
     }
 
     /* 清空播放缓冲区 */
-    if (player->track_handle) {
+    if (player->track_handle)
+    {
         audio_track_flush(player->track_handle);
     }
 
     /* 清空时间戳队列 */
-    if (player->ts_queue) {
-        pthread_mutex_lock(&player->ts_queue->mutex);
-        player->ts_queue->head = 0;
-        player->ts_queue->count = 0;
-        pthread_mutex_unlock(&player->ts_queue->mutex);
+    if (player->ts_queue)
+    {
+        timestamp_queue_clear(player->ts_queue);
     }
 
     pthread_mutex_unlock(&player->mutex);
@@ -414,37 +466,47 @@ void audio_player_reset_decoder(audio_player_t *player) {
  * @param new_sample_rate 新的采样率
  * @return 0成功，-1失败
  */
-int audio_player_set_sample_rate(audio_player_t *player, int new_sample_rate) {
-    if (!player) return -1;
+int audio_player_set_sample_rate(audio_player_t *player, int new_sample_rate)
+{
+    if (!player)
+        return -1;
 
-    if (player->sample_rate == new_sample_rate) return 0;
+    if (player->sample_rate == new_sample_rate)
+        return 0;
 
     PLOG_I("PLAYER", "重建解码器: %d -> %d", player->sample_rate, new_sample_rate);
 
     pthread_mutex_lock(&player->mutex);
 
-    /* 销毁旧解码器 */
-    if (player->opus_decoder) {
-        opus_decoder_destroy((OpusDecoder *)player->opus_decoder);
-    }
-
-    /* 创建新采样率的解码器 */
+    /* 创建新采样率的解码器（先创建再销毁旧的，避免失败后无解码器可用） */
     int error;
-    player->opus_decoder = opus_decoder_create(new_sample_rate, player->channels, &error);
-    if (!player->opus_decoder || error != OPUS_OK) {
+    void *new_decoder = opus_decoder_create(new_sample_rate, player->channels, &error);
+    if (!new_decoder || error != OPUS_OK)
+    {
         PLOG_E("PLAYER", "opus_decoder_create 创建失败 采样率 %d: %d", new_sample_rate, error);
         pthread_mutex_unlock(&player->mutex);
         return -1;
     }
+    if (player->opus_decoder)
+    {
+        opus_decoder_destroy((OpusDecoder *)player->opus_decoder);
+    }
+    player->opus_decoder = new_decoder;
 
-    /* 释放旧轨道 */
-    if (player->pending_close && player->track_handle) {
+    /* 释放旧轨道（完整释放：flush+stop+delete） */
+    if (player->pending_close && player->track_handle)
+    {
         audio_track_flush(player->track_handle);
+        audio_track_stop(player->track_handle);
+        audio_track_delete(player->track_handle);
         player->track_handle = NULL;
         player->pending_close = false;
     }
-    if (player->track_handle) {
+    if (player->track_handle)
+    {
         audio_track_flush(player->track_handle);
+        audio_track_stop(player->track_handle);
+        audio_track_delete(player->track_handle);
         player->track_handle = NULL;
         player->track_open = false;
     }
@@ -455,7 +517,8 @@ int audio_player_set_sample_rate(audio_player_t *player, int new_sample_rate) {
     player->track_sample_rate = new_sample_rate;
 
     /* 如果正在播放，重新打开轨道 */
-    if (player->playing) {
+    if (player->playing)
+    {
         do_open_track(player);
     }
 
@@ -470,8 +533,10 @@ int audio_player_set_sample_rate(audio_player_t *player, int new_sample_rate) {
  * @param player 音频播放器实例指针
  * @return true正在播放，false未播放
  */
-bool audio_player_is_playing(audio_player_t *player) {
-    if (!player) return false;
+bool audio_player_is_playing(audio_player_t *player)
+{
+    if (!player)
+        return false;
     return player->playing;
 }
 
@@ -482,10 +547,23 @@ bool audio_player_is_playing(audio_player_t *player) {
  * @return 0成功，-1失败
  * @note 音量映射：0-100 → 0-80（底层AudioTrack范围）
  */
-int audio_player_set_volume(audio_player_t *player, int volume) {
-    if (!player || !player->track_handle) return -1;
-    if (volume < 0) volume = 0;
-    if (volume > 100) volume = 100;
+int audio_player_set_volume(audio_player_t *player, int volume)
+{
+    if (!player)
+        return -1;
+    if (volume < 0)
+        volume = 0;
+    if (volume > 100)
+        volume = 100;
     int track_vol = volume * 80 / 100;
-    return audio_track_set_volume(player->track_handle, track_vol);
+
+    pthread_mutex_lock(&player->mutex);
+    if (!player->track_handle)
+    {
+        pthread_mutex_unlock(&player->mutex);
+        return -1;
+    }
+    int ret = audio_track_set_volume(player->track_handle, track_vol);
+    pthread_mutex_unlock(&player->mutex);
+    return ret;
 }

@@ -26,7 +26,7 @@ typedef struct {
     int frame_duration;
     int bitrate;
 
-    bool sending;
+    volatile bool sending;
     pthread_mutex_t mutex;
 } audio_recorder_module_t;
 

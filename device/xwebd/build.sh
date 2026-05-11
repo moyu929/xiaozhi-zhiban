@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
 BUILD_DIR="$PROJECT_DIR/build"
 
-SDK_PATH="${SDK_PATH:-$PROJECT_DIR/../toolchain/arm-buildroot-linux-uclibcgnueabi_sdk-buildroot}"
+SDK_PATH="${SDK_PATH:-$PROJECT_DIR/../../toolchain/arm-buildroot-linux-uclibcgnueabi_sdk-buildroot}"
 CC=${CC:-arm-buildroot-linux-uclibcgnueabi-gcc}
 
 export PATH="$SDK_PATH/bin:$PATH"

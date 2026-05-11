@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
 BUILD_DIR="$PROJECT_DIR/build"
 
-SDK_PATH="${SDK_PATH:-$PROJECT_DIR/../toolchain/arm-buildroot-linux-uclibcgnueabi_sdk-buildroot}"
+SDK_PATH="${SDK_PATH:-$PROJECT_DIR/../../toolchain/arm-buildroot-linux-uclibcgnueabi_sdk-buildroot}"
 CC=${CC:-arm-buildroot-linux-uclibcgnueabi-gcc}
 
 export PATH="$SDK_PATH/bin:$PATH"
@@ -19,7 +19,16 @@ LIB_DIR="$PROJECT_DIR/lib_sf"
 
 COMMON_CFLAGS="-Wall -Os -g0 -mcpu=cortex-a5 -mfloat-abi=soft -no-pie --sysroot=$SYSROOT -I$PROJECT_DIR/include -I$REVERSE_INCLUDE -I$MBEDTLS_DIR/include -I$CJSON_DIR -I$OPUS_DIR/include -D_GNU_SOURCE -DFIXED_POINT=1"
 
-mkdir -p "$BUILD_DIR"
+STUB_DIR="$BUILD_DIR/stubs"
+mkdir -p "$BUILD_DIR" "$STUB_DIR"
+
+DEVICE_LIBS="applib apconfig configpart audio_service_api audio_recorder dds"
+for lib in $DEVICE_LIBS; do
+    if [ ! -f "$SYSROOT/usr/lib/lib${lib}.so" ] && [ ! -f "$LIB_DIR/lib${lib}.so" ]; then
+        echo "Creating stub: lib${lib}.so"
+        $CC -shared -Wl,-soname,lib${lib}.so -o "$STUB_DIR/lib${lib}.so" -mcpu=cortex-a5 -mfloat-abi=soft
+    fi
+done
 
 echo "=== Building xiaozhi-assistant ==="
 echo "CC: $CC"
@@ -101,6 +110,7 @@ $CC --sysroot=$SYSROOT \
     $BUILD_DIR/mcp_handler.o \
     $BUILD_DIR/api_server.o \
     $BUILD_DIR/diag_module.o \
+    -L$STUB_DIR \
     -L$LIB_DIR \
     -L$SYSROOT/usr/lib \
     -lmbedtls -lmbedx509 -lmbedcrypto \

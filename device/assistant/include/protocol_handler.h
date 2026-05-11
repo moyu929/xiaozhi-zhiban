@@ -48,7 +48,6 @@ typedef struct {
     int sample_rate;
     int channels;
     int frame_duration;
-    bool aec_enabled;
 } protocol_config_t;
 
 typedef struct {
@@ -114,5 +113,6 @@ void timestamp_queue_init(timestamp_queue_t *q);
 void timestamp_queue_destroy(timestamp_queue_t *q);
 void timestamp_queue_push(timestamp_queue_t *q, uint32_t ts);
 uint32_t timestamp_queue_pop(timestamp_queue_t *q);
+void timestamp_queue_clear(timestamp_queue_t *q);
 
 #endif

@@ -28,7 +28,7 @@
 #define XWEBD_UPLOAD_PID_FILE        "/var/upgrade/.upload_pid" /* 上传进程PID记录文件路径 */
 
 #define XWEBD_BASE_DIR       "/var/upgrade" /* 文件操作根目录，所有文件读写均限制在此目录下 */
-#define XWEBD_BASE_DIR_LEN   12            /* 根目录字符串长度，用于路径安全校验 */
+#define XWEBD_BASE_DIR_LEN   (sizeof(XWEBD_BASE_DIR) - 1) /* 根目录字符串长度，用于路径安全校验 */
 
 #define XWEBD_WATCHDOG_CRASH_LIMIT  5  /* 看门狗: 允许的最大崩溃次数 */
 #define XWEBD_WATCHDOG_CRASH_WINDOW 60 /* 看门狗: 崩溃统计时间窗口(秒) */

@@ -928,7 +928,9 @@ body {
   border-radius: var(--radius-sm);
   font-size: 13px;
   background: var(--bg-secondary);
+  transition: all 0.3s ease;
 }
+.diag-item-pending { border-left: 3px solid var(--text-muted); }
 .diag-item-ok { border-left: 3px solid var(--accent); }
 .diag-item-fail { border-left: 3px solid var(--danger); background: rgba(239,68,68,0.04); }
 .diag-item-icon {
@@ -937,8 +939,21 @@ body {
   font-weight: 700;
   flex-shrink: 0;
 }
+.diag-item-pending .diag-item-icon { color: var(--text-muted); }
 .diag-item-ok .diag-item-icon { color: var(--accent); }
 .diag-item-fail .diag-item-icon { color: var(--danger); }
+.diag-icon-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--text-muted);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: diag-spin 0.8s linear infinite;
+}
+@keyframes diag-spin {
+  to { transform: rotate(360deg); }
+}
 .diag-item-name {
   font-weight: 600;
   color: var(--text-primary);
@@ -950,6 +965,7 @@ body {
   font-size: 12px;
   flex: 1;
 }
+.diag-item-pending .diag-item-msg { color: var(--text-muted); }
 
 .btn-outline { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
 .btn-outline:hover { background: var(--danger); color: #fff; }

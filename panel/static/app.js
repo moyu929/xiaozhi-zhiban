@@ -4,7 +4,7 @@ var S = {
     wl: { host: '', connected: false, xwebd: false, sair: false },
     volume: 20, brightness: 80, muted: false,
     currentPath: '/var/upgrade',
-    timers: { status: null, volume: null, brightness: null, reboot: null },
+    timers: { status: null, adbInfo: null, volume: null, brightness: null, reboot: null, panelLogPoll: null },
     rebootStart: 0,
     confirmResolve: null,
     panelSSE: null,
@@ -274,7 +274,7 @@ async function adbDetect() {
         var model = (d.model && d.model !== 'unknown') ? d.model : ((d.device && d.device !== 'unknown') ? d.device : null);
         var deviceName = model || d.serial;
         var deviceSub = model ? d.serial : '';
-        var clickable = (d.state === 'device' || d.state === 'unknown' || !d.state) ? '" onclick="selectAdbDevice(\'' + d.serial + '\')' : ' device-unauthorized"';
+        var clickable = (d.state === 'device' || d.state === 'unknown' || !d.state) ? '" data-serial="' + escapeHtml(d.serial) + '"' : ' device-unauthorized"';
         html += '<div class="adb-device-item' + selected + clickable + '">';
         html += '<div class="adb-device-info">';
         html += '<div class="adb-device-serial">' + escapeHtml(deviceName) + '</div>';
@@ -291,17 +291,34 @@ async function adbDetect() {
     }
     $('adbDeviceList').innerHTML = html;
 
+    var items = $('adbDeviceList').querySelectorAll('.adb-device-item[data-serial]');
+    for (var idx = 0; idx < items.length; idx++) {
+        items[idx].addEventListener('click', (function(el) {
+            return function() { selectAdbDevice(el.getAttribute('data-serial')); };
+        })(items[idx]));
+    }
+
     if (!S.adb.serial && devices.length === 1) selectAdbDevice(devices[0].serial);
     toast('检测到 ' + devices.length + ' 台设备', 'success');
     updateViewportHeight();
 }
 
 function adbDisconnect() {
+    if (S.timers.adbInfo) { clearInterval(S.timers.adbInfo); S.timers.adbInfo = null; }
     S.adb.serial = null;
     S.adb.connected = false;
     $('btnAdbDisconnect').style.display = 'none';
     $('adbDeviceInfo').style.display = 'none';
-    adbDetect();
+    $('adbXwebdStatus').textContent = '未检测';
+    $('adbXwebdStatus').className = 'svc-status svc-unknown';
+    $('adbSairStatus').textContent = '未检测';
+    $('adbSairStatus').className = 'svc-status svc-unknown';
+    $('btnAdbDeployXwebd').style.display = '';
+    $('btnAdbStartXwebd').style.display = 'none';
+    $('btnAdbRestartXwebd').style.display = 'none';
+    $('btnAdbRemoveXwebd').style.display = 'none';
+    $('wiredDiagContainer').innerHTML = '<div class="empty-state">部署前点击「运行自检」检测设备是否满足 xwebd 运行环境</div>';
+    $('adbDeviceList').innerHTML = '<div class="empty-state">点击「扫描设备」检测通过USB连接的设备</div>';
     toast('已断开设备连接', 'info');
 }
 
@@ -316,18 +333,19 @@ async function selectAdbDevice(serial) {
         updateConnStatus('assistantConnStatus', false);
         $('btnConnect').textContent = '连接';
         $('btnConnect').disabled = false;
-        toast('已断开无线连接', 'info');
     }
     S.adb.serial = serial;
     S.adb.connected = true;
     $('btnAdbDisconnect').style.display = '';
     var items = document.querySelectorAll('.adb-device-item');
     for (var i = 0; i < items.length; i++) {
-        items[i].classList.toggle('selected', items[i].querySelector('.adb-device-serial').textContent === serial);
+        items[i].classList.toggle('selected', items[i].getAttribute('data-serial') === serial);
     }
     await adbRefreshStatus();
     await adbRefreshDeviceInfo();
     await adbRefreshLogs();
+    if (S.timers.adbInfo) clearInterval(S.timers.adbInfo);
+    S.timers.adbInfo = setInterval(adbRefreshDeviceInfo, 10000);
 }
 
 async function adbRefreshStatus() {
@@ -370,26 +388,22 @@ async function adbRefreshStatus() {
     if (sair.custom_running) {
         sairEl.textContent = sairVer ? '运行中 ' + sairVer : '运行中';
         sairEl.className = 'svc-status svc-on';
-        $('btnAdbDeploySairHot').style.display = '';
-        $('btnAdbDeploySairCold').style.display = 'none';
+        $('btnAdbDeploySairCold').textContent = '部署';
         $('btnAdbRemoveSair').style.display = '';
     } else if (sair.native_running) {
         sairEl.textContent = '原生运行中';
         sairEl.className = 'svc-status svc-off';
-        $('btnAdbDeploySairHot').style.display = '';
-        $('btnAdbDeploySairCold').style.display = '';
+        $('btnAdbDeploySairCold').textContent = '部署';
         $('btnAdbRemoveSair').style.display = 'none';
     } else if (sair.custom_installed) {
         sairEl.textContent = sairVer ? '已安装 ' + sairVer : '已安装';
         sairEl.className = 'svc-status svc-off';
-        $('btnAdbDeploySairHot').style.display = '';
-        $('btnAdbDeploySairCold').style.display = '';
+        $('btnAdbDeploySairCold').textContent = '部署';
         $('btnAdbRemoveSair').style.display = '';
     } else {
         sairEl.textContent = '未安装';
         sairEl.className = 'svc-status svc-unknown';
-        $('btnAdbDeploySairHot').style.display = '';
-        $('btnAdbDeploySairCold').style.display = '';
+        $('btnAdbDeploySairCold').textContent = '部署';
         $('btnAdbRemoveSair').style.display = 'none';
     }
 }
@@ -481,35 +495,31 @@ async function adbRemoveXwebd() {
 }
 
 async function adbDeploySair(mode) {
-    mode = mode || 'cold';
-    var confirmMsg = mode === 'hot' ? '确定热部署语音助手？（SIGUSR2热更新，进程不中断）' : '确定冷部署语音助手？（上传sair后设备将重启）';
-    if (!await showConfirm(confirmMsg)) return;
+    if (!await showConfirm('确定部署语音助手？\n\n部署过程中设备将重启一次')) return;
     var progress = $('adbSairProgress');
     var bar = $('adbSairBar');
     var label = $('adbSairProgressLabel');
     progress.style.display = 'inline-flex';
     bar.style.width = '10%';
-    label.textContent = mode === 'hot' ? '热部署中...' : '冷部署中...';
-    $('btnAdbDeploySairHot').disabled = true;
+    label.textContent = '部署中...';
     $('btnAdbDeploySairCold').disabled = true;
 
     var r = await api('/api/adb/deploy-sair', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serial: S.adb.serial, mode: mode }),
+        body: JSON.stringify({ serial: S.adb.serial, mode: 'cold' }),
     });
 
     bar.style.width = '100%';
-    $('btnAdbDeploySairHot').disabled = false;
     $('btnAdbDeploySairCold').disabled = false;
 
     if (r.ok) {
         label.textContent = '完成';
         if (r.rebooting) {
-            toast('语音助手冷部署成功，设备重启中...', 'success');
+            toast('语音助手部署成功，设备重启中...', 'success');
             setTimeout(function() { progress.style.display = 'none'; adbWaitForReconnect(); }, 1500);
         } else {
-            toast(mode === 'hot' ? '语音助手热部署成功' : '语音助手冷部署成功', 'success');
+            toast('语音助手部署成功', 'success');
             setTimeout(function() { progress.style.display = 'none'; adbRefreshStatus(); }, 1500);
         }
     } else {
@@ -538,6 +548,31 @@ async function adbPoweroff() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ serial: S.adb.serial }),
     });
+}
+
+async function adbFactoryReset() {
+    if (!await showConfirm('确定恢复出厂设置？\n\n⚠️ 仅清除小智·智伴项目相关文件（/var/upgrade目录下的自定义程序、脚本和日志），并非对设备本身恢复出厂设置。清除后设备将恢复为原生状态。', {danger: true})) return;
+    toast('正在恢复出厂设置...', 'info');
+    var r = await api('/api/adb/factory-reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serial: S.adb.serial }),
+    });
+    if (r.ok) {
+        stopPolling();
+        S.wl.connected = false;
+        S.wl.xwebd = false;
+        S.wl.sair = false;
+        updateConnUI(false);
+        updateConnStatus('xwebdConnStatus', false);
+        updateConnStatus('assistantConnStatus', false);
+        $('btnConnect').textContent = '连接';
+        $('btnConnect').disabled = false;
+        resetWirelessUI();
+        toast('恢复出厂设置完成，设备将重启', 'success');
+    } else {
+        toast('恢复出厂设置失败: ' + (r.error || '未知错误'), 'error');
+    }
 }
 
 async function adbRefreshLogs() {
@@ -576,6 +611,7 @@ async function connectDevice() {
         updateConnStatus('assistantConnStatus', false);
         btn.textContent = '连接';
         btn.disabled = false;
+        resetWirelessUI();
         toast('已断开连接', 'info');
         return;
     }
@@ -588,6 +624,19 @@ async function connectDevice() {
     showOverlay('deviceOverlay');
     showOverlay('assistantOverlay');
     showOverlay('xwebdOverlay');
+
+    if (S.adb.serial) {
+        if (S.timers.adbInfo) { clearInterval(S.timers.adbInfo); S.timers.adbInfo = null; }
+        S.adb.serial = null;
+        S.adb.connected = false;
+        $('btnAdbDisconnect').style.display = 'none';
+        $('adbDeviceInfo').style.display = 'none';
+        $('adbXwebdStatus').textContent = '未检测';
+        $('adbXwebdStatus').className = 'svc-status svc-unknown';
+        $('adbSairStatus').textContent = '未检测';
+        $('adbSairStatus').className = 'svc-status svc-unknown';
+        $('adbDeviceList').innerHTML = '<div class="empty-state">点击「扫描设备」检测通过USB连接的设备</div>';
+    }
 
     var r = await api('/api/connect', {
         method: 'POST',
@@ -602,7 +651,6 @@ async function connectDevice() {
         btn.textContent = '断开';
         btn.disabled = false;
         toast('连接设备成功', 'success');
-        if (S.adb.serial) adbDisconnect();
         startPolling();
         refreshAll();
         updateConnStatus('xwebdConnStatus', true);
@@ -632,6 +680,45 @@ async function connectDevice() {
     hideOverlay('assistantOverlay');
     hideOverlay('xwebdOverlay');
     if (!S.wl.connected) { btn.disabled = false; btn.textContent = '连接'; }
+}
+
+function resetWirelessUI() {
+    $('devModel').textContent = '--';
+    $('devKernel').textContent = '--';
+    $('devCpu').textContent = '--';
+    $('devIp').textContent = '--';
+    $('devWifi').textContent = '--';
+    $('devBattery').textContent = '--';
+    $('devUptime').textContent = '--';
+    $('devMem').textContent = '--';
+    $('devDisk').textContent = '--';
+    $('assistantInstalled').textContent = '--';
+    $('assistantVersion').textContent = '--';
+    $('assistantPid').textContent = '--';
+    $('assistantActivation').textContent = '--';
+    $('assistantState').textContent = '空闲';
+    $('assistantState').className = 'status-pill state-idle';
+    $('xwebdStatus').textContent = '--';
+    $('xwebdVersion').textContent = '--';
+    $('cfgWsUrl').value = '';
+    $('cfgSairLogLevel').value = '';
+    $('cfgLogLevel').value = '';
+    $('cfgUploadMax').value = '10';
+    $('diagContainer').innerHTML = '<div class="empty-state">点击「运行自检」检测设备是否满足语音助手运行环境</div>';
+    $('fileContainer').innerHTML = '<div class="empty-state">等待连接设备...</div>';
+    $('logXwebd').innerHTML = '<div class="empty-state">等待连接设备...</div>';
+    $('logAssistant').innerHTML = '<div class="empty-state">等待连接设备...</div>';
+    $('logPanel').innerHTML = '<div class="empty-state">暂无日志</div>';
+    var svcIds = ['svcTelnet','svcWatchdog','svcAutostart','svcXwebd','svcAssistant'];
+    for (var i = 0; i < svcIds.length; i++) {
+        var el = $(svcIds[i]);
+        if (el) { el.textContent = '未知'; el.className = 'svc-status svc-unknown'; }
+    }
+    $('btnXwebdRestart').style.display = '';
+    $('btnXwebdRemove').style.display = '';
+    $('btnXwebdUpdate').style.display = '';
+    $('btnDeploy').disabled = false;
+    $('footerInfo').textContent = '--';
 }
 
 function updateConnUI(online) {
@@ -665,7 +752,7 @@ function updateSairLocks() {
 
 function startPolling() {
     stopPolling();
-    S.timers.status = setInterval(refreshStatus, 3000);
+    S.timers.status = setInterval(refreshStatus, 5000);
     connectDeviceSSE('xwebd');
     connectDeviceSSE('assistant');
 }
@@ -690,37 +777,46 @@ function refreshAll() {
 
 async function refreshStatus() {
     if (!S.wl.connected) return;
-    var r = await api('/api/status');
-    if (r.error) return;
-    var d = r.data || r;
-    $('devModel').textContent = d.model || '--';
-    $('devKernel').textContent = d.kernel || '--';
-    $('devCpu').textContent = d.cpu || '--';
-    $('devIp').textContent = d.wifi_ip || d.ip || d.device_ip || '--';
-    $('devWifi').textContent = d.wifi_connected ? '已连接' : '未连接';
-    $('devBattery').textContent = d.battery_cap != null ? d.battery_cap + '%' : '--';
-    $('devUptime').textContent = formatUptime(d.uptime_s);
-    $('devMem').textContent = formatMem(d.mem_free_kb, d.mem_total_kb, d.mem_cached_kb);
-    $('devDisk').textContent = formatDisk(d.disk_used_kb, d.disk_total_kb);
-    if (d.volume != null) {
-        S.volume = d.volume;
-        $('volumeSlider').value = Math.round(d.volume * 100 / 80);
-        $('volumeVal').textContent = Math.round(d.volume * 100 / 80);
-    }
-    if (d.brightness != null) {
-        S.brightness = d.brightness;
-        $('brightnessSlider').value = Math.round(d.brightness * 100 / 900);
-        $('brightnessVal').textContent = Math.round(d.brightness * 100 / 900);
-    }
-    if (d.muted != null) { S.muted = d.muted; updateMuteUI(); }
-    if (d.state) {
-        var stateEl = $('assistantState');
-        if (stateEl) {
-            stateEl.textContent = STATE_MAP[d.state] || d.state;
-            stateEl.className = 'status-pill state-' + d.state.toLowerCase();
+    try {
+        var r = await api('/api/status');
+        if (r.error) {
+            $('footerInfo').textContent = '状态获取失败';
+            return;
         }
+        var d = r.data || r;
+        $('devModel').textContent = d.model || '--';
+        $('devKernel').textContent = d.kernel || '--';
+        $('devCpu').textContent = d.cpu || '--';
+        $('devIp').textContent = d.wifi_ip || d.ip || d.device_ip || S.wl.host || '--';
+        var wifiOk = d.wifi_connected;
+        if (S.wl.connected && !wifiOk && d.wifi_ip) wifiOk = true;
+        $('devWifi').textContent = wifiOk ? '已连接' : '未连接';
+        $('devBattery').textContent = d.battery_cap != null && d.battery_cap >= 0 ? d.battery_cap + '%' : '--';
+        $('devUptime').textContent = formatUptime(d.uptime_s);
+        $('devMem').textContent = formatMem(d.mem_free_kb, d.mem_total_kb, d.mem_cached_kb);
+        $('devDisk').textContent = formatDisk(d.disk_used_kb, d.disk_total_kb);
+        if (d.volume != null) {
+            S.volume = d.volume;
+            $('volumeSlider').value = Math.round(d.volume * 100 / 80);
+            $('volumeVal').textContent = Math.round(d.volume * 100 / 80);
+        }
+        if (d.brightness != null) {
+            S.brightness = d.brightness;
+            $('brightnessSlider').value = Math.round(d.brightness * 100 / 900);
+            $('brightnessVal').textContent = Math.round(d.brightness * 100 / 900);
+        }
+        if (d.muted != null) { S.muted = d.muted; updateMuteUI(); }
+        if (d.state) {
+            var stateEl = $('assistantState');
+            if (stateEl) {
+                stateEl.textContent = STATE_MAP[d.state] || d.state;
+                stateEl.className = 'status-pill state-' + d.state.toLowerCase();
+            }
+        }
+        $('footerInfo').textContent = (d.model || '?') + ' · ' + (d.wifi_ip || S.wl.host || '?');
+    } catch(e) {
+        $('footerInfo').textContent = '状态获取异常';
     }
-    $('footerInfo').textContent = (d.model || '?') + ' · ' + (d.wifi_ip || '?');
 }
 
 async function refreshAssistantStatus() {
@@ -739,6 +835,7 @@ async function refreshAssistantStatus() {
     if (d.activation_code) $('assistantActivation').textContent = d.activation_code;
     else $('assistantActivation').textContent = '--';
     if (d.ws_url) $('cfgWsUrl').value = d.ws_url;
+    if (d.log_level) $('cfgSairLogLevel').value = d.log_level;
     var wasConnected = S.wl.sair;
     S.wl.sair = d.running;
     updateConnStatus('assistantConnStatus', d.running);
@@ -753,7 +850,10 @@ async function refreshXwebdStatus() {
     } catch(e) {}
     try {
         var sr = await api('/api/services');
-        if (!sr.error && sr.telnet) $('xwebdStatus').textContent = '运行中';
+        if (!sr.error && sr.telnet) {
+            $('xwebdStatus').textContent = '运行中';
+            updateConnStatus('xwebdConnStatus', true);
+        }
     } catch(e) {}
 }
 
@@ -763,15 +863,13 @@ async function refreshServices() {
     if (r.error) return;
     var d = r.data || r;
     setSvcStatus('svcTelnet', d.telnet && d.telnet.running, d.telnet ? (d.telnet.running ? '运行中' : '已停止') : '未知');
-    setSvcStatus('svcWatchdog', d.boot_watchdog && d.boot_watchdog.deployed, d.boot_watchdog ? (d.boot_watchdog.deployed ? '已部署' : '未部署') : '未知');
-    setSvcStatus('svcAutostart', d.xwebd_autostart && d.xwebd_autostart.enabled, d.xwebd_autostart ? (d.xwebd_autostart.enabled ? '已启用' : '已禁用') : '未知');
-
-    var ar = await api('/api/assistant/status');
-    if (!ar.error) {
-        var ad = ar.data || ar;
-        setSvcStatus('svcAssistant', ad.running, ad.running ? '运行中 (PID ' + (ad.pid || '?') + ')' : (ad.native_running ? '原生运行中' : (ad.installed ? '已停止' : '未安装')));
-        setSvcStatus('svcBackup', ad.native_backup_exists, ad.native_backup_exists ? '存在' : '无');
-    }
+    var wd = d.boot_watchdog || {};
+    setSvcStatus('svcWatchdog', wd.deployed || wd.running, (wd.running ? '运行中' : (wd.deployed ? '已部署' : '未部署')));
+    var xw = d.xwebd || {};
+    setSvcStatus('svcAutostart', xw.autostart, xw.autostart ? '自启动已启用' : '自启动未启用');
+    setSvcStatus('svcXwebd', xw.running, xw.running ? '运行中' : '已停止');
+    var sr = d.sair || {};
+    setSvcStatus('svcAssistant', sr.running, sr.running ? '运行中' : (sr.installed ? '已停止' : '未安装'));
 }
 
 async function refreshServicesWithFlash() {
@@ -792,8 +890,6 @@ async function refreshConfig() {
     var r = await api('/api/assistant/config');
     if (!r.error) {
         if (r.ws_url) $('cfgWsUrl').value = r.ws_url;
-        if (r.realtime_mode != null) $('cfgRealtime').checked = r.realtime_mode;
-        if (r.aec_enabled != null) $('cfgAec').checked = r.aec_enabled;
     }
     var r2 = await api('/api/xwebd/config');
     if (!r2.error) {
@@ -885,14 +981,13 @@ async function doCleanup() {
 }
 
 async function saveAssistantConfig() {
+    var config = { ws_url: $('cfgWsUrl').value };
+    var logLevel = $('cfgSairLogLevel').value;
+    if (logLevel) config.log_level = logLevel;
     var r = await api('/api/assistant/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            ws_url: $('cfgWsUrl').value,
-            realtime_mode: $('cfgRealtime').checked,
-            aec_enabled: $('cfgAec').checked,
-        }),
+        body: JSON.stringify(config),
     });
     if (r.ok || !r.error) toast('助手配置已保存', 'success');
     else toast('保存失败', 'error');
@@ -914,8 +1009,7 @@ async function saveXwebdConfig() {
 async function restoreAssistantDefaults() {
     if (!await showConfirm('确定恢复助手配置为默认值？', {icon: '🔄'})) return;
     $('cfgWsUrl').value = 'wss://api.tenclass.net/xiaozhi/v1/';
-    $('cfgRealtime').checked = false;
-    $('cfgAec').checked = false;
+    $('cfgSairLogLevel').value = '';
     await saveAssistantConfig();
 }
 
@@ -927,6 +1021,12 @@ async function restoreXwebdDefaults() {
 }
 
 async function doHotUpdate() {
+    var statusR = await api('/api/assistant/status');
+    var sd = statusR.data || statusR;
+    if (statusR.error || !sd.installed) {
+        toast('语音助手未安装，请先点击「部署」按钮', 'error');
+        return;
+    }
     if (!await showConfirm('确定进行热更新？')) return;
     toast('正在检查更新...', 'info');
     var r = await api('/api/assistant/upgrade', { method: 'POST' });
@@ -935,33 +1035,53 @@ async function doHotUpdate() {
 }
 
 async function doDeploy() {
+    if (!await showConfirm('确定部署语音助手？\n\n部署过程中设备将重启一次')) return;
     var progress = $('upgradeProgress');
     var bar = $('upgradeBar');
     var label = $('upgradeLabel');
     progress.style.display = 'block';
     bar.style.width = '0%';
-    label.textContent = '部署中...';
+    label.textContent = '上传部署中...';
     $('btnDeploy').disabled = true;
-    bar.style.width = '30%';
-    api('/api/assistant/deploy', {
+    bar.style.width = '10%';
+
+    var r = await api('/api/assistant/smart-deploy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: '/var/upgrade/sair_new' }),
-    }).then(function(r) {
-        if (r.ok) {
-            bar.style.width = '100%';
-            label.textContent = '部署成功！';
-            toast('语音助手部署成功', 'success');
-            refreshAssistantStatus();
-        } else {
-            label.textContent = '部署失败: ' + (r.error || '');
-            toast('部署失败', 'error');
-        }
-        $('btnDeploy').disabled = false;
+        body: JSON.stringify({}),
     });
+
+    bar.style.width = '100%';
+    $('btnDeploy').disabled = false;
+    if (r.ok) {
+        label.textContent = '部署成功！设备重启中...';
+        toast('语音助手部署成功，设备重启中...', 'success');
+        stopPolling();
+        S.wl.connected = false;
+        S.wl.xwebd = false;
+        S.wl.sair = false;
+        updateConnUI(false);
+        updateConnStatus('xwebdConnStatus', false);
+        updateConnStatus('assistantConnStatus', false);
+        $('btnConnect').textContent = '连接';
+        $('btnConnect').disabled = false;
+        resetWirelessUI();
+        setTimeout(function() {
+            toast('设备重启中，约30秒后可重新连接', 'info');
+        }, 2000);
+    } else {
+        label.textContent = '部署失败: ' + (r.error || '');
+        toast('部署失败: ' + (r.error || ''), 'error');
+    }
 }
 
 async function doUpdate() {
+    var statusR = await api('/api/assistant/status');
+    var sd = statusR.data || statusR;
+    if (statusR.error || !sd.installed) {
+        toast('语音助手未安装，请先点击「部署」按钮', 'error');
+        return;
+    }
     if (!await showConfirm('确定进行冷更新？设备将重启')) return;
     toast('冷更新中...', 'info');
     var r = await api('/api/assistant/update', {
@@ -987,9 +1107,19 @@ async function doUninstall() {
 
 async function doXwebdUpdate() {
     toast('更新xwebd中...', 'info');
-    var r = await api('/api/xwebd/upload-update', { method: 'POST' });
-    if (r.ok) toast('xwebd 更新成功', 'success');
-    else toast('更新失败: ' + (r.error || ''), 'error');
+    if (S.wl.connected) {
+        var r = await api('/api/xwebd/wireless-update', { method: 'POST' });
+        if (r.ok) {
+            toast('xwebd 更新成功，正在重启...', 'success');
+            wirelessRebootAndReconnect();
+        } else {
+            toast('更新失败: ' + (r.error || ''), 'error');
+        }
+    } else {
+        var r = await api('/api/xwebd/upload-update', { method: 'POST' });
+        if (r.ok) toast('xwebd 更新成功', 'success');
+        else toast('更新失败: ' + (r.error || ''), 'error');
+    }
 }
 
 async function doXwebdRestart() {
@@ -1251,10 +1381,27 @@ function connectPanelSSE() {
             setTimeout(connectPanelSSE, 5000);
         };
     } catch(e) {}
+    startPanelLogPoll();
+}
+
+function startPanelLogPoll() {
+    if (S.timers.panelLogPoll) return;
+    S.timers.panelLogPoll = setInterval(function() {
+        var autoEl = S.mode === 'wired' ? $('autoRefreshPanelWired') : $('autoRefreshPanel');
+        if (autoEl && autoEl.checked) refreshLogPanel('panel', false);
+    }, 3000);
+}
+
+function stopPanelLogPoll() {
+    if (S.timers.panelLogPoll) {
+        clearInterval(S.timers.panelLogPoll);
+        S.timers.panelLogPoll = null;
+    }
 }
 
 function disconnectPanelSSE() {
     if (S.panelSSE) { S.panelSSE.close(); S.panelSSE = null; }
+    stopPanelLogPoll();
 }
 
 function connectDeviceSSE(source) {
@@ -1316,9 +1463,9 @@ async function refreshFiles() {
     parts.forEach(function(p, i) {
         cumPath += '/' + p;
         navHtml += '<span class="file-nav-sep">/</span>';
-        if (i === 0) navHtml += '<span class="file-nav-dim">' + p + '</span>';
-        else if (i < parts.length - 1) navHtml += '<span class="file-nav-link" onclick="navigateTo(\'' + cumPath + '\')">' + p + '</span>';
-        else navHtml += '<span>' + p + '</span>';
+        if (i === 0) navHtml += '<span class="file-nav-dim">' + escapeHtml(p) + '</span>';
+        else if (i < parts.length - 1) navHtml += '<span class="file-nav-link" data-nav-path="' + escapeHtml(cumPath) + '">' + escapeHtml(p) + '</span>';
+        else navHtml += '<span>' + escapeHtml(p) + '</span>';
     });
 
     var html = '<div class="file-nav">' + navHtml + '</div>';
@@ -1328,18 +1475,28 @@ async function refreshFiles() {
     files.forEach(function(f) {
         var nameClass = f.is_dir ? 'file-dir-link' : (f.protected ? 'file-name-cell file-protected' : 'file-name-cell');
         var filePath = S.currentPath.endsWith('/') ? S.currentPath + f.name : S.currentPath + '/' + f.name;
-        var nameClick = f.is_dir ? ' onclick="navigateTo(\'' + filePath + '\')"' : '';
+        var nameAttr = f.is_dir ? ' data-nav-path="' + escapeHtml(filePath) + '"' : '';
         html += '<tr>';
-        html += '<td><span class="' + nameClass + '"' + nameClick + ' style="cursor:pointer">' + f.name + (f.is_dir ? '/' : '') + '</span></td>';
+        html += '<td><span class="' + nameClass + '"' + nameAttr + ' style="cursor:pointer">' + escapeHtml(f.name) + (f.is_dir ? '/' : '') + '</span></td>';
         html += '<td>' + (f.is_dir ? '--' : formatSize(f.size)) + '</td>';
         html += '<td>' + formatFileTime(f.mtime) + '</td>';
         html += '<td class="file-actions">';
-        if (!f.is_dir) html += '<button class="btn btn-ghost btn-xs" onclick="downloadFile(\'' + filePath + '\')">下载</button>';
-        if (!f.protected) html += '<button class="btn btn-danger btn-xs" onclick="deleteFile(\'' + filePath + '\')">删除</button>';
+        if (!f.is_dir) html += '<button class="btn btn-ghost btn-xs" data-download="' + escapeHtml(filePath) + '">下载</button>';
+        if (!f.protected) html += '<button class="btn btn-danger btn-xs" data-delete="' + escapeHtml(filePath) + '">删除</button>';
         html += '</td></tr>';
     });
     html += '</tbody></table>';
     container.innerHTML = html;
+
+    container.querySelectorAll('[data-nav-path]').forEach(function(el) {
+        el.addEventListener('click', function() { navigateTo(el.getAttribute('data-nav-path')); });
+    });
+    container.querySelectorAll('[data-download]').forEach(function(el) {
+        el.addEventListener('click', function() { downloadFile(el.getAttribute('data-download')); });
+    });
+    container.querySelectorAll('[data-delete]').forEach(function(el) {
+        el.addEventListener('click', function() { deleteFile(el.getAttribute('data-delete')); });
+    });
 }
 
 async function refreshFilesWithFlash() {
@@ -1384,22 +1541,112 @@ async function doUpload() {
 // ==================== Diagnostics ====================
 
 async function runDiag() {
-    if (!S.wl.connected) { toast('请先连接设备', 'error'); return; }
     var container = $('diagContainer');
     var btn = $('btnDiag');
+    if (!S.wl.connected) {
+        container.innerHTML = '<div class="empty-state">请先无线连接设备</div>';
+        return;
+    }
     btn.disabled = true;
     btn.textContent = '检测中...';
-    container.innerHTML = '<div class="empty-state">正在检测设备环境...</div>';
 
-    var xwebdResult = null, assistantResult = null;
-    try { var xr = await api('/api/xwebd/diag'); xwebdResult = xr.items ? xr : (xr.data ? xr.data : null); } catch(e) {}
+    var assistantEnvResult = null, assistantResult = null;
+    try { var aer = await api('/api/assistant/env'); assistantEnvResult = aer.items ? aer : (aer.data ? aer.data : null); } catch(e) {}
     try { var ar = await api('/api/assistant/diag'); assistantResult = ar.items ? ar : (ar.data ? ar.data : null); } catch(e) {}
 
-    var html = '';
-    if (xwebdResult) html += renderDiagSection('xwebd 自检', xwebdResult);
-    if (assistantResult) html += renderDiagSection('语音助手自检', assistantResult);
-    if (!xwebdResult && !assistantResult) html = '<div class="empty-state">自检请求失败，请检查设备连接</div>';
+    var allItems = [];
+    if (assistantEnvResult) {
+        var envItems = assistantEnvResult.items || [];
+        for (var i = 0; i < envItems.length; i++) allItems.push(envItems[i]);
+    }
+    if (assistantResult) {
+        var diagItems = assistantResult.items || [];
+        for (var j = 0; j < diagItems.length; j++) allItems.push(diagItems[j]);
+    }
+
+    if (!allItems.length) {
+        container.innerHTML = '<div class="empty-state">请先无线连接设备</div>';
+        btn.disabled = false;
+        btn.textContent = '运行自检';
+        return;
+    }
+
+    var html = '<div class="diag-items">';
+    for (var k = 0; k < allItems.length; k++) {
+        html += '<div class="diag-item diag-item-pending" data-diag-idx="' + k + '">';
+        html += '<span class="diag-item-icon diag-icon-spinner"></span>';
+        html += '<span class="diag-item-name">' + allItems[k].name + '</span>';
+        html += '<span class="diag-item-msg">检测中...</span>';
+        html += '</div>';
+    }
+    html += '</div>';
     container.innerHTML = html;
+
+    for (var m = 0; m < allItems.length; m++) {
+        await new Promise(function(resolve) { setTimeout(resolve, 80 + Math.random() * 120); });
+        var item = allItems[m];
+        var el = container.querySelector('[data-diag-idx="' + m + '"]');
+        if (!el) continue;
+        var cls = item.ok ? 'diag-item-ok' : 'diag-item-fail';
+        var icon = item.ok ? '&#10003;' : '&#10007;';
+        el.className = 'diag-item ' + cls;
+        el.querySelector('.diag-item-icon').className = 'diag-item-icon';
+        el.querySelector('.diag-item-icon').innerHTML = icon;
+        el.querySelector('.diag-item-msg').textContent = item.message;
+    }
+
+    btn.disabled = false;
+    btn.textContent = '运行自检';
+}
+
+async function runWiredDiag() {
+    var container = $('wiredDiagContainer');
+    var btn = $('btnWiredDiag');
+    if (!S.adb.serial) {
+        container.innerHTML = '<div class="empty-state">请先连接ADB设备</div>';
+        return;
+    }
+    btn.disabled = true;
+    btn.textContent = '检测中...';
+
+    var envResult = null;
+    try {
+        var er = await api('/api/adb/xwebd-env?serial=' + encodeURIComponent(S.adb.serial || ''));
+        envResult = er.items ? er : (er.data ? er.data : null);
+    } catch(e) {}
+
+    if (!envResult) {
+        container.innerHTML = '<div class="empty-state">环境自检失败，请检查ADB连接</div>';
+        btn.disabled = false;
+        btn.textContent = '运行自检';
+        return;
+    }
+
+    var items = envResult.items || [];
+    var html = '<div class="diag-items">';
+    for (var k = 0; k < items.length; k++) {
+        html += '<div class="diag-item diag-item-pending" data-diag-idx="' + k + '">';
+        html += '<span class="diag-item-icon diag-icon-spinner"></span>';
+        html += '<span class="diag-item-name">' + items[k].name + '</span>';
+        html += '<span class="diag-item-msg">检测中...</span>';
+        html += '</div>';
+    }
+    html += '</div>';
+    container.innerHTML = html;
+
+    for (var m = 0; m < items.length; m++) {
+        await new Promise(function(resolve) { setTimeout(resolve, 80 + Math.random() * 120); });
+        var item = items[m];
+        var el = container.querySelector('[data-diag-idx="' + m + '"]');
+        if (!el) continue;
+        var cls = item.ok ? 'diag-item-ok' : 'diag-item-fail';
+        var icon = item.ok ? '&#10003;' : '&#10007;';
+        el.className = 'diag-item ' + cls;
+        el.querySelector('.diag-item-icon').className = 'diag-item-icon';
+        el.querySelector('.diag-item-icon').innerHTML = icon;
+        el.querySelector('.diag-item-msg').textContent = item.message;
+    }
+
     btn.disabled = false;
     btn.textContent = '运行自检';
 }
@@ -1455,23 +1702,6 @@ document.addEventListener('DOMContentLoaded', function() {
     applyMode();
     updateSairLocks();
     connectPanelSSE();
+    refreshLogPanel('panel', false);
     window.addEventListener('resize', updateViewportHeight);
-
-    $('cfgRealtime').addEventListener('change', function() {
-        updateWsUrlFromOptions();
-    });
-    $('cfgAec').addEventListener('change', function() {
-        updateWsUrlFromOptions();
-    });
 });
-
-function updateWsUrlFromOptions() {
-    var realtime = $('cfgRealtime').checked;
-    var aec = $('cfgAec').checked;
-    var baseUrl = 'wss://api.tenclass.net/xiaozhi/v1/';
-    if (realtime) {
-        $('cfgWsUrl').value = baseUrl + 'realtime';
-    } else {
-        $('cfgWsUrl').value = baseUrl;
-    }
-}

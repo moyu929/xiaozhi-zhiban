@@ -6,8 +6,8 @@ device_api.py — 设备 API 封装（XwebdAPI 类）
 2. 设备存活检测：check_device_alive() 函数用于判断设备是否在线
 
 关键概念：
-- xwebd：设备端 HTTP 守护进程，端口 8080，提供系统控制 API
-- sair：Assistant 的二进制文件名（平台约束不可改名），端口 8081
+- xwebd：设备端 HTTP 守护进程，端口 8080，提供系统控制 API 及助手代理 API
+- sair：Assistant 的二进制文件名（平台约束不可改名），所有请求通过 xwebd 转发
 """
 
 import json
@@ -16,6 +16,7 @@ import logging
 import threading
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
+from config import DEFAULT_DEVICE_HOST, DEFAULT_XWEBD_PORT
 
 logger = logging.getLogger("panel.device_api")
 
@@ -23,9 +24,7 @@ logger = logging.getLogger("panel.device_api")
 def check_device_alive(host, port, timeout=3):
     """检测设备是否在线
 
-    根据端口号选择不同的健康检查接口：
-    - 端口 8081（sair）：访问 /api/status，检查返回数据中是否包含 "state" 字段
-    - 其他端口（xwebd）：访问 /api/system，检查返回数据中是否包含 "cpu" 字段
+    访问 xwebd 的 /api/system，检查返回数据中是否包含 "cpu" 字段。
 
     Args:
         host: 设备 IP 地址
@@ -36,17 +35,12 @@ def check_device_alive(host, port, timeout=3):
         bool: True 表示设备在线，False 表示设备离线或响应异常
     """
     try:
-        if port == 8081:
-            url = f"http://{host}:{port}/api/status"
-            check_key = "state"
-        else:
-            url = f"http://{host}:{port}/api/system"
-            check_key = "cpu"
+        url = f"http://{host}:{port}/api/system"
         req = Request(url, method="GET")
         with urlopen(req, timeout=timeout) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
-                if check_key in data:
+                if "cpu" in data:
                     logger.debug("设备存活检查: %s:%d = True", host, port)
                     return True
     except Exception:
@@ -67,36 +61,46 @@ class XwebdAPI:
     - 日志查询
     """
 
-    def __init__(self, host="192.168.1.96", port=8080):
+    def __init__(self, host=DEFAULT_DEVICE_HOST, port=DEFAULT_XWEBD_PORT):
         """初始化 XwebdAPI 客户端
 
         Args:
-            host: xwebd 服务地址，默认 "192.168.1.96"
-            port: xwebd 服务端口，默认 8080
+            host: xwebd 服务地址（默认从 XIAOZHI_DEVICE_HOST 环境变量读取）
+            port: xwebd 服务端口（默认 8080）
         """
         self.host = host
         self.port = port
         self.base_url = f"http://{host}:{port}"
         self.connected = False
 
-    def _request(self, method, path, data=None):
+    def _request(self, method, path, data=None, body=None, headers=None, timeout=5):
         """发送 HTTP 请求到 xwebd 服务
 
         Args:
             method: HTTP 方法（GET/POST/PUT/DELETE）
             path: API 路径（如 /api/system）
             data: 请求体数据（dict），为 None 时不发送请求体
+            body: 原始请求体（bytes），优先级高于 data
+            headers: 自定义请求头（dict）
+            timeout: 请求超时时间（秒），默认 5 秒
 
         Returns:
             dict: API 响应数据，请求失败时返回 {"error": "..."}
         """
         url = f"{self.base_url}{path}"
-        body = json.dumps(data).encode("utf-8") if data is not None else None
-        headers = {"Content-Type": "application/json"}
-        req = Request(url, data=body, method=method, headers=headers)
+        if body is not None:
+            req_body = body
+            req_headers = headers or {"Content-Type": "application/octet-stream"}
+        elif data is not None:
+            req_body = json.dumps(data).encode("utf-8")
+            req_headers = headers or {"Content-Type": "application/json"}
+        else:
+            req_body = None
+            req_headers = headers or {}
+        req = Request(url, data=req_body, method=method, headers=req_headers)
         logger.debug("-> %s %s", method, path)
         try:
-            with urlopen(req, timeout=5) as resp:
+            with urlopen(req, timeout=timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 logger.debug("<- %s %s: ok", method, path)
                 return result
@@ -199,30 +203,12 @@ class XwebdAPI:
         return self._request("POST", "/api/files/cleanup", {})
 
     def deploy_assistant(self, path="/var/upgrade/sair_new"):
-        """部署助手到设备
-
-        Args:
-            path: sair 新版本文件路径，默认 "/var/upgrade/sair_new"
-                  （sair 是 Assistant 的二进制文件名，平台约束不可改名）
-
-        Returns:
-            dict: {"ok": True, "message": "..."} 成功，{"error": "..."} 失败
-        """
         logger.info("部署助手: path=%s", path)
-        return self._request("POST", "/api/assistant/deploy", {"path": path})
+        return self._request("POST", "/api/assistant/deploy", {"path": path}, timeout=15)
 
     def update_assistant(self, path="/var/upgrade/sair_new"):
-        """更新设备上的助手
-
-        Args:
-            path: sair 新版本文件路径，默认 "/var/upgrade/sair_new"
-                  （sair 是 Assistant 的二进制文件名，平台约束不可改名）
-
-        Returns:
-            dict: {"ok": True, "message": "..."} 成功，{"error": "..."} 失败
-        """
         logger.info("更新助手: path=%s", path)
-        return self._request("POST", "/api/assistant/update", {"path": path})
+        return self._request("POST", "/api/assistant/update", {"path": path}, timeout=15)
 
     def uninstall_assistant(self):
         """卸载设备上的助手

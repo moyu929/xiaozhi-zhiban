@@ -58,7 +58,6 @@ typedef struct app_context_t {
 
     int in_session;
     int needs_activation;
-    int realtime_mode;
     volatile int ignore_tts_audio;
     int wakeup_cooldown_done;
     volatile int pending_key_exit;
@@ -82,7 +81,6 @@ typedef struct app_context_t {
     volatile int pending_api_abort;
     volatile int pending_api_config;
     char pending_config_buf[256];
-    pthread_t api_server_tid;
 } app_context_t;
 
 #endif

@@ -30,6 +30,9 @@
     <a href="https://github.com/moyu929/xiaozhi-zhiban" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm" title="GitHub">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
     </a>
+    <a href="https://gitee.com/beichen929/xiaozhi-zhiban" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm" title="Gitee">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M11.984 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.016 0zm6.09 5.333c.328 0 .593.266.592.593v1.482a.594.594 0 0 1-.593.592H9.777c-.982 0-1.778.796-1.778 1.778v5.926c0 .982.796 1.778 1.778 1.778h4.452c.982 0 1.778-.796 1.778-1.778v-.296a.593.593 0 0 0-.592-.593h-2.963a.593.593 0 0 1-.593-.592v-1.482a.593.593 0 0 1 .593-.592h5.185c.328 0 .593.265.593.592v3.408a4 4 0 0 1-4 4H9.482a4 4 0 0 1-4-4V9.778a4 4 0 0 1 4-4h8.592z"/></svg>
+    </a>
     <button class="btn btn-ghost btn-sm" onclick="showHelp()">帮助</button>
   </div>
 </nav>
@@ -84,8 +87,7 @@
                   <span id="adbSairStatus" class="svc-status svc-unknown">未检测</span>
                 </div>
                 <div class="deploy-item-actions">
-                  <button class="btn btn-primary btn-sm" onclick="adbDeploySair('hot')" id="btnAdbDeploySairHot">热部署</button>
-                  <button class="btn btn-ghost btn-sm" onclick="adbDeploySair('cold')" id="btnAdbDeploySairCold">冷部署</button>
+                  <button class="btn btn-primary btn-sm" onclick="adbDeploySair('cold')" id="btnAdbDeploySairCold">部署</button>
                   <button class="btn btn-danger btn-sm" onclick="adbRemoveSair()" id="btnAdbRemoveSair" style="display:none">卸载</button>
                 </div>
                 <div id="adbSairProgress" class="deploy-progress" style="display:none;margin-top:8px"><span id="adbSairProgressLabel" class="progress-label-inline">准备中...</span><span class="progress-bar-inline"><span id="adbSairBar" class="progress-fill-inline" style="width:0%"></span></span></div>
@@ -100,6 +102,7 @@
             <div class="btn-row" style="margin-top:0">
               <button class="btn btn-danger" onclick="adbRebootAndReconnect()">重启设备</button>
               <button class="btn btn-danger btn-outline" onclick="adbPoweroff()">关机</button>
+              <button class="btn btn-danger btn-outline" onclick="adbFactoryReset()">恢复出厂</button>
             </div>
             <div class="wired-hint" style="margin-top:14px">
               <span class="hint-icon">💡</span>
@@ -108,22 +111,29 @@
           </section>
 
           <section class="card">
-            <div class="card-header"><h2>面板日志</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" onclick="refreshLogPanel('panel', true)">刷新</button><button class="btn btn-ghost btn-xs" onclick="clearLogPanel('panel')">清屏</button><button class="btn btn-danger btn-xs" onclick="cleanLogPanel('panel')">清理</button></div></div>
-            <div class="log-panel-options">
-              <label class="auto-refresh-xs"><input type="checkbox" id="autoRefreshPanelWired" checked> 自动</label>
-              <select id="logLevelPanelWired" onchange="refreshLogPanel('panel', true)" class="log-filter-xs">
-                <option value="">全部</option>
-                <option value="E">错误</option>
-                <option value="W">警告</option>
-                <option value="I">信息</option>
-                <option value="D">调试</option>
-              </select>
-            </div>
-            <div id="logPanelWired" class="log-container">
-              <div class="empty-state">暂无日志</div>
+            <div class="card-header"><h2>xwebd 环境自检</h2><div class="card-actions"><button class="btn btn-primary btn-sm" onclick="runWiredDiag()" id="btnWiredDiag">运行自检</button></div></div>
+            <div id="wiredDiagContainer" class="diag-container">
+              <div class="empty-state">部署前点击「运行自检」检测设备是否满足 xwebd 运行环境</div>
             </div>
           </section>
         </div>
+
+        <section class="card">
+          <div class="card-header"><h2>面板日志</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" onclick="refreshLogPanel('panel', true)">刷新</button><button class="btn btn-ghost btn-xs" onclick="clearLogPanel('panel')">清屏</button><button class="btn btn-danger btn-xs" onclick="cleanLogPanel('panel')">清理</button></div></div>
+          <div class="log-panel-options">
+            <label class="auto-refresh-xs"><input type="checkbox" id="autoRefreshPanelWired" checked> 自动</label>
+            <select id="logLevelPanelWired" onchange="refreshLogPanel('panel', true)" class="log-filter-xs">
+              <option value="">全部</option>
+              <option value="E">错误</option>
+              <option value="W">警告</option>
+              <option value="I">信息</option>
+              <option value="D">调试</option>
+            </select>
+          </div>
+          <div id="logPanelWired" class="log-container">
+            <div class="empty-state">暂无日志</div>
+          </div>
+        </section>
         </div>
       </div>
 
@@ -135,7 +145,7 @@
             <div class="card-header"><h2>设备状态</h2></div>
             <div class="connect-bar" style="margin-bottom:14px">
               <span id="connStatus" class="status-pill offline"><span class="status-dot offline"></span>离线</span>
-              <input type="text" id="deviceHost" class="input-host" value="192.168.1.96" placeholder="设备IP / localhost">
+              <input type="text" id="deviceHost" class="input-host" value="" placeholder="设备IP / localhost">
               <button id="btnConnect" class="btn btn-primary" onclick="connectDevice()">连接</button>
             </div>
             <div class="stat-grid">
@@ -192,9 +202,15 @@
               <label class="form-label">WebSocket 服务器</label>
               <input type="text" id="cfgWsUrl" class="input-text" value="" placeholder="wss://...">
             </div>
-            <div class="form-row">
-              <label class="form-check"><input type="checkbox" id="cfgRealtime" class="checkbox"> 实时对话模式</label>
-              <label class="form-check"><input type="checkbox" id="cfgAec" class="checkbox"> 云端回声消除</label>
+            <div class="form-group">
+              <label class="form-label">日志级别 <span class="form-hint">（助手进程的日志输出级别）</span></label>
+              <select id="cfgSairLogLevel" class="select">
+                <option value="">不修改</option>
+                <option value="DEBUG">调试 (DEBUG)</option>
+                <option value="INFO">信息 (INFO)</option>
+                <option value="WARN">警告 (WARN)</option>
+                <option value="ERROR">错误 (ERROR)</option>
+              </select>
             </div>
             <div style="display:flex;gap:8px;margin-bottom:12px">
               <button class="btn btn-accent" onclick="saveAssistantConfig()" style="flex:1">保存配置</button>
@@ -205,7 +221,8 @@
               <button class="btn btn-ghost" onclick="doAbort()">中止对话</button>
             </div>
             <div class="btn-row" style="margin-top:8px">
-              <button class="btn btn-primary" onclick="doHotUpdate()">热更新</button>
+              <button class="btn btn-primary" onclick="doDeploy()" id="btnDeploy">部署</button>
+              <button class="btn btn-accent" onclick="doHotUpdate()">热更新</button>
               <button id="btnUpdate" class="btn btn-ghost" onclick="doUpdate()">冷更新</button>
               <button class="btn btn-danger" onclick="doUninstall()">卸载</button>
             </div>
@@ -252,24 +269,24 @@
             <div class="card-header"><h2>服务状态</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" id="btnRefreshSvc" onclick="refreshServicesWithFlash()">刷新</button></div></div>
             <div class="svc-list">
               <div class="svc-item">
-                <span class="svc-name">Telnet 终端</span>
-                <span id="svcTelnet" class="svc-status svc-unknown">未知</span>
+                <span class="svc-name">面板内核</span>
+                <span id="svcXwebd" class="svc-status svc-unknown">未知</span>
+              </div>
+              <div class="svc-item">
+                <span class="svc-name">面板内核自启动</span>
+                <span id="svcAutostart" class="svc-status svc-unknown">未知</span>
+              </div>
+              <div class="svc-item">
+                <span class="svc-name">语音助手</span>
+                <span id="svcAssistant" class="svc-status svc-unknown">未知</span>
               </div>
               <div class="svc-item">
                 <span class="svc-name">看门狗脚本</span>
                 <span id="svcWatchdog" class="svc-status svc-unknown">未知</span>
               </div>
               <div class="svc-item">
-                <span class="svc-name">xwebd 自启动</span>
-                <span id="svcAutostart" class="svc-status svc-unknown">未知</span>
-              </div>
-              <div class="svc-item">
-                <span class="svc-name">语音助手进程</span>
-                <span id="svcAssistant" class="svc-status svc-unknown">未知</span>
-              </div>
-              <div class="svc-item">
-                <span class="svc-name">助手备份文件</span>
-                <span id="svcBackup" class="svc-status svc-unknown">未知</span>
+                <span class="svc-name">Telnet 终端</span>
+                <span id="svcTelnet" class="svc-status svc-unknown">未知</span>
               </div>
             </div>
           </section>
@@ -278,13 +295,13 @@
         <div class="grid-2col">
           <section class="card">
             <div class="card-header">
-              <h2>设备自检</h2>
+              <h2>助手环境自检</h2>
               <div class="card-actions">
                 <button class="btn btn-primary btn-sm" onclick="runDiag()" id="btnDiag">运行自检</button>
               </div>
             </div>
             <div id="diagContainer" class="diag-container">
-              <div class="empty-state">点击「运行自检」检测设备环境兼容性</div>
+              <div class="empty-state">点击「运行自检」检测设备是否满足语音助手运行环境</div>
             </div>
           </section>
 

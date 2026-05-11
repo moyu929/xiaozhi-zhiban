@@ -13,7 +13,6 @@ typedef struct {
     char activation_code[64];
     int has_ws_config;
     int needs_activation;
-    int realtime_mode;
 } config_manager_t;
 
 int config_manager_init(config_manager_t* cfg);

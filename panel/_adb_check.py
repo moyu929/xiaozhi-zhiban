@@ -1,6 +1,6 @@
 import subprocess, os
 
-OUT = r"d:\小智ai\xiaozhi-zhiban-develop\panel\_adb_result.txt"
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_adb_result.txt")
 
 def run(cmd):
     try:
@@ -28,9 +28,13 @@ lines.append("\n=== 4. 尝试USB检测 ===")
 out, err, rc = run(["adb", "devices"])
 lines.append(f"rc={rc}\n{out}")
 
-lines.append("\n=== 5. 尝试无线连接 192.168.1.96:5555 ===")
-out, err, rc = run(["adb", "connect", "192.168.1.96:5555"])
-lines.append(f"rc={rc} out={out} err={err}")
+lines.append("\n=== 5. 尝试无线连接 ===")
+device_host = os.environ.get("XIAOZHI_DEVICE_HOST", "")
+if device_host:
+    out, err, rc = run(["adb", "connect", f"{device_host}:5555"])
+    lines.append(f"adb connect {device_host}:5555 -> rc={rc} out={out} err={err}")
+else:
+    lines.append("跳过: 未设置 XIAOZHI_DEVICE_HOST 环境变量")
 
 import time
 time.sleep(2)
