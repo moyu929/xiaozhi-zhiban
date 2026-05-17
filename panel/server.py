@@ -521,57 +521,6 @@ def _api_xwebd_config_put(handler, xwebd, body, query):
     return xwebd._request("PUT", "/api/config", body)
 
 
-@_api_route("GET", "/api/volume")
-@_requires_xwebd
-def _api_volume_get(handler, xwebd, body, query):
-    return xwebd._request("GET", "/api/volume")
-
-
-@_api_route("POST", "/api/volume")
-@_requires_xwebd
-def _api_volume_post(handler, xwebd, body, query):
-    vol = body.get("volume") if body else None
-    if vol is None:
-        return {"error": "volume is required"}, 400
-    v, err = _validate_int_range(vol, "volume", 0, 80)
-    if err:
-        return {"error": err}, 400
-    logger.info("设置音量: %d", v)
-    return xwebd.set_volume(v)
-
-
-@_api_route("GET", "/api/brightness")
-@_requires_xwebd
-def _api_brightness_get(handler, xwebd, body, query):
-    return xwebd._request("GET", "/api/brightness")
-
-
-@_api_route("POST", "/api/brightness")
-@_requires_xwebd
-def _api_brightness_post(handler, xwebd, body, query):
-    brt = body.get("brightness") if body else None
-    if brt is None:
-        return {"error": "brightness is required"}, 400
-    v, err = _validate_int_range(brt, "brightness", 0, 900)
-    if err:
-        return {"error": err}, 400
-    logger.info("设置亮度: %d", v)
-    return xwebd.set_brightness(v)
-
-
-@_api_route("GET", "/api/mute")
-@_requires_xwebd
-def _api_mute_get(handler, xwebd, body, query):
-    return xwebd._request("GET", "/api/mute")
-
-
-@_api_route("POST", "/api/mute")
-@_requires_xwebd
-def _api_mute_post(handler, xwebd, body, query):
-    logger.info("设置静音: %s", body.get("muted") if body else None)
-    return xwebd.set_mute(body.get("muted", False) if body else False)
-
-
 @_api_route("POST", "/api/reboot")
 @_requires_xwebd
 def _api_reboot(handler, xwebd, body, query):
@@ -589,8 +538,27 @@ def _api_poweroff(handler, xwebd, body, query):
 @_api_route("POST", "/api/assistant/upgrade")
 @_requires_xwebd
 def _api_assistant_upgrade(handler, xwebd, body, query):
-    logger.info("升级助手(热更新)")
-    return xwebd.upgrade_assistant()
+    from adb_manager import _find_sair_binary
+    binary_path = _find_sair_binary()
+    if not binary_path:
+        return {"error": "sair 二进制文件不存在，请先编译"}, 404
+    logger.info("热更新助手: binary=%s", binary_path)
+    with open(binary_path, "rb") as f:
+        binary_data = f.read()
+    upload_r = xwebd._request("POST", "/api/upload",
+                               body=binary_data,
+                               headers={"Content-Type": "application/octet-stream",
+                                        "X-Filename": "sair_new"},
+                               timeout=30)
+    if not upload_r or upload_r.get("error"):
+        return {"error": "上传sair文件失败: " + (upload_r.get("error", "") if upload_r else "连接失败")}, 500
+    time.sleep(1)
+    r = xwebd.upgrade_assistant()
+    if r and r.get("ok"):
+        return {"ok": True, "method": r.get("method", "hot_update")}
+    if not r:
+        return {"ok": True, "method": "hot_update"}
+    return r
 
 
 @_api_route("POST", "/api/assistant/wakeup")
@@ -605,6 +573,18 @@ def _api_assistant_wakeup(handler, xwebd, body, query):
 def _api_assistant_abort(handler, xwebd, body, query):
     logger.info("中止对话")
     return xwebd.abort_assistant()
+
+
+@_api_route("POST", "/api/assistant/activate")
+@_requires_xwebd
+def _api_assistant_activate(handler, xwebd, body, query):
+    logger.info("激活助手")
+    r = xwebd.activate_assistant()
+    if r and (r.get("ok") or r.get("code") == 0):
+        return {"ok": True, "message": r.get("msg", "ok")}
+    if not r:
+        return {"error": "连接失败"}, 502
+    return {"error": r.get("msg", r.get("error", "激活失败"))}, 500
 
 
 @_api_route("POST", "/api/upgrade")
@@ -718,15 +698,12 @@ def _api_assistant_smart_deploy(handler, xwebd, body, query):
     if not upload_r or upload_r.get("error"):
         return {"error": "上传sair文件失败: " + (upload_r.get("error", "") if upload_r else "连接失败")}, 500
     time.sleep(2)
-    sair_status = xwebd.get_assistant_status()
-    if sair_status and sair_status.get("installed"):
-        deploy_r = xwebd.update_assistant("/var/upgrade/sair_new")
-        logger.info("助手已安装，执行更新: %s", deploy_r)
-    else:
-        deploy_r = xwebd.deploy_assistant("/var/upgrade/sair_new")
-        logger.info("助手未安装，执行部署: %s", deploy_r)
+    deploy_r = xwebd.deploy_assistant("/var/upgrade/sair_new")
+    logger.info("部署助手结果: %s", deploy_r)
     if deploy_r and deploy_r.get("ok"):
-        return {"ok": True, "method": deploy_r.get("method", "deploy"), "rebooting": True}
+        method = deploy_r.get("method", "deploy")
+        rebooting = method != "hot_update"
+        return {"ok": True, "method": method, "rebooting": rebooting}
     if not deploy_r:
         return {"ok": True, "method": "deploy", "rebooting": True}
     err_str = str(deploy_r.get("error", "")).lower()
@@ -746,22 +723,61 @@ def _api_assistant_deploy(handler, xwebd, body, query):
 @_api_route("POST", "/api/assistant/update")
 @_requires_xwebd
 def _api_assistant_update(handler, xwebd, body, query):
-    file_path = body.get("path", "/var/upgrade/sair_new") if body else "/var/upgrade/sair_new"
-    logger.info("更新助手: path=%s", file_path)
-    return xwebd.update_assistant(file_path)
+    from adb_manager import _find_sair_binary
+    binary_path = _find_sair_binary()
+    if not binary_path:
+        return {"error": "sair 二进制文件不存在，请先编译"}, 404
+    logger.info("冷更新助手: binary=%s", binary_path)
+    with open(binary_path, "rb") as f:
+        binary_data = f.read()
+    upload_r = xwebd._request("POST", "/api/upload",
+                               body=binary_data,
+                               headers={"Content-Type": "application/octet-stream",
+                                        "X-Filename": "sair_new"},
+                               timeout=30)
+    if not upload_r or upload_r.get("error"):
+        return {"error": "上传sair文件失败: " + (upload_r.get("error", "") if upload_r else "连接失败")}, 500
+    time.sleep(1)
+    r = xwebd.update_assistant("/var/upgrade/sair_new")
+    if r and r.get("ok"):
+        return {"ok": True, "rebooting": True}
+    if not r:
+        return {"ok": True, "rebooting": True}
+    err_str = str(r.get("error", "")).lower()
+    if any(kw in err_str for kw in ["connection", "timed out", "reset", "refused", "broken", "errno", "unfinished"]):
+        return {"ok": True, "rebooting": True}
+    return r
 
 
 @_api_route("POST", "/api/assistant/uninstall")
 @_requires_xwebd
 def _api_assistant_uninstall(handler, xwebd, body, query):
     logger.info("卸载助手")
-    return xwebd.uninstall_assistant()
+    r = xwebd.uninstall_assistant()
+    if r and r.get("ok"):
+        return {"ok": True}
+    if not r:
+        err_str = ""
+    else:
+        err_str = str(r.get("error", "")).lower()
+    if any(kw in err_str for kw in ["connection", "timed out", "reset", "refused", "broken", "errno", "unfinished"]):
+        return {"ok": True, "rebooting": True}
+    if not r:
+        return {"ok": True}
+    return r
 
 
 @_api_route("GET", "/api/assistant/status")
 @_requires_xwebd
 def _api_assistant_status(handler, xwebd, body, query):
-    return xwebd.get_assistant_status()
+    status = xwebd.get_assistant_status()
+    if status and not status.get("error"):
+        config = xwebd.get_assistant_config()
+        if config and not config.get("error"):
+            for key in ["listen_timeout", "session_timeout", "wakeup_cooldown", "ws_ping_interval"]:
+                if key in config:
+                    status[key] = config[key]
+    return status
 
 
 @_api_route("GET", "/api/upload-progress")
@@ -895,9 +911,11 @@ def _api_xwebd_wireless_update(handler, xwebd, body, query):
         return {"error": "上传xwebd_new失败: " + (r.get("error", "") if r else "连接失败")}, 500
     time.sleep(1)
     r2 = xwebd._request("POST", "/api/self-update")
-    if not r2 or r2.get("error"):
-        return {"error": "自更新失败: " + (r2.get("error", "") if r2 else "连接失败")}, 500
-    return {"ok": True}
+    if not r2:
+        return {"ok": True, "rebooting": True}
+    if r2.get("error"):
+        return {"error": "自更新失败: " + r2.get("error", "")}, 500
+    return {"ok": True, "rebooting": True}
 
 
 @_api_route("POST", "/api/xwebd/remove")
@@ -954,6 +972,16 @@ def _api_adb_deploy_sair(handler, xwebd, body, query):
     if r.get("ok"):
         return r
     return {"error": r.get("error", "deploy failed")}, 500
+
+
+@_api_route("POST", "/api/adb/uninstall-sair")
+def _api_adb_uninstall_sair(handler, xwebd, body, query):
+    from adb_manager import uninstall_sair
+    serial = body.get("serial") if body else None
+    r = uninstall_sair(serial)
+    if r.get("ok"):
+        return r
+    return {"error": r.get("error", "uninstall failed")}, 500
 
 
 @_api_route("POST", "/api/adb/reboot")

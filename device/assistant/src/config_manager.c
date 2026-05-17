@@ -146,12 +146,12 @@ int config_manager_check_wifi(void)
  * @param token 认证令牌
  * @return 0成功，-1文件打开失败
  */
-static int save_ws_config_cache(const char *url, const char *token)
+static int save_ws_config_cache(const char *url, const char *token, const char *activation_code)
 {
     FILE *fp = fopen("/var/upgrade/.ws_config", "w");
     if (!fp)
         return -1;
-    fprintf(fp, "%s\n%s\n", url, token);
+    fprintf(fp, "%s\n%s\n%s\n", url, token, activation_code ? activation_code : "");
     fclose(fp);
     PLOG_I("CFG", "已保存ws配置缓存");
     return 0;
@@ -219,8 +219,11 @@ int config_manager_check_activation(config_manager_t *cfg)
              "Accept-Language: zh-CN\r\n",
              cfg->device_mac, cfg->client_id);
 
-    char body[128];
-    snprintf(body, sizeof(body), "{\"version\":2,\"chip_model_name\":\"%s\"}", XIAOZHI_CHIP_MODEL);
+    char body[512];
+    snprintf(body, sizeof(body),
+             "{\"application\":{\"version\":\"%s\"},"
+             "\"board\":{\"type\":\"%s\",\"name\":\"%s-wifi\"}}",
+             XIAOZHI_VERSION, XIAOZHI_CHIP_MODEL, XIAOZHI_CHIP_MODEL);
 
     PLOG_I("CFG", "OTA检查: POST %s", DEFAULT_OTA_URL);
 
@@ -280,7 +283,11 @@ int config_manager_check_activation(config_manager_t *cfg)
         cfg->has_ws_config = 1;
         cfg->needs_activation = 0;
 
-        save_ws_config_cache(ws_url, ws_token);
+        if (activation_code[0])
+        {
+            strncpy(cfg->activation_code, activation_code, sizeof(cfg->activation_code) - 1);
+        }
+        save_ws_config_cache(ws_url, ws_token, cfg->activation_code);
 
         PLOG_I("CFG", "OTA: 设备已激活, ws_url=%s", ws_url);
     }
@@ -293,6 +300,7 @@ int config_manager_check_activation(config_manager_t *cfg)
 
         if (cfg->has_ws_config)
         {
+            save_ws_config_cache(cfg->ws_url, cfg->ws_token, activation_code);
             PLOG_I("CFG", "使用缓存的ws配置");
         }
     }

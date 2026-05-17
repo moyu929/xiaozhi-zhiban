@@ -274,6 +274,15 @@ int watchdog_init(watchdog_t *wd)
     }
     wd->thread_created = 1;
 
+    {
+        struct sched_param sp;
+        sp.sched_priority = 6;
+        if (pthread_setschedparam(wd->thread, SCHED_RR, &sp) == 0)
+            PLOG_I("WD", "喂狗线程已设置 SCHED_RR 优先级 6");
+        else
+            PLOG_W("WD", "喂狗线程设置调度策略失败");
+    }
+
     PLOG_I("WD", "看门狗线程已启动");
     return 0;
 }

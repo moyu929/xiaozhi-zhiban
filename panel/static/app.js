@@ -2,13 +2,23 @@ var S = {
     mode: 'wired',
     adb: { serial: null, connected: false },
     wl: { host: '', connected: false, xwebd: false, sair: false },
-    volume: 20, brightness: 80, muted: false,
     currentPath: '/var/upgrade',
-    timers: { status: null, adbInfo: null, volume: null, brightness: null, reboot: null, panelLogPoll: null },
+    timers: { status: null, adbInfo: null, reboot: null, panelLogPoll: null },
     rebootStart: 0,
     confirmResolve: null,
     panelSSE: null,
-    deviceSSE: {}
+    deviceSSE: {},
+    mcpTools: [
+        { name: 'self.get_device_status', desc: '获取设备实时状态', params: '{"type":"object","properties":{}}' },
+        { name: 'self.audio_speaker.set_volume', desc: '设置音量 (0-100)', params: '{"type":"object","properties":{"volume":{"type":"integer","minimum":0,"maximum":100}},"required":["volume"]}' },
+        { name: 'self.screen.set_brightness', desc: '设置屏幕亮度 (0-900)', params: '{"type":"object","properties":{"brightness":{"type":"integer","minimum":0,"maximum":900}},"required":["brightness"]}' },
+        { name: 'self.get_system_info', desc: '获取系统信息', params: '{"type":"object","properties":{}}' },
+        { name: 'self.clean_junk', desc: '清理临时文件', params: '{"type":"object","properties":{}}' },
+        { name: 'self.reboot', desc: '重启设备', params: '{"type":"object","properties":{}}' },
+        { name: 'self.poweroff', desc: '关机', params: '{"type":"object","properties":{}}' },
+        { name: 'self.get_mcp_tools', desc: '列出所有MCP工具', params: '{"type":"object","properties":{}}' }
+    ],
+    mcpEditingIdx: -1
 };
 
 var LOG = {
@@ -80,6 +90,133 @@ async function api(path, opts) {
 }
 
 // ==================== Confirm Dialog ====================
+
+function copyToClipboard(text) {
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+    } else {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+    }
+}
+
+function renderActivationCode(code, activated) {
+    var el = $('assistantActivation');
+    if (!el) return;
+    if (activated && code) {
+        el.innerHTML = '<span class="activation-code-wrap"><span class="code-text">' + escapeHtml(code) + '</span>' +
+            '<button class="btn-copy" data-code="' + escapeHtml(code).replace(/"/g, '&quot;') + '">复制</button></span>';
+    } else if (activated) {
+        el.innerHTML = '<span class="activation-code-wrap"><span style="color:var(--accent)">已激活</span></span>';
+    } else if (code) {
+        el.innerHTML = '<span class="activation-code-wrap"><span class="code-text">' + escapeHtml(code) + '</span>' +
+            '<button class="btn-copy" data-code="' + escapeHtml(code).replace(/"/g, '&quot;') + '">复制</button></span>';
+    } else {
+        el.textContent = '未激活';
+        el.style.color = 'var(--text-muted)';
+    }
+}
+
+function copyActivationCode(btn) {
+    var code = btn.getAttribute('data-code');
+    if (!code) return;
+    copyToClipboard(code);
+    btn.textContent = '已复制';
+    btn.classList.add('copied');
+    setTimeout(function() { btn.textContent = '复制'; btn.classList.remove('copied'); }, 1500);
+    toast('激活码已复制到剪贴板', 'success');
+}
+
+// ==================== MCP Tools Management ====================
+
+function renderMcpTools() {
+    var container = $('mcpToolsList');
+    if (!container) return;
+    if (!S.mcpTools.length) {
+        container.innerHTML = '<div class="empty-state" style="padding:12px">暂无MCP工具，点击上方按钮新建</div>';
+        return;
+    }
+    var html = '';
+    for (var i = 0; i < S.mcpTools.length; i++) {
+        var t = S.mcpTools[i];
+        if (S.mcpEditingIdx === i) {
+            html += '<div class="mcp-edit-form">';
+            html += '<div class="mcp-edit-row">';
+            html += '<input class="mcp-edit-name" id="mcpEditName" value="' + escapeHtml(t.name) + '" placeholder="工具名称">';
+            html += '<input class="mcp-edit-desc" id="mcpEditDesc" value="' + escapeHtml(t.desc) + '" placeholder="工具描述">';
+            html += '</div>';
+            html += '<textarea class="mcp-edit-params" id="mcpEditParams" placeholder="接口参数 (JSON Schema)">' + escapeHtml(t.params || '') + '</textarea>';
+            html += '<div class="mcp-edit-btns">';
+            html += '<button class="btn btn-accent btn-xs" onclick="mcpToolSaveEdit(' + i + ')">保存</button>';
+            html += '<button class="btn btn-ghost btn-xs" onclick="mcpToolCancelEdit()">取消</button>';
+            html += '</div>';
+            html += '</div>';
+        } else {
+            html += '<div class="mcp-tool-item">';
+            html += '<span class="mcp-tool-name">' + escapeHtml(t.name) + '</span>';
+            html += '<span class="mcp-tool-desc">' + escapeHtml(t.desc) + '</span>';
+            html += '<span class="mcp-tool-actions">';
+            html += '<button class="mcp-tool-btn-edit" onclick="mcpToolEdit(' + i + ')">编辑</button>';
+            html += '<button class="mcp-tool-btn-del" onclick="mcpToolDel(' + i + ')">删除</button>';
+            html += '</span>';
+            html += '</div>';
+        }
+    }
+    container.innerHTML = html;
+}
+
+function mcpToolAdd() {
+    S.mcpEditingIdx = S.mcpTools.length;
+    S.mcpTools.push({ name: '', desc: '', params: '' });
+    renderMcpTools();
+    var nameInput = $('mcpEditName');
+    if (nameInput) nameInput.focus();
+}
+
+function mcpToolEdit(idx) {
+    S.mcpEditingIdx = idx;
+    renderMcpTools();
+    var nameInput = $('mcpEditName');
+    if (nameInput) nameInput.focus();
+}
+
+function mcpToolSaveEdit(idx) {
+    var name = $('mcpEditName').value.trim();
+    var desc = $('mcpEditDesc').value.trim();
+    var params = $('mcpEditParams').value.trim();
+    if (!name) { toast('工具名称不能为空', 'error'); return; }
+    if (params) {
+        try { JSON.parse(params); } catch(e) { toast('接口参数必须是有效的JSON', 'error'); return; }
+    }
+    S.mcpTools[idx] = { name: name, desc: desc, params: params };
+    S.mcpEditingIdx = -1;
+    renderMcpTools();
+    toast('工具已保存', 'success');
+}
+
+function mcpToolCancelEdit() {
+    if (S.mcpEditingIdx >= 0 && S.mcpTools[S.mcpEditingIdx].name === '') {
+        S.mcpTools.splice(S.mcpEditingIdx, 1);
+    }
+    S.mcpEditingIdx = -1;
+    renderMcpTools();
+}
+
+async function mcpToolDel(idx) {
+    var name = S.mcpTools[idx].name || '该工具';
+    if (!await showConfirm('确定删除工具 ' + name + '？', {danger: true})) return;
+    S.mcpTools.splice(idx, 1);
+    S.mcpEditingIdx = -1;
+    renderMcpTools();
+    toast('工具已删除', 'success');
+}
 
 function showConfirm(msg, opts) {
     opts = opts || {};
@@ -163,11 +300,11 @@ function applyMode() {
 
 function updateViewportHeight() {
     var viewport = document.querySelector('.panels-viewport');
-    if (!viewport) return;
-    var target = S.mode === 'wired'
-        ? document.querySelector('#wiredPage .panel-page-inner')
-        : document.querySelector('#wirelessPage .panel-page-inner');
-    if (target) viewport.style.height = target.scrollHeight + 'px';
+    var pageId = S.mode === 'wired' ? 'wiredPage' : 'wirelessPage';
+    var page = $(pageId);
+    if (viewport && page) {
+        viewport.style.height = page.scrollHeight + 'px';
+    }
 }
 
 // ==================== Formatting ====================
@@ -332,6 +469,7 @@ async function selectAdbDevice(serial) {
         updateConnStatus('xwebdConnStatus', false);
         updateConnStatus('assistantConnStatus', false);
         $('btnConnect').textContent = '连接';
+        $('btnConnect').className = 'btn btn-primary';
         $('btnConnect').disabled = false;
     }
     S.adb.serial = serial;
@@ -531,13 +669,13 @@ async function adbDeploySair(mode) {
 async function adbRemoveSair() {
     if (!await showConfirm('确定卸载语音助手？', {danger: true})) return;
     toast('正在卸载语音助手...', 'info');
-    var r = await api('/api/assistant/uninstall', {
+    var r = await api('/api/adb/uninstall-sair', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ serial: S.adb.serial }),
     });
     if (r.ok) { toast('语音助手已卸载', 'success'); adbRefreshStatus(); }
-    else toast('卸载失败', 'error');
+    else toast('卸载失败: ' + (r.error || ''), 'error');
 }
 
 async function adbPoweroff() {
@@ -567,6 +705,7 @@ async function adbFactoryReset() {
         updateConnStatus('xwebdConnStatus', false);
         updateConnStatus('assistantConnStatus', false);
         $('btnConnect').textContent = '连接';
+        $('btnConnect').className = 'btn btn-primary';
         $('btnConnect').disabled = false;
         resetWirelessUI();
         toast('恢复出厂设置完成，设备将重启', 'success');
@@ -594,7 +733,7 @@ async function adbRefreshLogType(type) {
         if (lines[i]) html += '<div class="log-line">' + renderLogLine(lines[i]) + '</div>';
     }
     container.innerHTML = html;
-    container.scrollTop = container.scrollHeight;
+    requestAnimationFrame(function() { container.scrollTop = container.scrollHeight; });
 }
 
 // ==================== Wireless Mode ====================
@@ -609,8 +748,9 @@ async function connectDevice() {
         updateConnUI(false);
         updateConnStatus('xwebdConnStatus', false);
         updateConnStatus('assistantConnStatus', false);
-        btn.textContent = '连接';
-        btn.disabled = false;
+        $('btnConnect').textContent = '连接';
+        $('btnConnect').className = 'btn btn-primary';
+        $('btnConnect').disabled = false;
         resetWirelessUI();
         toast('已断开连接', 'info');
         return;
@@ -649,6 +789,7 @@ async function connectDevice() {
         S.wl.xwebd = true;
         updateConnUI(true);
         btn.textContent = '断开';
+        btn.className = 'btn btn-danger';
         btn.disabled = false;
         toast('连接设备成功', 'success');
         startPolling();
@@ -679,7 +820,7 @@ async function connectDevice() {
     hideOverlay('deviceOverlay');
     hideOverlay('assistantOverlay');
     hideOverlay('xwebdOverlay');
-    if (!S.wl.connected) { btn.disabled = false; btn.textContent = '连接'; }
+    if (!S.wl.connected) { btn.disabled = false; btn.textContent = '连接'; btn.className = 'btn btn-primary'; }
 }
 
 function resetWirelessUI() {
@@ -700,7 +841,7 @@ function resetWirelessUI() {
     $('assistantState').className = 'status-pill state-idle';
     $('xwebdStatus').textContent = '--';
     $('xwebdVersion').textContent = '--';
-    $('cfgWsUrl').value = '';
+    $('cfgMcpEndpoint').value = '';
     $('cfgSairLogLevel').value = '';
     $('cfgLogLevel').value = '';
     $('cfgUploadMax').value = '10';
@@ -732,12 +873,15 @@ function updateConnUI(online) {
     }
 }
 
-function updateConnStatus(id, connected) {
+function updateConnStatus(id, state) {
     var el = document.getElementById(id);
     var dot = el.querySelector('.conn-dot');
-    if (connected) {
+    if (state === true || state === 'connected') {
         dot.className = 'conn-dot connected';
         el.lastChild.textContent = '已连接';
+    } else if (state === 'not_installed') {
+        dot.className = 'conn-dot not-installed';
+        el.lastChild.textContent = '未安装';
     } else {
         dot.className = 'conn-dot disconnected';
         el.lastChild.textContent = '未连接';
@@ -791,21 +935,10 @@ async function refreshStatus() {
         var wifiOk = d.wifi_connected;
         if (S.wl.connected && !wifiOk && d.wifi_ip) wifiOk = true;
         $('devWifi').textContent = wifiOk ? '已连接' : '未连接';
-        $('devBattery').textContent = d.battery_cap != null && d.battery_cap >= 0 ? d.battery_cap + '%' : '--';
+        $('devBattery').textContent = d.battery_cap != null ? (d.battery_cap >= 0 && d.battery_cap <= 100 ? d.battery_cap + '%' : 'USB供电') : '--';
         $('devUptime').textContent = formatUptime(d.uptime_s);
         $('devMem').textContent = formatMem(d.mem_free_kb, d.mem_total_kb, d.mem_cached_kb);
         $('devDisk').textContent = formatDisk(d.disk_used_kb, d.disk_total_kb);
-        if (d.volume != null) {
-            S.volume = d.volume;
-            $('volumeSlider').value = Math.round(d.volume * 100 / 80);
-            $('volumeVal').textContent = Math.round(d.volume * 100 / 80);
-        }
-        if (d.brightness != null) {
-            S.brightness = d.brightness;
-            $('brightnessSlider').value = Math.round(d.brightness * 100 / 900);
-            $('brightnessVal').textContent = Math.round(d.brightness * 100 / 900);
-        }
-        if (d.muted != null) { S.muted = d.muted; updateMuteUI(); }
         if (d.state) {
             var stateEl = $('assistantState');
             if (stateEl) {
@@ -826,20 +959,39 @@ async function refreshAssistantStatus() {
     var d = r.data || r;
     var label = '未安装';
     if (d.installed && d.running) label = '运行中';
+    else if (d.native_running) label = '原生运行中';
     else if (d.installed) label = '已安装 (未运行)';
     $('assistantInstalled').textContent = label;
     $('assistantVersion').textContent = d.version || '--';
     $('assistantPid').textContent = d.pid || '--';
-    $('btnDeploy').disabled = d.installed;
-    $('btnUpdate').disabled = false;
-    if (d.activation_code) $('assistantActivation').textContent = d.activation_code;
-    else $('assistantActivation').textContent = '--';
-    if (d.ws_url) $('cfgWsUrl').value = d.ws_url;
+    $('btnDeploy').disabled = d.installed && d.running;
+    $('btnUpdate').disabled = !d.installed;
+    var btnActivate = $('btn-activate');
+    if (btnActivate) btnActivate.disabled = !d.running;
+    if (d.activated || d.activation_code) {
+        renderActivationCode(d.activation_code || '', d.activated);
+    } else {
+        var actEl = $('assistantActivation');
+        actEl.textContent = '未激活';
+        actEl.style.color = 'var(--text-muted)';
+    }
     if (d.log_level) $('cfgSairLogLevel').value = d.log_level;
+    if (d.listen_timeout) $('cfgListenTimeout').value = Math.round(d.listen_timeout / 1000);
+    if (d.session_timeout) $('cfgSessionTimeout').value = Math.round(d.session_timeout / 1000);
+    if (d.wakeup_cooldown) $('cfgWakeupCooldown').value = Math.round(d.wakeup_cooldown / 1000);
+    if (d.ws_ping_interval) $('cfgWsPingInterval').value = Math.round(d.ws_ping_interval / 1000);
     var wasConnected = S.wl.sair;
     S.wl.sair = d.running;
-    updateConnStatus('assistantConnStatus', d.running);
-    if (wasConnected !== S.wl.sair) updateSairLocks();
+    S.wl.sairInstalled = d.installed;
+    S.wl.sairNativeRunning = d.native_running || false;
+    if (d.running) updateConnStatus('assistantConnStatus', true);
+    else if (d.installed) updateConnStatus('assistantConnStatus', false);
+    else if (d.native_running) updateConnStatus('assistantConnStatus', false);
+    else updateConnStatus('assistantConnStatus', 'not_installed');
+    if (wasConnected !== S.wl.sair) {
+        updateSairLocks();
+        if (S.wl.sair) refreshConfig();
+    }
 }
 
 async function refreshXwebdStatus() {
@@ -889,63 +1041,12 @@ async function refreshConfig() {
     if (!S.wl.connected) return;
     var r = await api('/api/assistant/config');
     if (!r.error) {
-        if (r.ws_url) $('cfgWsUrl').value = r.ws_url;
+        if (r.mcp_endpoint) $('cfgMcpEndpoint').value = r.mcp_endpoint;
     }
     var r2 = await api('/api/xwebd/config');
     if (!r2.error) {
         if (r2.log_level) $('cfgLogLevel').value = r2.log_level;
         $('cfgUploadMax').value = r2.upload_max_mb != null ? r2.upload_max_mb : 10;
-    }
-}
-
-async function onVolumeChange(val) {
-    var realVol = Math.round(parseInt(val) * 80 / 100);
-    S.volume = realVol;
-    $('volumeVal').textContent = val;
-    if (S.timers.volume) clearTimeout(S.timers.volume);
-    S.timers.volume = setTimeout(async function() {
-        await api('/api/volume', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ volume: realVol }),
-        });
-    }, 300);
-}
-
-async function onBrightnessChange(val) {
-    var realBri = Math.round(parseInt(val) * 900 / 100);
-    S.brightness = realBri;
-    $('brightnessVal').textContent = val;
-    if (S.timers.brightness) clearTimeout(S.timers.brightness);
-    S.timers.brightness = setTimeout(async function() {
-        await api('/api/brightness', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ brightness: realBri }),
-        });
-    }, 300);
-}
-
-async function toggleMute() {
-    S.muted = !S.muted;
-    updateMuteUI();
-    await api('/api/mute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ muted: S.muted }),
-    });
-}
-
-function updateMuteUI() {
-    var btn = $('btnMute');
-    if (S.muted) {
-        btn.classList.add('muted');
-        $('iconUnmuted').style.display = 'none';
-        $('iconMuted').style.display = 'block';
-    } else {
-        btn.classList.remove('muted');
-        $('iconUnmuted').style.display = 'block';
-        $('iconMuted').style.display = 'none';
     }
 }
 
@@ -960,6 +1061,47 @@ async function doAbort() {
     var r = await api('/api/abort', { method: 'POST' });
     if (r.ok) toast('已中止对话', 'success');
     else toast('中止失败', 'error');
+}
+
+async function doActivate() {
+    toast('发送激活指令...', 'info');
+    var r = await api('/api/assistant/activate', { method: 'POST' });
+    if (!r.ok && r.error) {
+        toast('激活失败: ' + r.error, 'error');
+        return;
+    }
+    toast('激活指令已发送，等待响应...', 'info');
+    var maxAttempts = 10;
+    var attempt = 0;
+    var success = false;
+    while (attempt < maxAttempts) {
+        await new Promise(function(resolve) { setTimeout(resolve, 2000); });
+        attempt++;
+        try {
+            var sr = await api('/api/assistant/status');
+            var sd = sr.data || sr;
+            if (sr.error) continue;
+            if (sd.activated) {
+                renderActivationCode(sd.activation_code || '', true);
+                toast('设备已激活，WebSocket配置已获取', 'success');
+                success = true;
+                refreshAssistantStatus();
+                break;
+            }
+            var code = sd.activation_code || '';
+            if (code) {
+                renderActivationCode(code, sd.activated || false);
+                toast('激活码: ' + code, 'success');
+                success = true;
+                refreshAssistantStatus();
+                break;
+            }
+        } catch(e) {}
+    }
+    if (!success) {
+        await refreshAssistantStatus();
+        toast('未获取到激活信息，请确认设备WiFi已连接且OTA服务可达', 'error');
+    }
 }
 
 async function doPoweroff() {
@@ -981,9 +1123,19 @@ async function doCleanup() {
 }
 
 async function saveAssistantConfig() {
-    var config = { ws_url: $('cfgWsUrl').value };
+    var config = {};
+    var mcpEndpoint = $('cfgMcpEndpoint').value.trim();
+    if (mcpEndpoint) config.mcp_endpoint = mcpEndpoint;
     var logLevel = $('cfgSairLogLevel').value;
     if (logLevel) config.log_level = logLevel;
+    var listenTimeout = parseInt($('cfgListenTimeout').value);
+    var sessionTimeout = parseInt($('cfgSessionTimeout').value);
+    var wakeupCooldown = parseInt($('cfgWakeupCooldown').value);
+    var wsPingInterval = parseInt($('cfgWsPingInterval').value);
+    if (listenTimeout > 0) config.listen_timeout = listenTimeout * 1000;
+    if (sessionTimeout > 0) config.session_timeout = sessionTimeout * 1000;
+    if (wakeupCooldown > 0) config.wakeup_cooldown = wakeupCooldown * 1000;
+    if (wsPingInterval > 0) config.ws_ping_interval = wsPingInterval * 1000;
     var r = await api('/api/assistant/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -1008,9 +1160,19 @@ async function saveXwebdConfig() {
 
 async function restoreAssistantDefaults() {
     if (!await showConfirm('确定恢复助手配置为默认值？', {icon: '🔄'})) return;
-    $('cfgWsUrl').value = 'wss://api.tenclass.net/xiaozhi/v1/';
+    $('cfgMcpEndpoint').value = '';
     $('cfgSairLogLevel').value = '';
-    await saveAssistantConfig();
+    $('cfgListenTimeout').value = '';
+    $('cfgSessionTimeout').value = '';
+    $('cfgWakeupCooldown').value = '';
+    $('cfgWsPingInterval').value = '';
+    var r = await api('/api/assistant/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mcp_endpoint: '' }),
+    });
+    if (r.ok || !r.error) toast('助手配置已恢复默认值', 'success');
+    else toast('恢复默认值失败', 'error');
 }
 
 async function restoreXwebdDefaults() {
@@ -1020,22 +1182,92 @@ async function restoreXwebdDefaults() {
     await saveXwebdConfig();
 }
 
+function showAssistantOverlay(totalSec) {
+    var el = $('assistantOverlay');
+    var txt = $('assistantOverlayText');
+    if (el) el.style.display = 'flex';
+    if (txt) txt.textContent = '热更新中... ' + totalSec + 's';
+}
+function updateAssistantOverlayCountdown(sec) {
+    var txt = $('assistantOverlayText');
+    if (txt) txt.textContent = '热更新中... ' + sec + 's';
+}
+function hideAssistantOverlay() {
+    var el = $('assistantOverlay');
+    if (el) el.style.display = 'none';
+}
+
 async function doHotUpdate() {
     var statusR = await api('/api/assistant/status');
     var sd = statusR.data || statusR;
-    if (statusR.error || !sd.installed) {
-        toast('语音助手未安装，请先点击「部署」按钮', 'error');
+    if (statusR.error) {
+        toast('无法获取助手状态', 'error');
         return;
     }
-    if (!await showConfirm('确定进行热更新？')) return;
-    toast('正在检查更新...', 'info');
+    if (!sd.installed) {
+        if (sd.native_running) {
+            toast('当前运行的是原生语音助手，不支持热更新，请使用「部署」功能', 'error');
+        } else {
+            toast('语音助手未安装，请先点击「部署」按钮', 'error');
+        }
+        return;
+    }
+    if (!sd.running) {
+        toast('语音助手未运行，请使用「冷更新」功能', 'error');
+        return;
+    }
+    var oldPid = sd.pid;
+    var oldVersion = sd.version || '';
+    if (!await showConfirm('确定进行热更新？\n\n热更新不会重启设备，助手进程将自动替换为新版本')) return;
+    toast('正在执行热更新...', 'info');
     var r = await api('/api/assistant/upgrade', { method: 'POST' });
-    if (r.ok) toast('热更新指令已发送', 'success');
-    else toast('热更新失败: ' + (r.error || ''), 'error');
+    if (!r.ok && r.error) {
+        toast('热更新失败: ' + r.error, 'error');
+        return;
+    }
+    toast('热更新指令已发送，等待助手重启...', 'info');
+    showAssistantOverlay(60);
+    var maxAttempts = 15;
+    var attempt = 0;
+    var success = false;
+    while (attempt < maxAttempts) {
+        await new Promise(function(resolve) { setTimeout(resolve, 2000); });
+        attempt++;
+        updateAssistantOverlayCountdown(Math.max(0, 60 - attempt * 2));
+        try {
+            var sr = await api('/api/assistant/status');
+            var sd2 = sr.data || sr;
+            if (sr.error) continue;
+            if (sd2.running && (sd2.pid !== oldPid || (sd2.version && sd2.version !== oldVersion))) {
+                success = true;
+                var newVer = sd2.version || '';
+                if (newVer && newVer !== oldVersion) {
+                    toast('热更新成功！版本 ' + oldVersion + ' → ' + newVer, 'success');
+                } else {
+                    toast('热更新成功！助手已重启', 'success');
+                }
+                refreshAssistantStatus();
+                break;
+            }
+        } catch(e) {}
+    }
+    hideAssistantOverlay();
+    if (!success) {
+        toast('热更新超时，请检查助手状态', 'error');
+        refreshAssistantStatus();
+    }
 }
 
 async function doDeploy() {
-    if (!await showConfirm('确定部署语音助手？\n\n部署过程中设备将重启一次')) return;
+    var statusR = await api('/api/assistant/status');
+    var sd = statusR.data || statusR;
+    var confirmMsg = '确定部署语音助手？\n\n部署过程中设备将重启一次';
+    if (sd && sd.native_running) {
+        confirmMsg = '当前运行的是原生语音助手，部署将替换为自定义版本。\n\n部署过程中设备将重启一次';
+    } else if (sd && !sd.installed) {
+        confirmMsg = '语音助手未安装，部署将安装自定义版本。\n\n部署过程中设备将重启一次';
+    }
+    if (!await showConfirm(confirmMsg)) return;
     var progress = $('upgradeProgress');
     var bar = $('upgradeBar');
     var label = $('upgradeLabel');
@@ -1054,21 +1286,28 @@ async function doDeploy() {
     bar.style.width = '100%';
     $('btnDeploy').disabled = false;
     if (r.ok) {
-        label.textContent = '部署成功！设备重启中...';
-        toast('语音助手部署成功，设备重启中...', 'success');
-        stopPolling();
-        S.wl.connected = false;
-        S.wl.xwebd = false;
-        S.wl.sair = false;
-        updateConnUI(false);
-        updateConnStatus('xwebdConnStatus', false);
-        updateConnStatus('assistantConnStatus', false);
-        $('btnConnect').textContent = '连接';
-        $('btnConnect').disabled = false;
-        resetWirelessUI();
-        setTimeout(function() {
-            toast('设备重启中，约30秒后可重新连接', 'info');
-        }, 2000);
+        if (r.rebooting) {
+            label.textContent = '部署成功！设备重启中...';
+            toast('语音助手部署成功，设备重启中...', 'success');
+            stopPolling();
+            S.wl.connected = false;
+            S.wl.xwebd = false;
+            S.wl.sair = false;
+            updateConnUI(false);
+            updateConnStatus('xwebdConnStatus', false);
+            updateConnStatus('assistantConnStatus', false);
+            $('btnConnect').textContent = '连接';
+            $('btnConnect').className = 'btn btn-primary';
+            $('btnConnect').disabled = false;
+            resetWirelessUI();
+            setTimeout(function() {
+                toast('设备重启中，约30秒后可重新连接', 'info');
+            }, 2000);
+        } else {
+            label.textContent = '部署成功！';
+            toast('语音助手部署成功', 'success');
+            setTimeout(function() { progress.style.display = 'none'; refreshAssistantStatus(); }, 1500);
+        }
     } else {
         label.textContent = '部署失败: ' + (r.error || '');
         toast('部署失败: ' + (r.error || ''), 'error');
@@ -1078,11 +1317,19 @@ async function doDeploy() {
 async function doUpdate() {
     var statusR = await api('/api/assistant/status');
     var sd = statusR.data || statusR;
-    if (statusR.error || !sd.installed) {
-        toast('语音助手未安装，请先点击「部署」按钮', 'error');
+    if (statusR.error) {
+        toast('无法获取助手状态', 'error');
         return;
     }
-    if (!await showConfirm('确定进行冷更新？设备将重启')) return;
+    if (!sd.installed) {
+        if (sd.native_running) {
+            toast('当前运行的是原生语音助手，请使用「部署」功能', 'error');
+        } else {
+            toast('语音助手未安装，请先点击「部署」按钮', 'error');
+        }
+        return;
+    }
+    if (!await showConfirm('确定进行冷更新？\n\n冷更新将替换助手程序并重启设备')) return;
     toast('冷更新中...', 'info');
     var r = await api('/api/assistant/update', {
         method: 'POST',
@@ -1090,8 +1337,13 @@ async function doUpdate() {
         body: JSON.stringify({}),
     });
     if (r.ok) {
-        toast('冷更新指令已发送，设备将重启', 'success');
-        wirelessRebootAndReconnect();
+        if (r.rebooting) {
+            toast('冷更新成功，设备重启中...', 'success');
+            wirelessRebootAndReconnect();
+        } else {
+            toast('冷更新指令已发送', 'success');
+            refreshAssistantStatus();
+        }
     } else {
         toast('冷更新失败: ' + (r.error || ''), 'error');
     }
@@ -1101,8 +1353,16 @@ async function doUninstall() {
     if (!await showConfirm('确定卸载语音助手？设备将停止语音助手功能', {danger: true})) return;
     toast('卸载中...', 'info');
     var r = await api('/api/assistant/uninstall', { method: 'POST' });
-    if (r.ok) { toast('语音助手已卸载', 'success'); refreshAssistantStatus(); }
-    else toast('卸载失败', 'error');
+    if (r.ok) {
+        if (r.rebooting) {
+            toast('语音助手已卸载，设备重启中...', 'success');
+            wirelessRebootAndReconnect();
+        } else {
+            toast('语音助手已卸载', 'success');
+            refreshAssistantStatus();
+        }
+    }
+    else toast('卸载失败: ' + (r.error || ''), 'error');
 }
 
 async function doXwebdUpdate() {
@@ -1110,8 +1370,13 @@ async function doXwebdUpdate() {
     if (S.wl.connected) {
         var r = await api('/api/xwebd/wireless-update', { method: 'POST' });
         if (r.ok) {
-            toast('xwebd 更新成功，正在重启...', 'success');
-            wirelessRebootAndReconnect();
+            if (r.rebooting) {
+                toast('xwebd 更新成功，设备重启中...', 'success');
+                wirelessRebootAndReconnect();
+            } else {
+                toast('xwebd 更新成功', 'success');
+                refreshXwebdStatus();
+            }
         } else {
             toast('更新失败: ' + (r.error || ''), 'error');
         }
@@ -1213,8 +1478,13 @@ async function wirelessRebootAndReconnect() {
     updateConnStatus('xwebdConnStatus', false);
     updateConnStatus('assistantConnStatus', false);
     $('btnConnect').textContent = '连接';
-    $('btnConnect').disabled = false;
+    $('btnConnect').className = 'btn btn-primary';
+    $('btnConnect').disabled = true;
+    toast('设备重启中，等待重新连接...', 'info');
+    await new Promise(function(r) { setTimeout(r, 15000); });
     waitForReconnect({
+        timeout: 90000,
+        interval: 3000,
         onCheck: async function() {
             try {
                 var r = await api('/api/connect', {
@@ -1230,6 +1500,7 @@ async function wirelessRebootAndReconnect() {
             S.wl.xwebd = true;
             updateConnUI(true);
             $('btnConnect').textContent = '断开';
+            $('btnConnect').className = 'btn btn-danger';
             $('btnConnect').disabled = false;
             startPolling();
             refreshAll();
@@ -1243,6 +1514,7 @@ async function wirelessRebootAndReconnect() {
             hideOverlay('deviceOverlay');
             hideOverlay('assistantOverlay');
             hideOverlay('xwebdOverlay');
+            $('btnConnect').disabled = false;
             toast('重连超时，请手动连接', 'error');
         }
     });
@@ -1313,7 +1585,7 @@ function renderLogPanel(containerId, r, source) {
         }
     });
     container.innerHTML = html;
-    container.scrollTop = container.scrollHeight;
+    requestAnimationFrame(function() { container.scrollTop = container.scrollHeight; });
 }
 
 function clearLogPanel(source) {
@@ -1470,7 +1742,13 @@ async function refreshFiles() {
 
     var html = '<div class="file-nav">' + navHtml + '</div>';
 
-    if (!files.length) { container.innerHTML = html + '<div class="empty-state">空目录</div>'; return; }
+    if (!files.length) {
+        container.innerHTML = html + '<div class="empty-state">空目录</div>';
+        container.querySelectorAll('[data-nav-path]').forEach(function(el) {
+            el.addEventListener('click', function() { navigateTo(el.getAttribute('data-nav-path')); });
+        });
+        return;
+    }
     html += '<table class="file-table"><thead><tr><th>名称</th><th>大小</th><th>修改时间</th><th>操作</th></tr></thead><tbody>';
     files.forEach(function(f) {
         var nameClass = f.is_dir ? 'file-dir-link' : (f.protected ? 'file-name-cell file-protected' : 'file-name-cell');
@@ -1701,6 +1979,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
     applyMode();
     updateSairLocks();
+    renderMcpTools();
+    document.addEventListener('click', function(e) {
+        if (e.target.classList.contains('btn-copy')) {
+            copyActivationCode(e.target);
+        }
+    });
     connectPanelSSE();
     refreshLogPanel('panel', false);
     window.addEventListener('resize', updateViewportHeight);

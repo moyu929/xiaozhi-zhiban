@@ -424,7 +424,8 @@ int wakeup_start(wakeup_module_t *mod)
         }
         if (!mod->asr_init_done)
         {
-            PLOG_W("WAKEUP", "ASR初始化超时(5秒), 仍尝试启动");
+            PLOG_W("WAKEUP", "ASR初始化超时(5秒), 放弃启动");
+            return -1;
         }
         else
         {

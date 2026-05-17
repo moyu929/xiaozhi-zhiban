@@ -3,10 +3,10 @@
  * @brief 运行时健康检查模块
  *
  * 检查 assistant 运行时的健康状态，包括：
- * - 配置文件读写、日志系统、看门狗
- * - WiFi连接、磁盘空间、WebSocket连接状态
+ * - 配置文件读写、日志系统、看门狗、WebSocket连接状态
  *
- * 部署前置环境检查已移至 xwebd 的 /api/assistant/env 接口。
+ * WiFi连接、磁盘空间等部署前置环境检查由 xwebd 的
+ * /api/diag 和 /api/assistant/env 接口负责，此处不再重复。
  */
 
 #include "diag_module.h"
@@ -22,7 +22,6 @@
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 
 #define TAG "DIAG"
 #define DIAG_TEMP_FILE "/var/upgrade/.diag_test_tmp"
@@ -124,69 +123,6 @@ static void check_watchdog(diag_result_t *r)
     }
 }
 
-static void check_wifi(diag_result_t *r)
-{
-    int fd = open("/proc/net/wireless", O_RDONLY);
-    if (fd < 0)
-    {
-        diag_add(r, "WiFi", 0, "WiFi未连接");
-        return;
-    }
-    char line[256];
-    int has_content = 0;
-    int pos = 0;
-    int n;
-    while ((n = read(fd, line + pos, 1)) > 0 && pos < (int)sizeof(line) - 2)
-    {
-        if (line[pos] == '\n')
-        {
-            line[pos] = '\0';
-            if (pos > 10 && line[0] != 'I' && line[0] != ' ')
-            {
-                has_content = 1;
-                break;
-            }
-            pos = 0;
-        }
-        else
-        {
-            pos++;
-        }
-    }
-    close(fd);
-    if (has_content)
-    {
-        diag_add(r, "WiFi", 1, "WiFi已连接");
-    }
-    else
-    {
-        diag_add(r, "WiFi", 0, "WiFi未连接");
-    }
-}
-
-static void check_disk(diag_result_t *r)
-{
-    struct statvfs vfs;
-    if (statvfs("/var/upgrade", &vfs) != 0)
-    {
-        diag_add(r, "磁盘空间", 0, "磁盘空间检查失败");
-        return;
-    }
-    unsigned long long free_kb = (unsigned long long)vfs.f_bavail * vfs.f_bsize / 1024;
-    if (free_kb > 1024)
-    {
-        static char disk_ok_msg[64];
-        snprintf(disk_ok_msg, sizeof(disk_ok_msg), "磁盘空间充足(%lluKB可用)", free_kb);
-        diag_add(r, "磁盘空间", 1, disk_ok_msg);
-    }
-    else
-    {
-        static char disk_fail_msg[64];
-        snprintf(disk_fail_msg, sizeof(disk_fail_msg), "磁盘空间不足(仅%lluKB可用)", free_kb);
-        diag_add(r, "磁盘空间", 0, disk_fail_msg);
-    }
-}
-
 diag_result_t diag_run_all(void)
 {
     diag_result_t result;
@@ -197,8 +133,6 @@ diag_result_t diag_run_all(void)
     check_config_dir(&result);
     check_log(&result);
     check_watchdog(&result);
-    check_wifi(&result);
-    check_disk(&result);
     check_websocket(&result);
 
     int ok_count = 0, fail_count = 0;

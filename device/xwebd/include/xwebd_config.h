@@ -33,17 +33,9 @@
 #define XWEBD_WATCHDOG_CRASH_LIMIT  5  /* 看门狗: 允许的最大崩溃次数 */
 #define XWEBD_WATCHDOG_CRASH_WINDOW 60 /* 看门狗: 崩溃统计时间窗口(秒) */
 
-#define XWEBD_VOLUME_MIN  0   /* 音量最小值 */
-#define XWEBD_VOLUME_MAX  80  /* 音量最大值 */
-#define XWEBD_VOLUME_TINYMIX_ID  15  /* tinymix音量控制ID */
-#define XWEBD_VOLUME_HW_MAX      40  /* 硬件音量最大值(与tinymix对应) */
-#define XWEBD_MUTE_TINYMIX_ID    18  /* tinymix静音控制ID */
-#define XWEBD_BRIGHTNESS_MIN 0   /* 亮度最小值 */
-#define XWEBD_BRIGHTNESS_MAX 900 /* 亮度最大值 */
-
-#define XWEBD_BACKLIGHT_PATH "/sys/class/backlight/owl_backlight/brightness" /* 背光亮度sysfs控制路径 */
-
-#define XWEBD_TINYMIX_PATH   "/bin/tinymix" /* tinymix音频混音器控制工具路径 */
+#define XWEBD_HEALTH_CHECK_INTERVAL 30  /* 健康检查间隔(秒) */
+#define XWEBD_HEALTH_FAIL_LIMIT     3   /* 连续健康检查失败次数阈值 */
+#define XWEBD_MAX_RSS_KB           8192  /* 工作进程最大允许RSS(KB) */
 
 #define XWEBD_TEST_SH        "/var/upgrade/test.sh"     /* 自启动脚本路径 */
 #define XWEBD_TEST_SH_NEW    "/var/upgrade/test.sh.new" /* 自启动脚本更新时的临时文件 */

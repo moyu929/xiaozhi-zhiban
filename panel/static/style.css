@@ -173,7 +173,6 @@ body {
 .panels-viewport {
   overflow: hidden;
   position: relative;
-  transition: height 0.45s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .panels-slider {
   display: flex;
@@ -255,6 +254,7 @@ body {
   transition: all 0.2s ease;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
 }
 .btn-primary {
@@ -295,10 +295,45 @@ body {
 }
 
 .grid-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
-.grid-3col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.grid-3col {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.grid-3col .card {
+  padding: 16px 14px;
+}
+.grid-2-1 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 16px; }
+.assistant-layout {
+  display: flex;
+  gap: 20px;
+}
+.assistant-left {
+  flex: 1;
+  min-width: 0;
+}
+.assistant-right {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.assistant-right .mcp-tools-list {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 320px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.assistant-right .mcp-tools-list::-webkit-scrollbar {
+  display: none;
+}
 
 @media (max-width: 900px) {
-  .grid-2col, .grid-3col { grid-template-columns: 1fr; }
+  .grid-2col, .grid-3col, .grid-2-1 { grid-template-columns: 1fr; }
+  .assistant-layout { flex-direction: column; }
+  .timeout-row { grid-template-columns: 1fr 1fr; }
   .nav { padding: 0 16px; flex-wrap: wrap; height: auto; padding: 12px 16px; gap: 8px; }
   .nav-actions { flex-wrap: wrap; }
   .input-host { width: 140px; }
@@ -419,6 +454,8 @@ body {
 }
 
 .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.btn-row-even { display: flex; gap: 8px; margin-top: 16px; }
+.btn-row-even .btn { flex: 1; justify-content: center; }
 
 .form-group { margin-bottom: 14px; }
 .form-label {
@@ -429,6 +466,15 @@ body {
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+.form-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.form-label-row .form-label {
+  margin-bottom: 0;
 }
 .input-text, .select {
   width: 100%;
@@ -623,7 +669,7 @@ body {
   flex-shrink: 0;
 }
 
-.file-container { max-height: 400px; overflow-y: auto; }
+.file-container { height: 280px; overflow-y: auto; }
 .file-container::-webkit-scrollbar { width: 4px; }
 .file-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
@@ -673,7 +719,7 @@ body {
 .btn-xs { padding: 2px 8px; font-size: 11px; border-radius: 4px; }
 
 .log-container {
-  height: 350px;
+  height: 400px;
   overflow-y: auto;
   font-family: "SF Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
   font-size: 12px;
@@ -682,6 +728,7 @@ body {
   border-radius: var(--radius-sm);
   padding: 12px;
   border: 1px solid rgba(255,255,255,0.06);
+  min-height: 200px;
 }
 .log-container::-webkit-scrollbar { width: 4px; }
 .log-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
@@ -883,7 +930,7 @@ body {
 .help-section li { margin-bottom: 4px; }
 .help-section strong { color: var(--text-primary); }
 
-.diag-container { max-height: 500px; overflow-y: auto; }
+.diag-container { height: 280px; overflow-y: auto; }
 .diag-container::-webkit-scrollbar { width: 4px; }
 .diag-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
@@ -989,8 +1036,10 @@ body {
     top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(10,10,10,0.7);
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 12px;
     z-index: 10;
     border-radius: inherit;
 }
@@ -1000,6 +1049,11 @@ body {
     border-top-color: var(--accent);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
+}
+.section-overlay .overlay-text {
+    color: rgba(255,255,255,0.8);
+    font-size: 13px;
+    font-weight: 600;
 }
 @keyframes spin {
     to { transform: rotate(360deg); }
@@ -1028,6 +1082,13 @@ body {
 }
 .conn-dot.connected { background: var(--accent); box-shadow: 0 0 4px var(--accent); }
 .conn-dot.disconnected { background: var(--danger); }
+.conn-dot.not-installed { background: var(--text-muted); }
+
+.config-details { border: 1px solid var(--border-color); border-radius: 6px; padding: 0; }
+.config-summary { padding: 8px 12px; cursor: pointer; font-size: 13px; color: var(--text-muted); user-select: none; }
+.config-details[open] .config-summary { border-bottom: 1px solid var(--border-color); margin-bottom: 4px; }
+.config-details .stat-grid { padding: 4px 8px 8px; }
+.config-details .input-text { width: 100%; font-size: 12px; padding: 4px 6px; }
 
 .confirm-overlay {
   position: fixed;
@@ -1064,4 +1125,162 @@ body {
   display: flex;
   gap: 10px;
   justify-content: center;
+}
+
+.mcp-tools-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mcp-tool-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  font-size: 12px;
+  transition: background 0.2s;
+}
+.mcp-tool-item:hover {
+  background: var(--bg-card-hover);
+}
+.mcp-tool-name {
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.mcp-tool-desc {
+  color: var(--text-muted);
+  flex: 1;
+  text-align: center;
+}
+.mcp-tool-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.mcp-tool-item:hover .mcp-tool-actions {
+  opacity: 1;
+}
+.mcp-tool-actions button {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.mcp-tool-btn-edit {
+  background: rgba(59,130,246,0.15);
+  color: var(--info);
+}
+.mcp-tool-btn-edit:hover {
+  background: rgba(59,130,246,0.3);
+}
+.mcp-tool-btn-del {
+  background: rgba(239,68,68,0.15);
+  color: var(--danger);
+}
+.mcp-tool-btn-del:hover {
+  background: rgba(239,68,68,0.3);
+}
+.mcp-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  border: 1px solid var(--border-focus);
+  margin-bottom: 4px;
+}
+.mcp-edit-form .mcp-edit-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.mcp-edit-form input,
+.mcp-edit-form textarea {
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--font-sans);
+}
+.mcp-edit-form input:focus,
+.mcp-edit-form textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.mcp-edit-form .mcp-edit-name {
+  width: 200px;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+}
+.mcp-edit-form .mcp-edit-desc {
+  flex: 1;
+}
+.mcp-edit-form .mcp-edit-params {
+  width: 100%;
+  min-height: 60px;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 11px;
+  resize: vertical;
+}
+.mcp-edit-form .mcp-edit-btns {
+  display: flex;
+  gap: 6px;
+}
+.mcp-edit-form .btn {
+  font-size: 12px;
+  padding: 5px 14px;
+}
+.timeout-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 8px;
+}
+.timeout-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.timeout-item .input-text {
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+.activation-code-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.activation-code-wrap .code-text {
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  word-break: break-all;
+}
+.btn-copy {
+  padding: 2px 8px;
+  font-size: 11px;
+  background: rgba(50,240,140,0.1);
+  color: var(--accent);
+  border: 1px solid rgba(50,240,140,0.2);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+.btn-copy:hover {
+  background: rgba(50,240,140,0.2);
+}
+.btn-copy.copied {
+  background: rgba(50,240,140,0.3);
+  color: #fff;
 }

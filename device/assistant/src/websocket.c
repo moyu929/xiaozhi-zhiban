@@ -614,6 +614,7 @@ void websocket_init(websocket_t *ws)
         return;
     memset(ws, 0, sizeof(websocket_t));
     ws->sockfd = -1;
+    ws->ping_interval_ms = 25000;
     pthread_mutex_init(&ws->send_mutex, NULL);
 }
 
@@ -891,7 +892,7 @@ int websocket_poll(websocket_t *ws, int timeout_ms)
 
     uint64_t now = ws_get_time_ms();
     /* 每25秒发送一次Ping保活 */
-    if (now - ws->last_ping_ms > 25000)
+    if (now - ws->last_ping_ms > ws->ping_interval_ms)
     {
         PLOG_D("WS", "发送Ping帧");
         ws_send_frame(ws, WS_OPCODE_PING, NULL, 0);

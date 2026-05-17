@@ -81,6 +81,11 @@ typedef struct app_context_t {
     volatile int pending_api_abort;
     volatile int pending_api_config;
     char pending_config_buf[256];
+    uint64_t listen_timeout_ms;
+    uint64_t session_timeout_ms;
+    uint64_t wakeup_cooldown_ms;
+    uint64_t ws_ping_interval_ms;
+    volatile int pending_api_activate;
 } app_context_t;
 
 #endif

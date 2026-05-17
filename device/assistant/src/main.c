@@ -151,24 +151,6 @@ static int mcp_send_handler(const char *json, size_t len, void *user_data)
     return protocol_handler_send_json(&app->proto, json, len);
 }
 
-/**
- * @brief 定时器线程函数，每秒向主线程发送SIGUSR1信号
- *        用于驱动主事件循环中的超时检查和状态处理
- * @param arg 未使用
- * @return NULL
- */
-static void *timer_thread_func(void *arg)
-{
-    (void)arg;
-    pid_t pid = getpid();
-    while (g_running)
-    {
-        sleep(1);
-        kill(pid, SIGUSR1);
-    }
-    return NULL;
-}
-
 /* 保存applib可能覆盖前的SIGUSR1原始处理函数 */
 static struct sigaction g_old_sigusr1_sa;
 
@@ -370,7 +352,7 @@ static void re_register_signals(void)
 static int set_sched_priority(void)
 {
     struct sched_param param;
-    param.sched_priority = 10;
+    param.sched_priority = 8;
     if (sched_setscheduler(0, SCHED_RR, &param) < 0)
     {
         PLOG_W("INIT", "设置调度策略失败: %d", errno);
@@ -544,7 +526,7 @@ static void on_wakeup_event(int wakeup_type, void *user_data)
     }
 
     /* 唤醒冷却期内忽略，防止连续误唤醒 */
-    if (now - app->last_wakeup_ms < WAKEUP_COOLDOWN_MS)
+    if (now - app->last_wakeup_ms < g_app.wakeup_cooldown_ms)
     {
         PLOG_D("WAKEUP", "唤醒冷却中, 忽略 (已过=%llums)", (unsigned long)(now - app->last_wakeup_ms));
         return;
@@ -1091,6 +1073,7 @@ static void *connect_thread_func(void *arg)
     proto_config.sample_rate = 16000;
     proto_config.channels = 1;
     proto_config.frame_duration = 60;
+    proto_config.ping_interval_ms = app->ws_ping_interval_ms;
 
     int init_ret = protocol_handler_init(&app->proto, &proto_config);
     if (init_ret != 0)
@@ -1441,7 +1424,7 @@ static void check_timeouts(app_context_t *app)
     xiaozhi_state_t state = state_machine_get_state(&app->sm);
 
     /* 会话总超时检查 */
-    if (app->in_session && now - app->session_start_ms > SESSION_TIMEOUT_MS)
+    if (app->in_session && now - app->session_start_ms > g_app.session_timeout_ms)
     {
         if (state != kStateCleaning)
         {
@@ -1470,43 +1453,48 @@ static void check_timeouts(app_context_t *app)
     switch (state)
     {
     case kStateActivating:
-        /* 定期检查激活状态 */
-        if (now - app->last_activation_check_ms > ACTIVATION_CHECK_INTERVAL_MS)
+        if (app->pending_api_activate)
+        {
+            app->pending_api_activate = 0;
+            int wifi_ok = config_manager_check_wifi();
+            PLOG_I("ACT", "手动激活: WiFi=%s ota_done=%d ota_config=%d",
+                   wifi_ok ? "已连接" : "未连接", app->ota_done, app->ota_config_received);
+            if (wifi_ok && app->ota_done && !app->ota_config_received)
+            {
+                if (app->needs_activation)
+                {
+                    if (app->mcp_initialized && app->mcp.sound_tts_play)
+                        app->mcp.sound_tts_play(11);
+                }
+                config_manager_check_activation(&app->config);
+                if (app->config.has_ws_config)
+                {
+                    app->ota_config_received = 1;
+                    app->needs_activation = 0;
+                    state_machine_transition(&app->sm, kStateIdle);
+                }
+                else
+                {
+                    app->needs_activation = 1;
+                    PLOG_W("ACT", "激活失败, 请重试");
+                }
+            }
+            else if (wifi_ok && app->ota_done && app->ota_config_received)
+            {
+                PLOG_I("ACT", "已有配置, 转换到 Idle");
+                state_machine_transition(&app->sm, kStateIdle);
+            }
+            app->last_activation_check_ms = now;
+        }
+        else if (now - app->last_activation_check_ms > ACTIVATION_CHECK_INTERVAL_MS)
         {
             int wifi_ok = config_manager_check_wifi();
             PLOG_I("ACT", "WiFi状态: %s ota_done=%d ota_config=%d",
                    wifi_ok ? "已连接" : "未连接", app->ota_done, app->ota_config_received);
-            if (wifi_ok)
+            if (wifi_ok && app->ota_done && app->ota_config_received)
             {
-                if (app->ota_done && app->ota_config_received)
-                {
-                    PLOG_I("ACT", "OTA完成且配置已获取, 转换到 Idle");
-                    state_machine_transition(&app->sm, kStateIdle);
-                }
-                else if (app->ota_done && !app->ota_config_received)
-                {
-                    PLOG_W("ACT", "OTA完成但未获取配置, 重试中");
-                    if (now - app->last_activation_retry_ms > ACTIVATION_RETRY_INTERVAL_MS)
-                    {
-                        if (app->needs_activation)
-                        {
-                            if (app->mcp_initialized && app->mcp.sound_tts_play)
-                                app->mcp.sound_tts_play(11);
-                        }
-                        config_manager_check_activation(&app->config);
-                        if (app->config.has_ws_config)
-                        {
-                            app->ota_config_received = 1;
-                            app->needs_activation = 0;
-                            state_machine_transition(&app->sm, kStateIdle);
-                        }
-                        else
-                        {
-                            app->needs_activation = 1;
-                        }
-                        app->last_activation_retry_ms = now;
-                    }
-                }
+                PLOG_I("ACT", "OTA完成且配置已获取, 转换到 Idle");
+                state_machine_transition(&app->sm, kStateIdle);
             }
             app->last_activation_check_ms = now;
         }
@@ -1523,7 +1511,7 @@ static void check_timeouts(app_context_t *app)
 
     case kStateListening:
         /* 监听超时 */
-        if (now - app->state_enter_time_ms > LISTEN_TIMEOUT_MS)
+        if (now - app->state_enter_time_ms > g_app.listen_timeout_ms)
         {
             PLOG_W("TIMEOUT", "监听超时");
             state_machine_transition(&app->sm, kStateCleaning);
@@ -1670,7 +1658,10 @@ static void do_hot_update(app_context_t *app)
 {
     struct stat st;
     if (stat("/var/upgrade/sair_new", &st) != 0)
+    {
+        PLOG_E("OTA", "热更新: sair_new不存在, 跳过");
         return;
+    }
 
     PLOG_I("OTA", "热更新: 优雅停止资源");
 
@@ -1705,7 +1696,7 @@ static void do_hot_update(app_context_t *app)
     }
 
     usleep(500000);
-    PLOG_I("OTA", "热更新: 资源已释放, 关闭文件描述符并执行 sair_new");
+    PLOG_I("OTA", "热更新: 资源已释放, 替换二进制并执行新版本");
 
     int max_fd = sysconf(_SC_OPEN_MAX);
     if (max_fd > 4096)
@@ -1899,6 +1890,10 @@ int main(int argc, char *argv[])
     app->msg_pipe[0] = -1;
     app->msg_pipe[1] = -1;
     app->boot_time_ms = get_time_ms();
+    g_app.listen_timeout_ms = LISTEN_TIMEOUT_MS;
+    g_app.session_timeout_ms = SESSION_TIMEOUT_MS;
+    g_app.wakeup_cooldown_ms = WAKEUP_COOLDOWN_MS;
+    g_app.ws_ping_interval_ms = WS_PING_INTERVAL_MS;
 
     /* 创建self-pipe用于子线程通知主循环 */
     if (pipe(app->self_pipe) == 0)
@@ -1928,7 +1923,7 @@ int main(int argc, char *argv[])
         FILE *fp = fopen("/var/upgrade/.ws_config", "r");
         if (fp)
         {
-            char line1[512] = {0}, line2[512] = {0};
+            char line1[512] = {0}, line2[512] = {0}, line3[64] = {0};
             if (fgets(line1, sizeof(line1), fp))
             {
                 int len = strlen(line1);
@@ -1941,6 +1936,12 @@ int main(int argc, char *argv[])
                 while (len > 0 && (line2[len - 1] == '\n' || line2[len - 1] == '\r'))
                     line2[--len] = '\0';
             }
+            if (fgets(line3, sizeof(line3), fp))
+            {
+                int len = strlen(line3);
+                while (len > 0 && (line3[len - 1] == '\n' || line3[len - 1] == '\r'))
+                    line3[--len] = '\0';
+            }
             fclose(fp);
             if (line1[0] && line2[0])
             {
@@ -1950,6 +1951,31 @@ int main(int argc, char *argv[])
                 app->ota_config_received = 1;
                 PLOG_I("INIT", "已加载缓存的ws配置: url=%s", app->config.ws_url);
             }
+            if (line3[0])
+            {
+                strncpy(app->config.activation_code, line3, sizeof(app->config.activation_code) - 1);
+                PLOG_I("INIT", "已加载缓存的激活码: %s", app->config.activation_code);
+            }
+        }
+    }
+
+    {
+        FILE *mfp = fopen("/var/upgrade/.mcp_endpoint", "r");
+        if (mfp)
+        {
+            char mline[512] = {0};
+            if (fgets(mline, sizeof(mline), mfp))
+            {
+                int mlen = strlen(mline);
+                while (mlen > 0 && (mline[mlen - 1] == '\n' || mline[mlen - 1] == '\r'))
+                    mline[--mlen] = '\0';
+                if (mline[0])
+                {
+                    strncpy(app->config.mcp_endpoint, mline, sizeof(app->config.mcp_endpoint) - 1);
+                    PLOG_I("INIT", "已加载缓存的MCP接入点: %s", app->config.mcp_endpoint);
+                }
+            }
+            fclose(mfp);
         }
     }
 
@@ -1994,29 +2020,25 @@ int main(int argc, char *argv[])
     api_server_start();
     PLOG_I("INIT", "文件IPC接口已启动");
 
-    /* 初始化看门狗 */
     watchdog_init(&app->watchdog);
 
-    /* 启动1秒定时器线程（发送SIGUSR1驱动主循环） */
-    {
-        pthread_t timer_thread;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setstacksize(&attr, 32 * 1024);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_create(&timer_thread, &attr, timer_thread_func, NULL);
-        pthread_attr_destroy(&attr);
-        PLOG_I("INIT", "1秒SIGUSR1定时器线程已启动");
-    }
+    PLOG_I("INIT", "主循环将使用poll超时驱动定时检查");
 
-    /* 启动音频录音线程 */
+    app->recorder_running = 1;
     {
-        app->recorder_running = 1;
         pthread_attr_t attr;
         pthread_attr_init(&attr);
         pthread_attr_setstacksize(&attr, 128 * 1024);
         pthread_create(&app->recorder_thread, &attr, recorder_thread_func, app);
         pthread_attr_destroy(&attr);
+        {
+            struct sched_param sp;
+            sp.sched_priority = 12;
+            if (pthread_setschedparam(app->recorder_thread, SCHED_RR, &sp) == 0)
+                PLOG_I("INIT", "录音线程已设置 SCHED_RR 优先级 12");
+            else
+                PLOG_W("INIT", "录音线程设置调度策略失败");
+        }
         PLOG_I("INIT", "音频录音线程已启动 (128KB栈)");
     }
 
@@ -2051,7 +2073,8 @@ int main(int argc, char *argv[])
 
     PLOG_I("MAIN", "进入事件循环 (非阻塞)");
 
-    /* 主事件循环 */
+    uint64_t last_slow_check_ms = 0;
+
     while (g_running)
     {
         /* 清空self-pipe（消费所有待处理通知） */
@@ -2090,11 +2113,10 @@ int main(int argc, char *argv[])
         /* 轮询WebSocket协议数据 */
         if (app->proto_initialized && websocket_is_connected(&app->proto.ws))
         {
-            protocol_handler_poll(&app->proto, 0);
+            protocol_handler_poll(&app->proto, 10);
         }
 
         /* 处理各类挂起事件 */
-        api_server_check_commands();
         process_pending_wakeup(app);
         process_pending_key(app, &app->pending_key_exit, "BACK键退出", "user_key_exit");
         process_pending_key(app, &app->pending_key_home, "HOME键", "user_key_home");
@@ -2108,6 +2130,43 @@ int main(int argc, char *argv[])
             if (cur == kStateListening || cur == kStateSpeaking)
             {
                 state_machine_transition(&app->sm, kStateCleaning);
+            }
+        }
+
+        /* 处理API激活请求 */
+        if (app->pending_api_activate)
+        {
+            app->pending_api_activate = 0;
+            PLOG_I("API", "处理挂起的激活请求");
+            int wifi_ok = config_manager_check_wifi();
+            if (wifi_ok)
+            {
+                config_manager_check_activation(&app->config);
+                api_server_write_status();
+                if (app->config.has_ws_config)
+                {
+                    app->needs_activation = 0;
+                    xiaozhi_state_t cur = state_machine_get_state(&app->sm);
+                    if (cur == kStateActivating)
+                    {
+                        app->ota_config_received = 1;
+                        state_machine_transition(&app->sm, kStateIdle);
+                    }
+                    PLOG_I("ACT", "设备已激活, 获取到WebSocket配置");
+                }
+                else if (app->config.activation_code[0])
+                {
+                    app->needs_activation = 1;
+                    PLOG_I("ACT", "获取到激活码: %s", app->config.activation_code);
+                }
+                else
+                {
+                    PLOG_W("ACT", "激活检查完成, 未获取到激活码或配置");
+                }
+            }
+            else
+            {
+                PLOG_W("ACT", "WiFi未连接, 无法进行激活检查");
             }
         }
 
@@ -2176,31 +2235,6 @@ int main(int argc, char *argv[])
             do_hot_update(app);
         }
 
-        /* 调试用：通过文件触发模拟唤醒 */
-        {
-            struct stat trigger_st;
-            if (stat("/tmp/xiaozhi_wakeup_trigger", &trigger_st) == 0)
-            {
-                unlink("/tmp/xiaozhi_wakeup_trigger");
-                PLOG_I("DEBUG", "检测到模拟唤醒触发");
-                app->pending_wakeup = 1;
-                app->pending_wakeup_type = 0;
-                process_pending_wakeup(app);
-            }
-        }
-
-        /* 检测配置重载触发文件 */
-        {
-            struct stat reload_st;
-            if (stat("/var/upgrade/.reload_config", &reload_st) == 0)
-            {
-                unlink("/var/upgrade/.reload_config");
-                PLOG_I("CFG", "检测到配置重载触发");
-                int changed = config_manager_reload(&app->config);
-                (void)changed;
-            }
-        }
-
         /* Idle状态下启动唤醒词检测（延迟1.5秒冷却） */
         {
             xiaozhi_state_t cur_state = state_machine_get_state(&app->sm);
@@ -2212,10 +2246,13 @@ int main(int argc, char *argv[])
                     if (idle_elapsed >= 1500)
                     {
                         app->wakeup_cooldown_done = 1;
-                        PLOG_I("STATE", "唤醒冷却完成 (%llums), 启动唤醒检测",
-                               (unsigned long long)idle_elapsed);
-                        wakeup_start(&app->wakeup);
-                        app->wakeup_start_time_ms = get_time_ms();
+                        if (!app->wakeup.started)
+                        {
+                            PLOG_I("STATE", "唤醒冷却完成 (%llums), 启动唤醒检测",
+                                   (unsigned long long)idle_elapsed);
+                            wakeup_start(&app->wakeup);
+                            app->wakeup_start_time_ms = get_time_ms();
+                        }
                         if (app->pending_wakeup)
                         {
                             PLOG_I("WAKEUP", "在保护期前清除过期唤醒事件");
@@ -2230,12 +2267,39 @@ int main(int argc, char *argv[])
         /* 检查各类超时 */
         check_timeouts(app);
 
-        /* 阻塞等待self-pipe事件或50ms超时 */
+        {
+            uint64_t now_ms = get_time_ms();
+            if (now_ms - last_slow_check_ms >= 2000)
+            {
+                last_slow_check_ms = now_ms;
+                api_server_check_commands();
+
+                struct stat trigger_st;
+                if (stat("/tmp/xiaozhi_wakeup_trigger", &trigger_st) == 0)
+                {
+                    unlink("/tmp/xiaozhi_wakeup_trigger");
+                    PLOG_I("DEBUG", "检测到模拟唤醒触发");
+                    app->pending_wakeup = 1;
+                    app->pending_wakeup_type = 0;
+                    process_pending_wakeup(app);
+                }
+
+                struct stat reload_st;
+                if (stat("/var/upgrade/.reload_config", &reload_st) == 0)
+                {
+                    unlink("/var/upgrade/.reload_config");
+                    PLOG_I("CFG", "检测到配置重载触发");
+                    int changed = config_manager_reload(&app->config);
+                    (void)changed;
+                }
+            }
+        }
+
         {
             struct pollfd pfd;
             pfd.fd = app->self_pipe[0];
             pfd.events = POLLIN;
-            poll(&pfd, 1, 50);
+            poll(&pfd, 1, 200);
         }
     }
 

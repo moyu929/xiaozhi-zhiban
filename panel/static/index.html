@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>小智 · 智伴</title>
-<link rel="stylesheet" href="/style.css?v=8">
+<link rel="stylesheet" href="/style.css?v=12">
 </head>
 <body>
 <canvas id="particles"></canvas>
@@ -140,7 +140,7 @@
       <!-- ==================== 无线模式 ==================== -->
       <div class="panel-page" id="wirelessPage">
         <div class="panel-page-inner">
-        <div class="grid-2col">
+        <div class="grid-3col">
           <section class="card" id="deviceSection">
             <div class="card-header"><h2>设备状态</h2></div>
             <div class="connect-bar" style="margin-bottom:14px">
@@ -159,78 +159,12 @@
               <div class="stat-item"><span class="stat-label">内存</span><span id="devMem" class="stat-value">--</span></div>
               <div class="stat-item"><span class="stat-label">磁盘</span><span id="devDisk" class="stat-value">--</span></div>
             </div>
-            <div class="section-overlay" id="deviceOverlay" style="display:none"><div class="spinner"></div></div>
-          </section>
-
-          <section class="card">
-            <div class="card-header"><h2>设备控制</h2></div>
-            <div class="control-group">
-              <label class="control-label">音量 <span id="volumeVal" class="control-val">25</span></label>
-              <div class="slider-row">
-                <input type="range" id="volumeSlider" class="slider" min="0" max="100" value="25" oninput="onVolumeChange(this.value)">
-                <button id="btnMute" class="btn btn-icon" onclick="toggleMute()" title="静音">
-                  <svg id="iconUnmuted" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.08"/></svg>
-                  <svg id="iconMuted" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M11 5L6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
-                </button>
-              </div>
-            </div>
-            <div class="control-group">
-              <label class="control-label">亮度 <span id="brightnessVal" class="control-val">9</span></label>
-              <input type="range" id="brightnessSlider" class="slider" min="0" max="100" value="9" oninput="onBrightnessChange(this.value)">
-            </div>
-            <div class="btn-row">
+            <div class="btn-row-even" style="margin-top:14px">
               <button class="btn btn-danger" onclick="wirelessRebootAndReconnect()">重启</button>
               <button class="btn btn-danger btn-outline" onclick="doPoweroff()">关机</button>
-              <button class="btn btn-danger btn-sm" onclick="doCleanup()">清理垃圾</button>
+              <button class="btn btn-danger btn-outline" onclick="doCleanup()">清理垃圾</button>
             </div>
-          </section>
-        </div>
-
-        <div class="grid-3col">
-          <section class="card" id="assistantSection">
-            <div class="card-header"><h2>语音助手管理</h2><div class="card-actions"><span class="conn-status" id="assistantConnStatus"><span class="conn-dot disconnected"></span>未连接</span></div></div>
-            <div class="service-status">
-              <span id="assistantInstalled" class="stat-value">--</span>
-              <span id="assistantVersion" class="badge">--</span>
-              <span class="stat-label">助手状态：</span><span id="assistantState" class="status-pill state-idle">空闲</span>
-            </div>
-            <div class="stat-grid" style="margin-bottom:12px">
-              <div class="stat-item"><span class="stat-label">PID</span><span id="assistantPid" class="stat-value">--</span></div>
-              <div class="stat-item"><span class="stat-label">激活码</span><span id="assistantActivation" class="stat-value" style="font-family:monospace;word-break:break-all">--</span></div>
-            </div>
-            <div class="form-group">
-              <label class="form-label">WebSocket 服务器</label>
-              <input type="text" id="cfgWsUrl" class="input-text" value="" placeholder="wss://...">
-            </div>
-            <div class="form-group">
-              <label class="form-label">日志级别 <span class="form-hint">（助手进程的日志输出级别）</span></label>
-              <select id="cfgSairLogLevel" class="select">
-                <option value="">不修改</option>
-                <option value="DEBUG">调试 (DEBUG)</option>
-                <option value="INFO">信息 (INFO)</option>
-                <option value="WARN">警告 (WARN)</option>
-                <option value="ERROR">错误 (ERROR)</option>
-              </select>
-            </div>
-            <div style="display:flex;gap:8px;margin-bottom:12px">
-              <button class="btn btn-accent" onclick="saveAssistantConfig()" style="flex:1">保存配置</button>
-              <button class="btn btn-ghost" onclick="restoreAssistantDefaults()" style="flex:1">恢复默认值</button>
-            </div>
-            <div class="btn-row sair-required" style="margin-bottom:8px">
-              <button class="btn btn-accent" onclick="doWakeup()">唤醒</button>
-              <button class="btn btn-ghost" onclick="doAbort()">中止对话</button>
-            </div>
-            <div class="btn-row" style="margin-top:8px">
-              <button class="btn btn-primary" onclick="doDeploy()" id="btnDeploy">部署</button>
-              <button class="btn btn-accent" onclick="doHotUpdate()">热更新</button>
-              <button id="btnUpdate" class="btn btn-ghost" onclick="doUpdate()">冷更新</button>
-              <button class="btn btn-danger" onclick="doUninstall()">卸载</button>
-            </div>
-            <div id="upgradeProgress" class="progress-wrap" style="display:none;margin-top:12px">
-              <div class="progress-bar"><div id="upgradeBar" class="progress-fill" style="width:0%"></div></div>
-              <span id="upgradeLabel" class="progress-label">上传中... 0%</span>
-            </div>
-            <div class="section-overlay" id="assistantOverlay" style="display:none"><div class="spinner"></div></div>
+            <div class="section-overlay" id="deviceOverlay" style="display:none"><div class="spinner"></div></div>
           </section>
 
           <section class="card" id="xwebdSection">
@@ -240,7 +174,7 @@
               <span id="xwebdVersion" class="badge">--</span>
             </div>
             <div class="form-group">
-              <label class="form-label">日志采集级别 <span class="form-hint">（设备端写入日志的最低级别，显示过滤请在日志栏操作）</span></label>
+              <label class="form-label">日志采集级别 <span class="form-hint">（设备端写入日志的最低级别）</span></label>
               <select id="cfgLogLevel" class="select">
                 <option value="">全部</option>
                 <option value="DEBUG">调试 (DEBUG)</option>
@@ -257,7 +191,7 @@
               <button class="btn btn-accent" onclick="saveXwebdConfig()" style="flex:1">保存配置</button>
               <button class="btn btn-ghost" onclick="restoreXwebdDefaults()" style="flex:1">恢复默认值</button>
             </div>
-            <div class="btn-row" style="margin-top:12px">
+            <div class="btn-row-even" style="margin-top:12px">
               <button id="btnXwebdUpdate" class="btn btn-accent" onclick="doXwebdUpdate()">更新</button>
               <button id="btnXwebdRestart" class="btn btn-ghost" onclick="doXwebdRestart()">重启</button>
               <button id="btnXwebdRemove" class="btn btn-danger" onclick="doXwebdRemove()">卸载</button>
@@ -291,6 +225,68 @@
             </div>
           </section>
         </div>
+
+        <section class="card" id="assistantSection" style="margin-bottom:16px">
+          <div class="card-header"><h2>语音助手管理</h2><div class="card-actions"><span class="conn-status" id="assistantConnStatus"><span class="conn-dot disconnected"></span>未连接</span></div></div>
+          <div class="assistant-layout">
+            <div class="assistant-left">
+              <div class="service-status" style="flex-wrap:wrap">
+                <span id="assistantInstalled" class="stat-value">--</span>
+                <span id="assistantVersion" class="badge">--</span>
+                <span class="stat-label">PID：</span><span id="assistantPid" class="stat-value">--</span>
+                <span class="stat-label">激活码：</span><span id="assistantActivation" class="stat-value value-mono">--</span>
+                <span class="stat-label">状态：</span><span id="assistantState" class="status-pill state-idle">空闲</span>
+              </div>
+              <div class="form-group">
+                <label class="form-label">日志级别 <span class="form-hint">（助手进程的日志输出级别）</span></label>
+                <select id="cfgSairLogLevel" class="select">
+                  <option value="">不修改</option>
+                  <option value="DEBUG">调试 (DEBUG)</option>
+                  <option value="INFO">信息 (INFO)</option>
+                  <option value="WARN">警告 (WARN)</option>
+                  <option value="ERROR">错误 (ERROR)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">超时参数 <span class="form-hint">（单位：秒）</span></label>
+                <div class="timeout-row">
+                  <div class="timeout-item"><span class="stat-label">监听超时</span><input type="number" id="cfgListenTimeout" class="input-text" value="" placeholder="120" min="10" step="10"></div>
+                  <div class="timeout-item"><span class="stat-label">会话超时</span><input type="number" id="cfgSessionTimeout" class="input-text" value="" placeholder="300" min="30" step="30"></div>
+                  <div class="timeout-item"><span class="stat-label">唤醒冷却</span><input type="number" id="cfgWakeupCooldown" class="input-text" value="" placeholder="3" min="1" step="1"></div>
+                  <div class="timeout-item"><span class="stat-label">WS心跳间隔</span><input type="number" id="cfgWsPingInterval" class="input-text" value="" placeholder="25" min="5" step="5"></div>
+                </div>
+              </div>
+              <div class="form-group">
+                <label class="form-label">MCP 接入点 <span class="form-hint">（从 xiaozhi.me 控制台获取的智能体专属端点）</span></label>
+                <input type="text" id="cfgMcpEndpoint" class="input-text" value="" placeholder="wss://api.xiaozhi.me/mcp/?token=...">
+              </div>
+              <div style="display:flex;gap:8px;margin-bottom:12px">
+                <button class="btn btn-accent" onclick="saveAssistantConfig()" style="flex:1">保存配置</button>
+                <button class="btn btn-ghost" onclick="restoreAssistantDefaults()" style="flex:1">恢复默认值</button>
+              </div>
+              <div class="btn-row-even sair-required" style="margin-bottom:8px">
+                <button class="btn btn-accent" onclick="doWakeup()">唤醒</button>
+                <button class="btn btn-ghost" onclick="doAbort()">中止对话</button>
+                <button class="btn btn-primary" id="btn-activate" onclick="doActivate()" disabled>激活</button>
+              </div>
+              <div class="btn-row-even" style="margin-top:8px">
+                <button class="btn btn-primary" onclick="doDeploy()" id="btnDeploy">部署</button>
+                <button class="btn btn-accent" onclick="doHotUpdate()">热更新</button>
+                <button id="btnUpdate" class="btn btn-ghost" onclick="doUpdate()">冷更新</button>
+                <button class="btn btn-danger" onclick="doUninstall()">卸载</button>
+              </div>
+              <div id="upgradeProgress" class="progress-wrap" style="display:none;margin-top:12px">
+                <div class="progress-bar"><div id="upgradeBar" class="progress-fill" style="width:0%"></div></div>
+                <span id="upgradeLabel" class="progress-label">上传中... 0%</span>
+              </div>
+            </div>
+            <div class="assistant-right">
+              <div class="form-label-row"><label class="form-label">MCP 工具列表</label><button class="btn btn-accent btn-xs" onclick="mcpToolAdd()">+ 新建</button></div>
+              <div id="mcpToolsList" class="mcp-tools-list"></div>
+            </div>
+          </div>
+          <div class="section-overlay" id="assistantOverlay" style="display:none"><div class="spinner"></div><div class="overlay-text" id="assistantOverlayText"></div></div>
+        </section>
 
         <div class="grid-2col">
           <section class="card">
@@ -420,8 +416,8 @@
         <ol>
           <li>将目标设备通过 USB 连接到电脑</li>
           <li>在<strong>有线模式</strong>下点击「扫描设备」检测设备</li>
-          <li>部署面板内核 (xwebd) 到设备</li>
-          <li>部署语音助手 (sair) 到设备</li>
+          <li>运行环境自检，确认设备满足部署条件</li>
+          <li>依次部署面板内核 (xwebd) 和语音助手 (sair)</li>
           <li>切换至<strong>无线模式</strong>，输入设备 IP 连接，获得完整控制功能</li>
         </ol>
       </div>
@@ -429,7 +425,31 @@
         <h3>两种模式</h3>
         <ul>
           <li><strong>有线模式</strong> — 通过 USB/ADB 连接设备，适用于首次部署和基础操作（部署内核、部署助手、重启/关机、查看日志）</li>
-          <li><strong>无线模式</strong> — 通过 WiFi/HTTP 连接设备端 xwebd，提供完整控制功能（音量/亮度、文件管理、配置修改、自检等）</li>
+          <li><strong>无线模式</strong> — 通过 WiFi 连接设备端 xwebd 内核，提供完整控制功能（配置修改、MCP管理、文件管理、自检、日志查看等）</li>
+        </ul>
+      </div>
+      <div class="help-section">
+        <h3>三模块架构</h3>
+        <ul>
+          <li><strong>Panel</strong> — 运行在电脑上的 Web 控制面板（Python），端口 3000</li>
+          <li><strong>xwebd</strong> — 运行在设备上的 HTTP 服务（C），端口 8080，作为 Panel 与设备之间的桥梁</li>
+          <li><strong>sair (语音助手)</strong> — 运行在设备上的语音助手进程（C），通过文件 IPC 与 xwebd 通信</li>
+        </ul>
+      </div>
+      <div class="help-section">
+        <h3>MCP 协议</h3>
+        <ul>
+          <li>语音助手通过 <strong>MCP (Model Context Protocol)</strong> 协议控制设备硬件（音量、亮度、重启等）</li>
+          <li>MCP 消息通过 WebSocket 连接传输，接入点地址可在「服务状态 → MCP 可视化管理」中配置</li>
+          <li>不同设备的 MCP 接入点可能不同，首次使用需手动配置正确的 WebSocket 地址</li>
+        </ul>
+      </div>
+      <div class="help-section">
+        <h3>更新方式</h3>
+        <ul>
+          <li><strong>部署</strong> — 全新安装或替换原生助手，设备会重启</li>
+          <li><strong>冷更新</strong> — 替换已安装的自定义助手，设备会重启</li>
+          <li><strong>热更新</strong> — 在助手运行中无缝替换，设备不重启（仅自定义助手支持）</li>
         </ul>
       </div>
       <div class="help-section">
@@ -438,6 +458,7 @@
           <li>部署固件时请勿断开设备连接</li>
           <li>重启设备后需要等待约 30 秒才能重新连接</li>
           <li>删除设备文件时请谨慎操作，系统文件不可删除</li>
+          <li>设备音量/亮度由语音助手通过 MCP 协议控制，无需手动调节</li>
         </ul>
       </div>
     </div>
@@ -457,6 +478,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=9"></script>
+<script src="/app.js?v=14"></script>
 </body>
 </html>

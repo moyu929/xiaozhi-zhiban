@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <sys/prctl.h>
+#include <sched.h>
 
 /**
  * @brief 从JSON数据中查找指定键的字符串值
@@ -394,6 +395,8 @@ int protocol_handler_init(protocol_handler_t *proto, protocol_config_t *config)
 
     /* 初始化WebSocket并设置回调 */
     websocket_init(&proto->ws);
+    if (config->ping_interval_ms > 0)
+        proto->ws.ping_interval_ms = config->ping_interval_ms;
     websocket_set_callbacks(&proto->ws, on_ws_data, on_ws_connected, on_ws_disconnected, on_ws_error, proto);
 
     proto->protocol_version = 2;
@@ -407,6 +410,13 @@ int protocol_handler_init(protocol_handler_t *proto, protocol_config_t *config)
     pthread_attr_setstacksize(&attr, 64 * 1024);
     pthread_create(&proto->send_thread, &attr, send_thread_func, proto);
     pthread_attr_destroy(&attr);
+
+    {
+        struct sched_param sp;
+        sp.sched_priority = 10;
+        if (pthread_setschedparam(proto->send_thread, SCHED_RR, &sp) == 0)
+            PLOG_I("PROTO", "发送线程已设置 SCHED_RR 优先级 10");
+    }
 
     PLOG_I("PROTO", "初始化完成 (采样率=%d, 帧时长=%d)",
            config->sample_rate, config->frame_duration);
@@ -510,6 +520,11 @@ int protocol_handler_connect(protocol_handler_t *proto)
         pthread_attr_setstacksize(&attr, 64 * 1024);
         pthread_create(&proto->send_thread, &attr, send_thread_func, proto);
         pthread_attr_destroy(&attr);
+        {
+            struct sched_param sp;
+            sp.sched_priority = 10;
+            pthread_setschedparam(proto->send_thread, SCHED_RR, &sp);
+        }
         PLOG_I("PROTO", "发送线程已重启");
     }
 

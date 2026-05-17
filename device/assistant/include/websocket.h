@@ -54,6 +54,7 @@ typedef struct {
 
     uint64_t last_ping_ms;
     uint64_t last_data_ms;
+    uint64_t ping_interval_ms;
 } websocket_t;
 
 void websocket_init(websocket_t *ws);

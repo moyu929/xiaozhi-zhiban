@@ -81,24 +81,33 @@ void api_server_write_status(void)
     xiaozhi_state_t state = state_machine_get_state(&g_app.sm);
     char buf[512];
     int len = snprintf(buf, sizeof(buf),
-        "{\"state\":\"%s\",\"version\":\"%s\",\"activation_code\":\"%s\"}\n",
+        "{\"state\":\"%s\",\"version\":\"%s\",\"activation_code\":\"%s\",\"activated\":%s}\n",
         state_to_string(state),
         XIAOZHI_VERSION,
-        g_app.config.activation_code);
+        g_app.config.activation_code,
+        g_app.config.has_ws_config ? "true" : "false");
     write_file_atomic("/tmp/sair_status.json", buf, len);
 }
 
 void api_server_write_config(void)
 {
     int plog_lvl = plog_get_level();
-    char buf[1024];
+    char buf[1536];
     int len = snprintf(buf, sizeof(buf),
-        "{\"ws_url\":\"%s\",\"ws_token\":\"%s\",\"log_level\":\"%s\"}\n",
+        "{\"ws_url\":\"%s\",\"ws_token\":\"%s\",\"log_level\":\"%s\","
+        "\"listen_timeout\":%llu,\"session_timeout\":%llu,"
+        "\"wakeup_cooldown\":%llu,\"ws_ping_interval\":%llu,"
+        "\"mcp_endpoint\":\"%s\"}\n",
         g_app.config.ws_url,
         g_app.config.ws_token,
         plog_lvl == PLOG_LEVEL_DEBUG ? "DEBUG" :
         plog_lvl == PLOG_LEVEL_INFO  ? "INFO" :
-        plog_lvl == PLOG_LEVEL_WARN  ? "WARN" : "ERROR");
+        plog_lvl == PLOG_LEVEL_WARN  ? "WARN" : "ERROR",
+        (unsigned long long)g_app.listen_timeout_ms,
+        (unsigned long long)g_app.session_timeout_ms,
+        (unsigned long long)g_app.wakeup_cooldown_ms,
+        (unsigned long long)g_app.ws_ping_interval_ms,
+        g_app.config.mcp_endpoint);
     write_file_atomic("/tmp/sair_config.json", buf, len);
 }
 
@@ -130,6 +139,19 @@ static int parse_json_str(const char *json, const char *key, char *out, int out_
     return 0;
 }
 
+static int parse_json_int(const char *json, const char *key, int *out)
+{
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(json, search);
+    if (!p) return -1;
+    p += strlen(search);
+    while (*p && (*p == ' ' || *p == ':' || *p == '\t'))
+        p++;
+    *out = atoi(p);
+    return 0;
+}
+
 void api_server_check_commands(void)
 {
     if (access("/tmp/sair_diag_request", F_OK) == 0)
@@ -149,7 +171,7 @@ void api_server_check_commands(void)
     if (fd < 0)
         return;
 
-    char buf[1024];
+    char buf[2048];
     int n = read(fd, buf, sizeof(buf) - 1);
     close(fd);
     if (n <= 0)
@@ -212,6 +234,65 @@ void api_server_check_commands(void)
                 plog_set_level(PLOG_LEVEL_ERROR);
             api_server_write_config();
         }
+        {
+            int val = 0;
+            if (parse_json_int(buf, "listen_timeout", &val) == 0 && val >= 10000 && val <= 600000)
+            {
+                g_app.listen_timeout_ms = (uint64_t)val;
+                PLOG_I(TAG, "listen_timeout 配置已更新: %d", val);
+                api_server_write_config();
+            }
+        }
+        {
+            int val = 0;
+            if (parse_json_int(buf, "session_timeout", &val) == 0 && val >= 30000 && val <= 900000)
+            {
+                g_app.session_timeout_ms = (uint64_t)val;
+                PLOG_I(TAG, "session_timeout 配置已更新: %d", val);
+                api_server_write_config();
+            }
+        }
+        {
+            int val = 0;
+            if (parse_json_int(buf, "wakeup_cooldown", &val) == 0 && val >= 500 && val <= 30000)
+            {
+                g_app.wakeup_cooldown_ms = (uint64_t)val;
+                PLOG_I(TAG, "wakeup_cooldown 配置已更新: %d", val);
+                api_server_write_config();
+            }
+        }
+        {
+            int val = 0;
+            if (parse_json_int(buf, "ws_ping_interval", &val) == 0 && val >= 5000 && val <= 120000)
+            {
+                g_app.ws_ping_interval_ms = (uint64_t)val;
+                PLOG_I(TAG, "ws_ping_interval 配置已更新: %d", val);
+                api_server_write_config();
+            }
+        }
+        {
+            char mcp_endpoint[512] = {0};
+            if (parse_json_str(buf, "mcp_endpoint", mcp_endpoint, sizeof(mcp_endpoint)) == 0)
+            {
+                memset(g_app.config.mcp_endpoint, 0, sizeof(g_app.config.mcp_endpoint));
+                if (mcp_endpoint[0])
+                {
+                    strncpy(g_app.config.mcp_endpoint, mcp_endpoint, sizeof(g_app.config.mcp_endpoint) - 1);
+                    PLOG_I(TAG, "mcp_endpoint 配置已更新: %s", mcp_endpoint);
+                }
+                else
+                {
+                    PLOG_I(TAG, "mcp_endpoint 已清空");
+                }
+                api_server_write_config();
+                FILE *mfp = fopen("/var/upgrade/.mcp_endpoint", "w");
+                if (mfp)
+                {
+                    fprintf(mfp, "%s\n", mcp_endpoint);
+                    fclose(mfp);
+                }
+            }
+        }
     }
     else if (strcmp(cmd, "wakeup") == 0)
     {
@@ -224,6 +305,12 @@ void api_server_check_commands(void)
         __sync_synchronize();
         g_app.pending_api_abort = 1;
         PLOG_I(TAG, "中止命令已排队");
+    }
+    else if (strcmp(cmd, "activate") == 0)
+    {
+        __sync_synchronize();
+        g_app.pending_api_activate = 1;
+        PLOG_I(TAG, "激活命令已排队");
     }
     else if (strcmp(cmd, "upgrade") == 0)
     {

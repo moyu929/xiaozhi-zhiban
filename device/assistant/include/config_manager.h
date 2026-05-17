@@ -11,6 +11,7 @@ typedef struct {
     char ws_url[512];
     char ws_token[512];
     char activation_code[64];
+    char mcp_endpoint[512];
     int has_ws_config;
     int needs_activation;
 } config_manager_t;

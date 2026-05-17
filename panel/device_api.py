@@ -235,6 +235,10 @@ class XwebdAPI:
         logger.info("中止对话")
         return self._request("POST", "/api/assistant/abort")
 
+    def activate_assistant(self):
+        logger.info("激活助手")
+        return self._request("POST", "/api/assistant/activate")
+
     def upgrade_assistant(self):
         logger.info("升级助手")
         return self._request("POST", "/api/assistant/upgrade")

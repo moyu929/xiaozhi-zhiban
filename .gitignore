@@ -9,3 +9,9 @@ toolchain/
 prebuilt/
 .DS_Store
 Thumbs.db
+.env
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
