@@ -1161,15 +1161,22 @@ async function saveXwebdConfig() {
 async function restoreAssistantDefaults() {
     if (!await showConfirm('确定恢复助手配置为默认值？', {icon: '🔄'})) return;
     $('cfgMcpEndpoint').value = '';
-    $('cfgSairLogLevel').value = '';
-    $('cfgListenTimeout').value = '';
-    $('cfgSessionTimeout').value = '';
-    $('cfgWakeupCooldown').value = '';
-    $('cfgWsPingInterval').value = '';
+    $('cfgSairLogLevel').value = 'INFO';
+    $('cfgListenTimeout').value = '120';
+    $('cfgSessionTimeout').value = '300';
+    $('cfgWakeupCooldown').value = '3';
+    $('cfgWsPingInterval').value = '25';
     var r = await api('/api/assistant/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mcp_endpoint: '' }),
+        body: JSON.stringify({
+            mcp_endpoint: '',
+            log_level: 'INFO',
+            listen_timeout: 120000,
+            session_timeout: 300000,
+            wakeup_cooldown: 3000,
+            ws_ping_interval: 25000
+        }),
     });
     if (r.ok || !r.error) toast('助手配置已恢复默认值', 'success');
     else toast('恢复默认值失败', 'error');

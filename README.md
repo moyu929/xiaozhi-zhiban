@@ -83,9 +83,10 @@ cd xiaozhi-zhiban
 
 ```bash
 cd panel
-pip install -r requirements.txt   # 首次运行安装依赖
 python control_panel.py
 ```
+
+> Panel 仅使用 Python 标准库，无需安装额外依赖。
 
 启动后浏览器会自动打开 `http://localhost:3000`。
 
@@ -148,6 +149,7 @@ xiaozhi-zhiban/
 │   ├── adb_manager.py                # ADB 设备管理
 │   ├── config.py                     # 配置（环境变量读取）
 │   ├── log_config.py                 # 日志配置
+│   ├── _adb_check.py                 # ADB 连接诊断工具
 │   └── static/
 │       ├── index.html                # 前端页面
 │       ├── app.js                    # 前端逻辑
