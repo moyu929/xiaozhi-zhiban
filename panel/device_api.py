@@ -1,157 +1,30 @@
 """
-device_api.py — 设备 API 封装（XwebdAPI 类 + Mock 模式）
+device_api.py — 设备 API 封装（XwebdAPI 类）
 
 本模块封装了与设备端 xwebd HTTP 守护进程通信的 API 客户端，主要功能包括：
 1. XwebdAPI 类：封装所有与 xwebd 服务的 HTTP 交互（系统信息、音量、亮度、文件管理、助手管理等）
-2. Mock 模式：当设备不可用时，提供模拟数据用于开发和测试
-3. 设备存活检测：check_device_alive() 函数用于判断设备是否在线
-4. 共享 Mock 数据：为 XwebdAPI 和 SairAPI（assistant_api.py）提供统一的模拟状态
+2. 设备存活检测：check_device_alive() 函数用于判断设备是否在线
 
 关键概念：
-- xwebd：设备端 HTTP 守护进程，端口 8080，提供系统控制 API
-- sair：Assistant 的二进制文件名（平台约束不可改名），端口 8081
-- MOCK_MODE：全局标志，为 True 时所有 API 调用返回模拟数据
+- xwebd：设备端 HTTP 守护进程，端口 8080，提供系统控制 API 及助手代理 API
+- sair：Assistant 的二进制文件名（平台约束不可改名），所有请求通过 xwebd 转发
 """
 
 import json
 import time
-import random
+import logging
 import threading
-from urllib.parse import urlparse, parse_qs
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
+from config import DEFAULT_DEVICE_HOST, DEFAULT_XWEBD_PORT
 
-MOCK_MODE = True
-
-_mock_lock = threading.Lock()
-
-_mock_sair_state = {
-    "state": "Idle",
-    "version": "assistant-v1.0",
-    "realtime_mode": True,
-    "aec_enabled": True,
-}
-
-_mock_sair_config = {
-    "ws_url": "wss://api.tenclass.net/xiaozhi/v1/",
-    "ws_token": "test_token_xxx",
-    "realtime_mode": True,
-    "aec_enabled": True,
-    "log_level": "DEBUG",
-}
-
-_mock_xwebd_state = {
-    "volume": 20,
-    "brightness": 80,
-    "muted": False,
-    "mem_free_kb": 4700,
-    "wifi_status": 5,
-    "server_connected": True,
-    "battery_cap": 85,
-    "uptime_s": 0,
-    "ip": "192.168.1.100",
-    "xwebd_version": "1.0.0",
-    "upload_max_mb": 20,
-}
-
-_mock_sair_logs = [
-    "[10:30:00] [I][SM] Idle -> Connecting",
-    "[10:30:01] [I][TLS] handshake 318ms",
-    "[10:30:01] [I][WS] connected",
-    "[10:30:02] [I][ASR] wakeup detected",
-    "[10:30:03] [I][SM] Connecting -> Listening",
-    "[10:30:05] [I][PROTO] tts_start",
-    "[10:30:05] [I][SM] Listening -> Speaking",
-    "[10:30:08] [I][PROTO] tts_end",
-    "[10:30:08] [I][SM] Speaking -> Listening",
-    "[10:30:10] [I][PROTO] goodbye",
-    "[10:30:10] [I][SM] Listening -> Cleaning",
-    "[10:30:10] [I][SM] Cleaning -> Idle",
-]
-
-_mock_files = [
-    {"name": "xwebd", "size": 456789, "is_dir": False, "mtime": 1746596400},
-    {"name": "sair", "size": 928468, "is_dir": False, "mtime": 1746596400},
-    {"name": "sair_backup", "size": 856000, "is_dir": False, "mtime": 1746502800},
-    {"name": "boot_watchdog.sh", "size": 256, "is_dir": False, "mtime": 1746417600},
-    {"name": "test.sh", "size": 128, "is_dir": False, "mtime": 1746596400},
-    {"name": "logs", "size": 0, "is_dir": True, "mtime": 1746596400},
-    {"name": "xwebd.log", "size": 32768, "is_dir": False, "mtime": 1746675300},
-    {"name": "xiaozhi.log", "size": 65536, "is_dir": False, "mtime": 1746675300},
-    {"name": ".api_token", "size": 16, "is_dir": False, "mtime": 1746417600},
-]
-
-_uptime_thread = None
-_uptime_running = False
-
-
-def _start_uptime_counter():
-    """启动 Mock 模式下的运行时间计数器
-
-    在后台线程中每秒递增 _mock_xwebd_state["uptime_s"]，
-    同时随机模拟内存变化，使 Mock 数据更接近真实设备行为。
-    如果计数器已在运行则不重复启动。
-    """
-    global _uptime_thread, _uptime_running
-    if _uptime_thread and _uptime_thread.is_alive():
-        return
-    _uptime_running = True
-
-    def _tick():
-        while _uptime_running:
-            with _mock_lock:
-                _mock_xwebd_state["uptime_s"] += 1
-                _mock_xwebd_state["mem_free_kb"] = random.randint(4500, 5000)
-            time.sleep(1)
-
-    _uptime_thread = threading.Thread(target=_tick, daemon=True)
-    _uptime_thread.start()
-
-
-def _stop_uptime_counter():
-    """停止 Mock 模式下的运行时间计数器"""
-    global _uptime_running
-    _uptime_running = False
-
-
-def _validate_int_range(value, name, min_val, max_val):
-    """验证整数值是否在指定范围内
-
-    Args:
-        value: 待验证的值（可以是字符串或数字）
-        name: 参数名称（用于错误信息）
-        min_val: 允许的最小值
-        max_val: 允许的最大值
-
-    Returns:
-        tuple: (验证后的整数值, 错误信息) 验证成功时错误信息为 None，
-               验证失败时整数值为 None
-    """
-    try:
-        v = int(value)
-    except (ValueError, TypeError):
-        return None, f"{name} must be a number"
-    if v < min_val or v > max_val:
-        return None, f"{name} must be between {min_val} and {max_val}"
-    return v, None
-
-
-def set_mock_mode(enabled):
-    """设置 Mock 模式开关
-
-    Args:
-        enabled: True 启用 Mock 模式（使用模拟数据），False 使用真实设备连接
-    """
-    global MOCK_MODE
-    MOCK_MODE = enabled
+logger = logging.getLogger("panel.device_api")
 
 
 def check_device_alive(host, port, timeout=3):
     """检测设备是否在线
 
-    根据端口号选择不同的健康检查接口：
-    - 端口 8081（sair）：访问 /api/status，检查返回数据中是否包含 "state" 字段
-    - 其他端口（xwebd）：访问 /api/system，检查返回数据中是否包含 "cpu" 字段
+    访问 xwebd 的 /api/system，检查返回数据中是否包含 "cpu" 字段。
 
     Args:
         host: 设备 IP 地址
@@ -162,19 +35,17 @@ def check_device_alive(host, port, timeout=3):
         bool: True 表示设备在线，False 表示设备离线或响应异常
     """
     try:
-        if port == 8081:
-            url = f"http://{host}:{port}/api/status"
-            check_key = "state"
-        else:
-            url = f"http://{host}:{port}/api/system"
-            check_key = "cpu"
+        url = f"http://{host}:{port}/api/system"
         req = Request(url, method="GET")
         with urlopen(req, timeout=timeout) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
-                return check_key in data
+                if "cpu" in data:
+                    logger.debug("设备存活检查: %s:%d = True", host, port)
+                    return True
     except Exception:
         pass
+    logger.debug("设备存活检查: %s:%d = False", host, port)
     return False
 
 
@@ -188,159 +59,54 @@ class XwebdAPI:
     - 文件管理（列表、清理）
     - 助手管理（部署、更新、卸载、状态查询）
     - 日志查询
-
-    支持 Mock 模式：当 MOCK_MODE 为 True 时，所有请求返回模拟数据。
     """
 
-    def __init__(self, host="192.168.1.96", port=8080):
+    def __init__(self, host=DEFAULT_DEVICE_HOST, port=DEFAULT_XWEBD_PORT):
         """初始化 XwebdAPI 客户端
 
         Args:
-            host: xwebd 服务地址，默认 "192.168.1.96"
-            port: xwebd 服务端口，默认 8080
+            host: xwebd 服务地址（默认从 XIAOZHI_DEVICE_HOST 环境变量读取）
+            port: xwebd 服务端口（默认 8080）
         """
         self.host = host
         self.port = port
         self.base_url = f"http://{host}:{port}"
         self.connected = False
 
-    def _request(self, method, path, data=None):
+    def _request(self, method, path, data=None, body=None, headers=None, timeout=5):
         """发送 HTTP 请求到 xwebd 服务
-
-        Mock 模式下调用 _mock_handler 返回模拟数据，
-        LIVE 模式下通过 urllib 发送真实 HTTP 请求。
 
         Args:
             method: HTTP 方法（GET/POST/PUT/DELETE）
             path: API 路径（如 /api/system）
             data: 请求体数据（dict），为 None 时不发送请求体
+            body: 原始请求体（bytes），优先级高于 data
+            headers: 自定义请求头（dict）
+            timeout: 请求超时时间（秒），默认 5 秒
 
         Returns:
             dict: API 响应数据，请求失败时返回 {"error": "..."}
         """
-        if MOCK_MODE:
-            return self._mock_handler(method, path, data)
         url = f"{self.base_url}{path}"
-        body = json.dumps(data).encode("utf-8") if data is not None else None
-        headers = {"Content-Type": "application/json"}
-        req = Request(url, data=body, method=method, headers=headers)
+        if body is not None:
+            req_body = body
+            req_headers = headers or {"Content-Type": "application/octet-stream"}
+        elif data is not None:
+            req_body = json.dumps(data).encode("utf-8")
+            req_headers = headers or {"Content-Type": "application/json"}
+        else:
+            req_body = None
+            req_headers = headers or {}
+        req = Request(url, data=req_body, method=method, headers=req_headers)
+        logger.debug("-> %s %s", method, path)
         try:
-            with urlopen(req, timeout=5) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+            with urlopen(req, timeout=timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                logger.debug("<- %s %s: ok", method, path)
+                return result
         except Exception as e:
+            logger.warning("<- %s %s: %s", method, path, e)
             return {"error": str(e)}
-
-    def _mock_handler(self, method, path, data):
-        """Mock 请求处理器（线程安全入口）
-
-        获取锁后调用 _mock_handler_locked，确保 Mock 状态的线程安全。
-
-        Args:
-            method: HTTP 方法
-            path: API 路径
-            data: 请求体数据
-
-        Returns:
-            dict: 模拟的 API 响应数据
-        """
-        with _mock_lock:
-            return self._mock_handler_locked(method, path, data)
-
-    def _mock_handler_locked(self, method, path, data):
-        """Mock 请求处理器（实际逻辑，需在锁内调用）
-
-        根据 HTTP 方法和路径返回对应的模拟数据，
-        并对写入操作更新 Mock 状态。
-
-        Args:
-            method: HTTP 方法
-            path: API 路径
-            data: 请求体数据
-
-        Returns:
-            dict: 模拟的 API 响应数据
-        """
-        if method == "GET" and path == "/api/system":
-            return {"cpu": 12.5, "mem_free_kb": _mock_xwebd_state["mem_free_kb"],
-                    "muted": _mock_xwebd_state["muted"], "uptime_s": _mock_xwebd_state["uptime_s"]}
-        elif method == "GET" and path == "/api/status":
-            return dict(_mock_xwebd_state)
-        elif method == "GET" and path == "/api/volume":
-            return {"volume": _mock_xwebd_state["volume"]}
-        elif method == "GET" and path == "/api/brightness":
-            return {"brightness": _mock_xwebd_state["brightness"]}
-        elif method == "GET" and path == "/api/mute":
-            return {"muted": _mock_xwebd_state["muted"]}
-        elif method == "GET" and path.startswith("/api/logs"):
-            parsed = urlparse(path)
-            qs = parse_qs(parsed.query)
-            lines = int(qs.get("lines", [100])[0])
-            lines = max(1, min(lines, 100))
-            return {"logs": _mock_sair_logs[:lines]}
-        elif method == "GET" and path == "/api/config":
-            return {"upload_max_mb": _mock_xwebd_state["upload_max_mb"]}
-        elif method == "PUT" and path == "/api/config":
-            if data and "upload_max_mb" in data:
-                v, err = _validate_int_range(data["upload_max_mb"], "upload_max_mb", 1, 100)
-                if err:
-                    return {"error": err}
-                _mock_xwebd_state["upload_max_mb"] = v
-            return {"ok": True}
-        elif method == "POST" and path == "/api/volume":
-            if data and "volume" in data:
-                v, err = _validate_int_range(data["volume"], "volume", 0, 80)
-                if err:
-                    return {"error": err}
-                _mock_xwebd_state["volume"] = v
-            return {"ok": True}
-        elif method == "POST" and path == "/api/brightness":
-            if data and "brightness" in data:
-                v, err = _validate_int_range(data["brightness"], "brightness", 0, 900)
-                if err:
-                    return {"error": err}
-                _mock_xwebd_state["brightness"] = v
-            return {"ok": True}
-        elif method == "POST" and path == "/api/mute":
-            if data and "muted" in data:
-                _mock_xwebd_state["muted"] = bool(data["muted"])
-            return {"ok": True}
-        elif method == "POST" and path == "/api/reboot":
-            # 模拟重启：重置运行时间
-            _mock_xwebd_state["uptime_s"] = 0
-            return {"ok": True}
-        elif method == "GET" and path.startswith("/api/files"):
-            return {"path": "/var/upgrade", "files": list(_mock_files)}
-        elif method == "POST" and path == "/api/files/cleanup":
-            # 模拟清理：清空日志文件、删除临时文件和 .api_token
-            freed_bytes = 0
-            removed_files = 0
-            for f in _mock_files[:]:
-                if f["name"] in ("xwebd.log",):
-                    freed_bytes += f["size"]
-                    removed_files += 1
-                    f["size"] = 0
-                elif f["name"] in (".api_token",) or f["name"].endswith(".tmp"):
-                    freed_bytes += f["size"]
-                    removed_files += 1
-                    _mock_files.remove(f)
-            return {"freed_bytes": freed_bytes, "removed_files": removed_files}
-        elif method == "POST" and path == "/api/assistant/deploy":
-            return {"ok": True, "message": "assistant deployed"}
-        elif method == "POST" and path == "/api/assistant/update":
-            return {"ok": True, "message": "assistant updated"}
-        elif method == "POST" and path == "/api/assistant/uninstall":
-            # 模拟卸载：将助手状态改为 Starting
-            _mock_sair_state["state"] = "Starting"
-            return {"ok": True, "message": "assistant uninstalled"}
-        elif method == "GET" and path == "/api/assistant/status":
-            return {"installed": True, "version": _mock_sair_state["version"], "running": True}
-        elif method == "POST" and path == "/api/poweroff":
-            return {"ok": True}
-        elif method == "GET" and path == "/api/services":
-            return {"telnet": {"running": False}, "boot_watchdog": {"deployed": True}, "xwebd_autostart": {"enabled": True}}
-        elif method == "GET" and path == "/api/version":
-            return {"version": "1.0.0"}
-        return {"error": f"Unknown endpoint: {method} {path}"}
 
     def get_status(self):
         """获取 xwebd 系统状态（CPU、内存、静音、运行时间）
@@ -389,6 +155,7 @@ class XwebdAPI:
         Returns:
             dict: {"ok": True} 成功，{"error": "..."} 失败
         """
+        logger.info("设置音量: %d", volume)
         return self._request("POST", "/api/volume", {"volume": volume})
 
     def set_brightness(self, brightness):
@@ -400,18 +167,12 @@ class XwebdAPI:
         Returns:
             dict: {"ok": True} 成功，{"error": "..."} 失败
         """
+        logger.info("设置亮度: %d", brightness)
         return self._request("POST", "/api/brightness", {"brightness": brightness})
 
     def set_mute(self, muted):
-        """设置设备静音状态
-
-        Args:
-            muted: True 静音，False 取消静音
-
-        Returns:
-            dict: {"ok": True} 成功，{"error": "..."} 失败
-        """
-        return self._request("POST", "/api/mute", {"muted": muted})
+        logger.info("设置静音: %s", muted)
+        return self._request("POST", "/api/mute", {"muted": 1 if muted else 0})
 
     def reboot(self):
         """重启设备
@@ -419,6 +180,7 @@ class XwebdAPI:
         Returns:
             dict: {"ok": True} 成功，{"error": "..."} 失败
         """
+        logger.warning("重启设备")
         return self._request("POST", "/api/reboot", {})
 
     def list_files(self, path="/var/upgrade"):
@@ -441,28 +203,12 @@ class XwebdAPI:
         return self._request("POST", "/api/files/cleanup", {})
 
     def deploy_assistant(self, path="/var/upgrade/sair_new"):
-        """部署助手到设备
-
-        Args:
-            path: sair 新版本文件路径，默认 "/var/upgrade/sair_new"
-                  （sair 是 Assistant 的二进制文件名，平台约束不可改名）
-
-        Returns:
-            dict: {"ok": True, "message": "..."} 成功，{"error": "..."} 失败
-        """
-        return self._request("POST", "/api/assistant/deploy", {"path": path})
+        logger.info("部署助手: path=%s", path)
+        return self._request("POST", "/api/assistant/deploy", {"path": path}, timeout=15)
 
     def update_assistant(self, path="/var/upgrade/sair_new"):
-        """更新设备上的助手
-
-        Args:
-            path: sair 新版本文件路径，默认 "/var/upgrade/sair_new"
-                  （sair 是 Assistant 的二进制文件名，平台约束不可改名）
-
-        Returns:
-            dict: {"ok": True, "message": "..."} 成功，{"error": "..."} 失败
-        """
-        return self._request("POST", "/api/assistant/update", {"path": path})
+        logger.info("更新助手: path=%s", path)
+        return self._request("POST", "/api/assistant/update", {"path": path}, timeout=15)
 
     def uninstall_assistant(self):
         """卸载设备上的助手
@@ -470,6 +216,7 @@ class XwebdAPI:
         Returns:
             dict: {"ok": True, "message": "..."} 成功，{"error": "..."} 失败
         """
+        logger.info("卸载助手")
         return self._request("POST", "/api/assistant/uninstall", {})
 
     def assistant_status(self):
@@ -479,6 +226,32 @@ class XwebdAPI:
             dict: {"installed": True/False, "version": "...", "running": True/False}
         """
         return self._request("GET", "/api/assistant/status")
+
+    def wakeup_assistant(self):
+        logger.info("唤醒助手")
+        return self._request("POST", "/api/assistant/wakeup")
+
+    def abort_assistant(self):
+        logger.info("中止对话")
+        return self._request("POST", "/api/assistant/abort")
+
+    def activate_assistant(self):
+        logger.info("激活助手")
+        return self._request("POST", "/api/assistant/activate")
+
+    def upgrade_assistant(self):
+        logger.info("升级助手")
+        return self._request("POST", "/api/assistant/upgrade")
+
+    def get_assistant_status(self):
+        return self._request("GET", "/api/assistant/status")
+
+    def get_assistant_config(self):
+        return self._request("GET", "/api/assistant/config")
+
+    def set_assistant_config(self, config):
+        logger.info("更新助手配置: %s", list(config.keys()))
+        return self._request("PUT", "/api/assistant/config", config)
 
     def poweroff(self):
         return self._request("POST", "/api/poweroff")
@@ -492,22 +265,20 @@ class XwebdAPI:
     def check_connection(self):
         """检查与 xwebd 服务的连接状态
 
-        Mock 模式下直接返回 True。
-        LIVE 模式下请求 /api/system，检查返回数据中是否包含 "cpu" 字段。
+        请求 /api/system，检查返回数据中是否包含 "cpu" 字段。
 
         Returns:
             bool: True 连接成功，False 连接失败
         """
-        if MOCK_MODE:
-            self.connected = True
-            return True
         try:
             result = self._request("GET", "/api/system")
             self.connected = "cpu" in result
+            if self.connected:
+                logger.info("xwebd连接成功: %s:%d", self.host, self.port)
+            else:
+                logger.warning("xwebd连接失败: %s:%d", self.host, self.port)
             return self.connected
         except Exception:
             self.connected = False
+            logger.warning("xwebd连接失败: %s:%d", self.host, self.port)
             return False
-
-
-from assistant_api import SairAPI

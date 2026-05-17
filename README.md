@@ -16,7 +16,7 @@
 
 - 🎙️ **语音唤醒与对话** — 支持唤醒词检测、ASR 语音识别、WebSocket 实时对话
 - 🌐 **Web 控制面板** — 通过浏览器管理设备，支持 WiFi 和 USB 两种连接方式
-- 🔄 **热更新** — 无需重启设备即可更新语音助手，秒级完成
+- 🔄 **热更新** — 无需重启设备即可更新语音助手，秒级完成（通过版本号变化检测更新成功）
 - 🛡️ **安全回退** — 内置开机看门狗，连续启动失败自动回退到原版固件
 - 📊 **实时监控** — 设备状态、日志、配置一览无余
 - ⚙️ **运行时配置** — WebSocket 地址、超时参数、日志级别等均可在线调整
@@ -145,8 +145,9 @@ xiaozhi-zhiban/
 │   ├── control_panel.py              # 控制面板启动入口
 │   ├── server.py                     # HTTP 后端服务
 │   ├── device_api.py                 # xwebd API 客户端
-│   ├── assistant_api.py              # assistant API 客户端
 │   ├── adb_manager.py                # ADB 设备管理
+│   ├── config.py                     # 配置（环境变量读取）
+│   ├── log_config.py                 # 日志配置
 │   └── static/
 │       ├── index.html                # 前端页面
 │       ├── app.js                    # 前端逻辑
