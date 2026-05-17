@@ -1,5 +1,12 @@
 __pycache__/
 *.pyc
 *.pyo
+*.log
+.env
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
 .DS_Store
 Thumbs.db
