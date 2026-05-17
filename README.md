@@ -283,6 +283,8 @@ SIGUSR2 → 信号处理器中:
 
 **为什么不用 kill + restart**：kill 后 PID 变化 → Manager 检测 WIFSIGNALED → reboot；SCHED_RR 调度丢失；kill 到新进程启动有间隙 → 看门狗超时。
 
+> ⚠️ **版本号必须更新**：热更新后 PID 不变（execvp 特性），Panel 通过版本号变化判断更新是否成功。每次发布新版本前，**务必修改** `device/assistant/include/xiaozhi_config.h` 中的 `XIAOZHI_VERSION` 宏，否则 Panel 无法检测到热更新成功。
+
 ---
 
 ## 📂 项目结构
@@ -358,7 +360,6 @@ xiaozhi-zhiban-develop/
 │   ├── control_panel.py             # 启动入口
 │   ├── server.py                    # HTTP 后端服务
 │   ├── device_api.py                # xwebd API 客户端
-│   ├── assistant_api.py             # assistant API 客户端
 │   ├── adb_manager.py               # ADB 设备管理
 │   ├── config.py                    # 配置（环境变量读取）
 │   ├── log_config.py                # 日志配置
@@ -366,6 +367,22 @@ xiaozhi-zhiban-develop/
 │       ├── index.html               # 前端页面
 │       ├── app.js                   # 前端逻辑
 │       └── style.css                # 前端样式
+├── scripts/                          # 开发调试脚本
+│   ├── config_loader.py             # 项目参数加载模块
+│   ├── transfer/                    # 文件传输工具
+│   │   ├── hot_update.py            # 热更新（编译+上传+SIGUSR2）
+│   │   ├── upload_nc_win.py         # NC方式上传文件
+│   │   └── download_nc_win.py       # NC方式下载文件
+│   ├── debug/                       # 调试工具
+│   │   ├── force_reboot.py          # 强制重启设备
+│   │   └── high_freq_monitor.py     # 高频监控设备状态
+│   └── device_check/                # 设备检查工具
+│       ├── emergency_fix.py         # 紧急修复循环重启
+│       ├── diagnose_device.py       # 设备全面诊断
+│       ├── diagnose_network.py      # 网络全面诊断
+│       ├── restart_sair.py          # 重启sair服务
+│       └── check_status_quick.py    # 快速状态检查
+├── project_config.json              # 项目参数配置（设备IP/端口等）
 ├── toolchain/                        # 交叉编译工具链（需自行下载）
 ├── LICENSE
 └── README.md
