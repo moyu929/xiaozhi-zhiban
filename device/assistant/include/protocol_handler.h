@@ -48,7 +48,6 @@ typedef struct {
     int sample_rate;
     int channels;
     int frame_duration;
-    uint64_t ping_interval_ms;
 } protocol_config_t;
 
 typedef struct {

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>小智 · 智伴</title>
-<link rel="stylesheet" href="/style.css?v=12">
+<link rel="stylesheet" href="/style.css?v=13">
 </head>
 <body>
 <canvas id="particles"></canvas>
@@ -93,6 +93,7 @@
                 <div id="adbSairProgress" class="deploy-progress" style="display:none;margin-top:8px"><span id="adbSairProgressLabel" class="progress-label-inline">准备中...</span><span class="progress-bar-inline"><span id="adbSairBar" class="progress-fill-inline" style="width:0%"></span></span></div>
               </div>
             </div>
+            <div class="section-overlay" id="adbAssistantOverlay" style="display:none"><div class="spinner"></div></div>
           </section>
         </div>
 
@@ -108,6 +109,7 @@
               <span class="hint-icon">💡</span>
               <span>部署面板内核后，可切换至<strong>无线模式</strong>获得完整控制功能</span>
             </div>
+            <div class="section-overlay" id="adbControlOverlay" style="display:none"><div class="spinner"></div></div>
           </section>
 
           <section class="card">
@@ -223,6 +225,7 @@
                 <span id="svcTelnet" class="svc-status svc-unknown">未知</span>
               </div>
             </div>
+            <div class="section-overlay" id="serviceOverlay" style="display:none"><div class="spinner"></div></div>
           </section>
         </div>
 
@@ -478,6 +481,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=14"></script>
+<script src="/app.js?v=15"></script>
 </body>
 </html>

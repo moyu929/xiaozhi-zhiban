@@ -281,6 +281,27 @@ function resolveConfirm(result) {
 // ==================== Mode Switching ====================
 
 function toggleMode() {
+    if (S.mode === 'wired') {
+        if (S.wl.connected) {
+            stopPolling();
+            S.wl.connected = false;
+            S.wl.xwebd = false;
+            S.wl.sair = false;
+            updateConnUI(false);
+            updateConnStatus('xwebdConnStatus', false);
+            updateConnStatus('assistantConnStatus', false);
+            $('btnConnect').textContent = '连接';
+            $('btnConnect').className = 'btn btn-primary';
+            $('btnConnect').disabled = false;
+        }
+        resetWirelessUI();
+    } else {
+        if (S.adb.connected) {
+            adbDisconnect();
+        } else {
+            resetWiredUI();
+        }
+    }
     S.mode = S.mode === 'wired' ? 'wireless' : 'wired';
     applyMode();
 }
@@ -471,6 +492,7 @@ async function selectAdbDevice(serial) {
         $('btnConnect').textContent = '连接';
         $('btnConnect').className = 'btn btn-primary';
         $('btnConnect').disabled = false;
+        resetWirelessUI();
     }
     S.adb.serial = serial;
     S.adb.connected = true;
@@ -686,6 +708,7 @@ async function adbPoweroff() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ serial: S.adb.serial }),
     });
+    adbDisconnect();
 }
 
 async function adbFactoryReset() {
@@ -709,6 +732,8 @@ async function adbFactoryReset() {
         $('btnConnect').disabled = false;
         resetWirelessUI();
         toast('恢复出厂设置完成，设备将重启', 'success');
+        showWiredRebootOverlays();
+        waitForReconnect(_adbReconnectOpts());
     } else {
         toast('恢复出厂设置失败: ' + (r.error || '未知错误'), 'error');
     }
@@ -769,13 +794,7 @@ async function connectDevice() {
         if (S.timers.adbInfo) { clearInterval(S.timers.adbInfo); S.timers.adbInfo = null; }
         S.adb.serial = null;
         S.adb.connected = false;
-        $('btnAdbDisconnect').style.display = 'none';
-        $('adbDeviceInfo').style.display = 'none';
-        $('adbXwebdStatus').textContent = '未检测';
-        $('adbXwebdStatus').className = 'svc-status svc-unknown';
-        $('adbSairStatus').textContent = '未检测';
-        $('adbSairStatus').className = 'svc-status svc-unknown';
-        $('adbDeviceList').innerHTML = '<div class="empty-state">点击「扫描设备」检测通过USB连接的设备</div>';
+        resetWiredUI();
     }
 
     var r = await api('/api/connect', {
@@ -860,6 +879,29 @@ function resetWirelessUI() {
     $('btnXwebdUpdate').style.display = '';
     $('btnDeploy').disabled = false;
     $('footerInfo').textContent = '--';
+}
+
+function resetWiredUI() {
+    $('adbDeviceList').innerHTML = '<div class="empty-state">点击「扫描设备」检测通过USB连接的设备</div>';
+    $('adbDeviceInfo').style.display = 'none';
+    $('adbModel').textContent = '--';
+    $('adbKernel').textContent = '--';
+    $('adbCpu').textContent = '--';
+    $('adbIp').textContent = '--';
+    $('adbWifi').textContent = '--';
+    $('adbUptime').textContent = '--';
+    $('adbMem').textContent = '--';
+    $('adbDisk').textContent = '--';
+    $('adbXwebdStatus').textContent = '未检测';
+    $('adbXwebdStatus').className = 'svc-status svc-unknown';
+    $('adbSairStatus').textContent = '未检测';
+    $('adbSairStatus').className = 'svc-status svc-unknown';
+    $('btnAdbDeployXwebd').style.display = '';
+    $('btnAdbStartXwebd').style.display = 'none';
+    $('btnAdbRestartXwebd').style.display = 'none';
+    $('btnAdbRemoveXwebd').style.display = 'none';
+    $('wiredDiagContainer').innerHTML = '<div class="empty-state">部署前点击「运行自检」检测设备是否满足 xwebd 运行环境</div>';
+    $('logPanelWired').innerHTML = '<div class="empty-state">暂无日志</div>';
 }
 
 function updateConnUI(online) {
@@ -1108,6 +1150,18 @@ async function doPoweroff() {
     if (!await showConfirm('确定要关机吗？设备将完全断电', {danger: true})) return;
     toast('正在关机...', 'info');
     await api('/api/poweroff', { method: 'POST' });
+    stopPolling();
+    S.wl.connected = false;
+    S.wl.xwebd = false;
+    S.wl.sair = false;
+    updateConnUI(false);
+    updateConnStatus('xwebdConnStatus', false);
+    updateConnStatus('assistantConnStatus', false);
+    $('btnConnect').textContent = '连接';
+    $('btnConnect').className = 'btn btn-primary';
+    $('btnConnect').disabled = false;
+    resetWirelessUI();
+    toast('设备已关机', 'info');
 }
 
 async function doCleanup() {
@@ -1296,20 +1350,8 @@ async function doDeploy() {
         if (r.rebooting) {
             label.textContent = '部署成功！设备重启中...';
             toast('语音助手部署成功，设备重启中...', 'success');
-            stopPolling();
-            S.wl.connected = false;
-            S.wl.xwebd = false;
-            S.wl.sair = false;
-            updateConnUI(false);
-            updateConnStatus('xwebdConnStatus', false);
-            updateConnStatus('assistantConnStatus', false);
-            $('btnConnect').textContent = '连接';
-            $('btnConnect').className = 'btn btn-primary';
-            $('btnConnect').disabled = false;
-            resetWirelessUI();
-            setTimeout(function() {
-                toast('设备重启中，约30秒后可重新连接', 'info');
-            }, 2000);
+            setTimeout(function() { progress.style.display = 'none'; }, 1500);
+            wirelessWaitForReconnect();
         } else {
             label.textContent = '部署成功！';
             toast('语音助手部署成功', 'success');
@@ -1410,6 +1452,29 @@ async function doXwebdRemove() {
 
 // ==================== Reconnect ====================
 
+function showWiredRebootOverlays() {
+    showOverlay('adbDeviceOverlay');
+    showOverlay('adbAssistantOverlay');
+    showOverlay('adbControlOverlay');
+}
+function hideWiredRebootOverlays() {
+    hideOverlay('adbDeviceOverlay');
+    hideOverlay('adbAssistantOverlay');
+    hideOverlay('adbControlOverlay');
+}
+function showWirelessRebootOverlays() {
+    showOverlay('deviceOverlay');
+    showOverlay('xwebdOverlay');
+    showOverlay('serviceOverlay');
+    showOverlay('assistantOverlay');
+}
+function hideWirelessRebootOverlays() {
+    hideOverlay('deviceOverlay');
+    hideOverlay('xwebdOverlay');
+    hideOverlay('serviceOverlay');
+    hideOverlay('assistantOverlay');
+}
+
 function waitForReconnect(opts) {
     S.rebootStart = Date.now();
     if (S.timers.reboot) clearInterval(S.timers.reboot);
@@ -1443,12 +1508,12 @@ function _adbReconnectOpts() {
             return false;
         },
         onReconnect: async function() {
-            $('adbDeviceOverlay').style.display = 'none';
+            hideWiredRebootOverlays();
             toast('设备已重新连接', 'success');
             await selectAdbDevice(S.adb.serial);
         },
         onTimeout: function() {
-            $('adbDeviceOverlay').style.display = 'none';
+            hideWiredRebootOverlays();
             toast('重连超时，请手动扫描', 'error');
         }
     };
@@ -1456,13 +1521,13 @@ function _adbReconnectOpts() {
 
 function adbWaitForReconnect() {
     toast('设备重启中，等待重新连接...', 'info');
-    $('adbDeviceOverlay').style.display = 'flex';
+    showWiredRebootOverlays();
     waitForReconnect(_adbReconnectOpts());
 }
 
 async function adbRebootAndReconnect() {
     if (!await showConfirm('确定重启设备？', {danger: true})) return;
-    $('adbDeviceOverlay').style.display = 'flex';
+    showWiredRebootOverlays();
     await api('/api/adb/reboot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1473,10 +1538,12 @@ async function adbRebootAndReconnect() {
 
 async function wirelessRebootAndReconnect() {
     if (!await showConfirm('确定重启设备？', {danger: true})) return;
-    showOverlay('deviceOverlay');
-    showOverlay('assistantOverlay');
-    showOverlay('xwebdOverlay');
+    showWirelessRebootOverlays();
     await api('/api/reboot', { method: 'POST' });
+    wirelessWaitForReconnect();
+}
+
+function wirelessWaitForReconnect() {
     S.wl.connected = false;
     S.wl.xwebd = false;
     S.wl.sair = false;
@@ -1488,43 +1555,40 @@ async function wirelessRebootAndReconnect() {
     $('btnConnect').className = 'btn btn-primary';
     $('btnConnect').disabled = true;
     toast('设备重启中，等待重新连接...', 'info');
-    await new Promise(function(r) { setTimeout(r, 15000); });
-    waitForReconnect({
-        timeout: 90000,
-        interval: 3000,
-        onCheck: async function() {
-            try {
-                var r = await api('/api/connect', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ host: S.wl.host }),
-                });
-                return r.ok && r.xwebd_connected;
-            } catch(e) { return false; }
-        },
-        onReconnect: function() {
-            S.wl.connected = true;
-            S.wl.xwebd = true;
-            updateConnUI(true);
-            $('btnConnect').textContent = '断开';
-            $('btnConnect').className = 'btn btn-danger';
-            $('btnConnect').disabled = false;
-            startPolling();
-            refreshAll();
-            updateConnStatus('xwebdConnStatus', true);
-            hideOverlay('deviceOverlay');
-            hideOverlay('assistantOverlay');
-            hideOverlay('xwebdOverlay');
-            toast('设备已重新连接', 'success');
-        },
-        onTimeout: function() {
-            hideOverlay('deviceOverlay');
-            hideOverlay('assistantOverlay');
-            hideOverlay('xwebdOverlay');
-            $('btnConnect').disabled = false;
-            toast('重连超时，请手动连接', 'error');
-        }
-    });
+    setTimeout(function() {
+        waitForReconnect({
+            timeout: 90000,
+            interval: 3000,
+            onCheck: async function() {
+                try {
+                    var r = await api('/api/connect', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ host: S.wl.host }),
+                    });
+                    return r.ok && r.xwebd_connected;
+                } catch(e) { return false; }
+            },
+            onReconnect: function() {
+                S.wl.connected = true;
+                S.wl.xwebd = true;
+                updateConnUI(true);
+                $('btnConnect').textContent = '断开';
+                $('btnConnect').className = 'btn btn-danger';
+                $('btnConnect').disabled = false;
+                startPolling();
+                refreshAll();
+                updateConnStatus('xwebdConnStatus', true);
+                hideWirelessRebootOverlays();
+                toast('设备已重新连接', 'success');
+            },
+            onTimeout: function() {
+                hideWirelessRebootOverlays();
+                $('btnConnect').disabled = false;
+                toast('重连超时，请手动连接', 'error');
+            }
+        });
+    }, 15000);
 }
 
 // ==================== Logs ====================

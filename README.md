@@ -4,6 +4,8 @@
   <strong>GS705B 早教机器人的开源替代固件 — 开发者版本，包含完整源码</strong>
 </p>
 
+> **致敬** — 本项目参考并参照复刻了 [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 开源项目（[开发文档](https://my.feishu.cn/wiki/F5krwD16viZoF0kKkvDcrZNYnhb) | [作者 B站](https://space.bilibili.com/59357679)），在此向原作者及社区致敬。
+
 ---
 
 ## 📖 项目简介
@@ -250,6 +252,8 @@ python control_panel.py
 Panel 支持两种连接方式：
 - **USB 连接（有线模式）** — 通过 ADB 端口转发，适合首次部署
 - **WiFi 连接（无线模式）** — 通过 xwebd HTTP API，功能更完整
+
+> ⚠️ **部署顺序**：新设备**必须先通过有线模式安装面板内核（xwebd）**，才能使用无线模式连接。推荐安装顺序：**先安装 xwebd → 再安装语音助手（sair）**。卸载时反向操作：**先卸载 sair → 再卸载 xwebd**，或直接使用有线模式下的「恢复出厂设置」功能一键清除。
 
 ### 热更新（无需重启设备）
 

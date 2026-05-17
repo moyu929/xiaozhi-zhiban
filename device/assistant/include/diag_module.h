@@ -1,7 +1,7 @@
 #ifndef DIAG_MODULE_H
 #define DIAG_MODULE_H
 
-#define DIAG_MAX_ITEMS 8
+#define DIAG_MAX_ITEMS 24
 
 typedef struct {
     const char *name;
