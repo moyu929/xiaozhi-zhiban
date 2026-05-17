@@ -1,7 +1,7 @@
 # 小智·智伴 (xiaozhi-zhiban) — Develop
 
 <p align="center">
-  <strong>GS705B 早教机器人的开源替代固件 — 开发者版本，包含完整源码</strong>
+  <strong>智伴教育机器人1X（GS705B）的开源语音助手替代方案 — 开发者版本，包含完整源码</strong>
 </p>
 
 > **致敬** — 本项目参考并参照复刻了 [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 开源项目（[开发文档](https://my.feishu.cn/wiki/F5krwD16viZoF0kKkvDcrZNYnhb) | [作者 B站](https://space.bilibili.com/59357679)），在此向原作者及社区致敬。
@@ -10,13 +10,13 @@
 
 ## 📖 项目简介
 
-小智·智伴是一个为 GS705B 早教机器人开发的开源语音助手替代方案。本项目是 **开发版 (develop)** 分支，包含完整的 C 源代码、编译脚本和开发文档，供开发者二次开发。
+小智·智伴是一个为**智伴教育机器人1X**（内部型号 GS705B）开发的开源语音助手替代方案。本项目是 **开发版 (develop)** 分支，包含完整的 C 源代码、编译脚本和开发文档，供开发者二次开发。
 
 如果你只想使用预编译版本部署到设备，请使用 [main 分支](https://github.com/moyu929/xiaozhi-zhiban/tree/main)（[Gitee 镜像](https://gitee.com/beichen929/xiaozhi-zhiban/tree/main)）。
 
 ### ✨ 核心特性
 
-- 🎙️ **语音唤醒与对话** — 支持唤醒词检测、ASR 语音识别、WebSocket 实时对话
+- 🎙️ **语音唤醒与对话** — 唤醒词检测、ASR 语音识别、WebSocket 实时对话，可连接豆包、DeepSeek 等 LLM 模型进行智能对话与意图识别
 - 🌐 **Web 控制面板** — 通过浏览器管理设备，支持 WiFi 和 USB 两种连接方式
 - 🔄 **热更新** — SIGUSR2 + execvp 机制，无需重启设备即可更新助手，PID 不变
 - 🛡️ **安全回退** — 内置开机看门狗，连续启动失败自动回退到原版固件
@@ -25,6 +25,11 @@
 - 🔌 **文件 IPC** — assistant 与 xwebd 通过文件系统通信，避免 TCP 开销
 - 🔗 **MCP 接入点** — 支持配置 xiaozhi.me 智能体专属 MCP 端点，实现工具调用能力扩展
 - 🧪 **自检诊断** — 分层自检架构，部署前验证环境兼容性
+
+### ⚠️ 已知限制
+
+- **唤醒词不可自定义** — 本项目使用设备原生唤醒词模型（libduilite_fespl.so），暂不支持更改唤醒词
+- **无实时对话模式** — 设备原生 AEC（回声消除）模型为闭源，无法在自定义程序中调用，因此仅支持 AutoStop 模式（详见下方说明）
 
 ---
 
@@ -96,7 +101,7 @@ Starting → Activating → Idle → Connecting → Listening → Speaking
 
 ## 📱 支持设备
 
-### GS705B 早教机器人
+### 智伴教育机器人1X（内部型号 GS705B）
 
 | 项目 | 规格 |
 |------|------|
@@ -578,10 +583,12 @@ adb shell "rm -f /var/upgrade/sair; reboot"
 
 | 注意事项 | 详情 |
 |----------|------|
+| 唤醒词不可自定义 | 使用设备原生唤醒词模型（libduilite_fespl.so），暂不支持更改 |
 | asr_engine_set_params 注册回调 | 不是 `asr_config_t.callback`！调用 `asr_engine_set_params(0, 4, callback)` |
 | ASR 回调签名只有 2 个参数 | `void callback(int event_type, int result)` |
 | ASR 事件类型 | 0=init_done, 2=wakeup, 3=diff_word, 4=vad_change, 5=vad_end, 6=vad_timeout |
 | VAD/AEC/FFVP 库是纯存根 | `libsair_vad.so`/`libsair_aec.so`/`libsair_ffvp.so` 仅 2 条 ARM 指令，实际功能在 `libduilite_fespl.so` 内部 |
+| AEC 模型存在但闭源 | 设备有 AEC 模型文件（`AEC_ch3-2-ch2_1ref_common_*.bin`），但封装在闭源引擎内，无法直接调用 |
 | dump_open/dump_close/dump_write | `libsair_asr.so` 通过 PLT 引用，需在主程序提供 stub 实现 |
 
 ### 看门狗
@@ -613,7 +620,9 @@ adb shell "rm -f /var/upgrade/sair; reboot"
 
 ## 🌐 云端服务
 
-assistant 需要连接云端 API 完成设备激活和 WebSocket 通信。已认证的设备可直接使用，未认证设备需先完成激活流程。
+assistant 通过 WebSocket 连接云端 API 完成设备激活和语音对话。已认证的设备可直接使用，未认证设备需先完成激活流程。
+
+**支持的 LLM 模型**：通过 xiaozhi.me 控制台配置智能体，可连接豆包、DeepSeek 等大语言模型进行智能对话与意图识别。不同模型提供不同的对话风格和能力，可在控制台中随时切换。
 
 默认云端地址定义在 `device/assistant/include/xiaozhi_config.h`：
 - `DEFAULT_OTA_URL` — OTA 激活接口
@@ -631,12 +640,12 @@ assistant 需要连接云端 API 完成设备激活和 WebSocket 通信。已认
 
 ### GS705B 设备的 AEC 困境
 
-1. **无硬件 AEC**：ACTIONS OWL SoC 不像 ESP32 那样提供硬件 AEC 加速器
-2. **无软件 AEC**：设备固件的闭源音频服务未暴露 AEC 接口
+1. **设备原生有 AEC**：设备固件中包含 AEC 回声消除模型（`AEC_ch3-2-ch2_1ref_common_20181226_v0.9.4.bin`），原版 sair 通过闭源的 `libduilite_fespl.so` 内部调用
+2. **闭源无法调用**：AEC 功能封装在闭源引擎内部，无公开 API，无法在自定义程序中直接使用
 3. **云端 AEC 不可行**：参考信号时间同步精度不足，实测效果极差
-4. **soft-float ABI 限制**：浮点运算性能极差，无法实时处理
+4. **soft-float ABI 限制**：即使自行实现 AEC，浮点运算性能极差，无法实时处理
 
-对于 GS705B 这类无硬件 AEC 能力的嵌入式设备，AutoStop 模式是唯一可行的方案。
+对于 GS705B 这类设备，AutoStop 模式是当前唯一可行的方案。若未来能逆向还原 AEC 接口，则可支持实时对话模式。
 
 ---
 
