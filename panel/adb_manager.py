@@ -849,10 +849,10 @@ def hot_update_sair(serial=None, binary_path=None):
 def _find_sair_binary():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return _find_file([
+        os.path.join(base_dir, "..", "device", "assistant", "prebuilt", "sair"),
         os.path.join(base_dir, "..", "device", "assistant", "build", "sair"),
-        os.path.join(base_dir, "device", "build", "sair"),
-        os.path.join(base_dir, "..", "device", "assistant", "sair"),
-        os.path.join(base_dir, "device", "assistant", "sair"),
+        os.path.join(base_dir, "device", "assistant", "prebuilt", "sair"),
+        os.path.join(base_dir, "device", "assistant", "build", "sair"),
     ])
 
 
