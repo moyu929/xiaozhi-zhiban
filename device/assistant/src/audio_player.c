@@ -208,7 +208,14 @@ int audio_player_start(audio_player_t *player)
 
     pthread_mutex_lock(&player->mutex);
 
-    if (!player->track_open)
+    if (player->pending_close && player->track_handle)
+    {
+        audio_track_play(player->track_handle);
+        player->track_open = true;
+        player->pending_close = false;
+        PLOG_I("PLAYER", "延迟关闭轨道已恢复播放 (免重建)");
+    }
+    else if (!player->track_open)
     {
         if (do_open_track(player) != 0)
         {

@@ -669,6 +669,7 @@ static void on_proto_audio(audio_packet_t *packet, void *user_data)
     {
         PLOG_I("PROTO", "收到首包音频, 转换到 Speaking 状态");
         app->player.aborted = false;
+        audio_player_reset_decoder(&app->player);
         state_machine_transition(&app->sm, kStateSpeaking);
         audio_player_start(&app->player);
     }
@@ -679,7 +680,8 @@ static void on_proto_audio(audio_packet_t *packet, void *user_data)
         audio_player_start(&app->player);
     }
 
-    if (state == kStateSpeaking || state == kStateListening || state == kStateConnecting)
+    state = state_machine_get_state(&app->sm);
+    if (state == kStateSpeaking)
     {
         audio_player_write_opus(&app->player, packet->payload, packet->payload_size, packet->timestamp);
     }
@@ -764,6 +766,7 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
             else
             {
                 app->player.aborted = false;
+                audio_player_reset_decoder(&app->player);
                 if (cur != kStateSpeaking)
                 {
                     state_machine_transition(&app->sm, kStateSpeaking);
@@ -1368,7 +1371,6 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
     case kStateSpeaking:
         PLOG_I("STATE", "Speaking: 播放TTS语音");
         watchdog_set_timeout(&app->watchdog, WD_TIMEOUT_ACTIVE);
-        audio_player_reset_decoder(&app->player);
         if (app->wakeup.started && !wakeup_is_feed_active(&app->wakeup))
         {
             wakeup_resume_feed(&app->wakeup);
@@ -1401,7 +1403,6 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
         if (app->player_initialized)
         {
             audio_player_stop(&app->player);
-            audio_player_release_track(&app->player);
         }
         broadcast_sair_end();
         app->pending_cleaning_done = 1;
@@ -1564,7 +1565,6 @@ static void process_pending_wakeup(app_context_t *app)
         app->ignore_tts_audio = 1;
         app->player.aborted = true;
         audio_player_stop(&app->player);
-        audio_player_release_track(&app->player);
         if (protocol_handler_is_connected(&app->proto))
         {
             protocol_handler_send_abort(&app->proto, "wake_word_detected");
