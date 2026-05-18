@@ -208,7 +208,6 @@ int audio_player_start(audio_player_t *player)
 
     pthread_mutex_lock(&player->mutex);
 
-    /* 如果轨道未打开，先打开 */
     if (!player->track_open)
     {
         if (do_open_track(player) != 0)
@@ -216,6 +215,12 @@ int audio_player_start(audio_player_t *player)
             pthread_mutex_unlock(&player->mutex);
             return -1;
         }
+    }
+    else if (player->track_handle)
+    {
+        audio_track_flush(player->track_handle);
+        audio_track_play(player->track_handle);
+        PLOG_I("PLAYER", "轨道已刷新并重启播放 (防underrun)");
     }
 
     player->playing = true;

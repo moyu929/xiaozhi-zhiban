@@ -517,11 +517,9 @@ static void on_wakeup_event(int wakeup_type, void *user_data)
     app_context_t *app = (app_context_t *)user_data;
     uint64_t now = get_time_ms();
 
-    /* 启动保护期内忽略唤醒，避免误触发 */
-    if (app->wakeup_start_time_ms == 0 || now - app->wakeup_start_time_ms < WAKEUP_STARTUP_GUARD_MS)
+    if (!app->wakeup.started)
     {
-        PLOG_D("WAKEUP", "启动保护期, 忽略唤醒 (唤醒时长=%llums)",
-               (unsigned long long)(app->wakeup_start_time_ms ? now - app->wakeup_start_time_ms : 0));
+        PLOG_D("WAKEUP", "唤醒检测未启动, 忽略唤醒");
         return;
     }
 
@@ -667,14 +665,20 @@ static void on_proto_audio(audio_packet_t *packet, void *user_data)
 
     xiaozhi_state_t state = state_machine_get_state(&app->sm);
 
-    /* 首次收到音频，转换到Speaking状态 */
     if (state == kStateListening || state == kStateConnecting)
     {
         PLOG_I("PROTO", "收到首包音频, 转换到 Speaking 状态");
+        app->player.aborted = false;
+        audio_player_start(&app->player);
         state_machine_transition(&app->sm, kStateSpeaking);
     }
+    else if (state == kStateSpeaking && !app->player.playing)
+    {
+        PLOG_I("PROTO", "收到音频但播放器未启动, 重新启动");
+        app->player.aborted = false;
+        audio_player_start(&app->player);
+    }
 
-    /* 将Opus音频数据写入播放器 */
     if (state == kStateSpeaking || state == kStateListening || state == kStateConnecting)
     {
         audio_player_write_opus(&app->player, packet->payload, packet->payload_size, packet->timestamp);
@@ -699,8 +703,9 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
 
     if (strcmp(type_str, "hello") == 0)
     {
-        PLOG_I("PROTO", "收到服务端hello, session=%s sr=%d",
-               app->proto.session_id, app->proto.server_sample_rate);
+        PLOG_I("PROTO", "收到服务端hello, session=%s sr=%d (唤醒后+%llums)",
+               app->proto.session_id, app->proto.server_sample_rate,
+               (unsigned long long)(get_time_ms() - app->session_start_ms));
 
         if (app->player_initialized)
         {
@@ -759,15 +764,16 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
             else
             {
                 app->player.aborted = false;
+                audio_player_reset_decoder(&app->player);
+                audio_player_start(&app->player);
                 if (cur != kStateSpeaking)
                 {
                     state_machine_transition(&app->sm, kStateSpeaking);
                 }
-                else
+                if (app->wakeup.started && !wakeup_is_feed_active(&app->wakeup))
                 {
-                    audio_player_reset_decoder(&app->player);
+                    wakeup_resume_feed(&app->wakeup);
                 }
-                audio_player_start(&app->player);
             }
         }
         else if (strcmp(state_str, "stop") == 0)
@@ -778,8 +784,10 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
             }
             else
             {
-                PLOG_I("PROTO", "TTS 结束 (正常完成, 等待播放结束)");
-                audio_player_stop_with_wait(&app->player, true);
+                PLOG_I("PROTO", "TTS 结束 (正常完成)");
+                audio_player_stop(&app->player);
+                audio_player_release_track(&app->player);
+                app->listen_delayed = 0;
                 xiaozhi_state_t cur_state = state_machine_get_state(&app->sm);
                 if (cur_state != kStateCleaning)
                 {
@@ -1058,7 +1066,8 @@ static void *connect_thread_func(void *arg)
         pthread_sigmask(SIG_BLOCK, &block_set, NULL);
     }
 
-    PLOG_I("CONN", "连接线程启动");
+    PLOG_I("CONN", "连接线程启动 (唤醒后+%llums)",
+           (unsigned long long)(get_time_ms() - app->session_start_ms));
 
     /* 配置协议参数 */
     protocol_config_t proto_config;
@@ -1122,7 +1131,8 @@ static void *connect_thread_func(void *arg)
         return NULL;
     }
 
-    PLOG_I("CONN", "已连接到 %s, 等待主循环中接收hello", proto_config.url);
+    PLOG_I("CONN", "已连接到 %s, 等待主循环中接收hello (唤醒后+%llums)",
+           proto_config.url, (unsigned long long)(get_time_ms() - app->session_start_ms));
 
     app->connecting = 0;
     state_machine_transition(&app->sm, kStateConnecting);
@@ -1308,7 +1318,6 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
         if (app->wakeup.started && !wakeup_is_feed_active(&app->wakeup))
         {
             wakeup_resume_feed(&app->wakeup);
-            app->wakeup_start_time_ms = get_time_ms();
             if (app->pending_wakeup)
             {
                 PLOG_I("WAKEUP", "恢复时清除过期的唤醒事件");
@@ -1345,15 +1354,14 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
         }
         break;
     case kStateListening:
-        PLOG_I("STATE", "Listening: 等待用户语音");
+        PLOG_I("STATE", "Listening: 等待用户语音 (唤醒后+%llums)",
+               (unsigned long long)(get_time_ms() - app->session_start_ms));
         watchdog_set_timeout(&app->watchdog, WD_TIMEOUT_ACTIVE);
-        /* 通知服务端开始监听 */
         if (protocol_handler_is_connected(&app->proto))
         {
             protocol_handler_send_start_listening(&app->proto, "auto");
         }
-        /* 开始发送录音数据 */
-        if (app->recorder_initialized)
+        if (app->recorder_initialized && !app->listen_delayed)
         {
             audio_recorder_module_start_sending(&app->recorder_mod);
         }
@@ -1366,14 +1374,6 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
     case kStateSpeaking:
         PLOG_I("STATE", "Speaking: 播放TTS语音");
         watchdog_set_timeout(&app->watchdog, WD_TIMEOUT_ACTIVE);
-        audio_player_reset_decoder(&app->player);
-        if (app->wakeup.started)
-        {
-            if (!wakeup_is_feed_active(&app->wakeup))
-            {
-                wakeup_resume_feed(&app->wakeup);
-            }
-        }
         break;
     case kStateCleaning:
         PLOG_I("STATE", "Cleaning: 释放会话资源");
@@ -1565,12 +1565,14 @@ static void process_pending_wakeup(app_context_t *app)
         app->ignore_tts_audio = 1;
         app->player.aborted = true;
         audio_player_stop(&app->player);
-        audio_player_clear_buffer(&app->player);
+        audio_player_release_track(&app->player);
         if (protocol_handler_is_connected(&app->proto))
         {
             protocol_handler_send_abort(&app->proto, "wake_word_detected");
             protocol_handler_clear_send_queue(&app->proto);
         }
+        broadcast_sair_awake(app->pending_wakeup_type);
+        app->listen_delayed = 1;
         state_machine_transition(&app->sm, kStateListening);
         return;
     }
@@ -1608,6 +1610,7 @@ static void process_pending_wakeup(app_context_t *app)
     app->last_wakeup_ms = now;
     app->in_session = 1;
     app->session_start_ms = now;
+    app->listen_delayed = 1;
 
     broadcast_sair_awake(app->pending_wakeup_type);
 
@@ -2113,7 +2116,7 @@ int main(int argc, char *argv[])
         /* 轮询WebSocket协议数据 */
         if (app->proto_initialized && websocket_is_connected(&app->proto.ws))
         {
-            protocol_handler_poll(&app->proto, 10);
+            protocol_handler_poll(&app->proto, 0);
         }
 
         /* 处理各类挂起事件 */
@@ -2255,11 +2258,29 @@ int main(int argc, char *argv[])
                         }
                         if (app->pending_wakeup)
                         {
-                            PLOG_I("WAKEUP", "在保护期前清除过期唤醒事件");
+                            PLOG_I("WAKEUP", "启动时清除过期的唤醒事件");
                             app->pending_wakeup = 0;
                             app->pending_wakeup_type = 0;
                         }
                     }
+                }
+            }
+        }
+
+        /* Listening状态下延迟录音到期检查 */
+        {
+            xiaozhi_state_t cur_state = state_machine_get_state(&app->sm);
+            if (cur_state == kStateListening && app->listen_delayed)
+            {
+                uint64_t now = get_time_ms();
+                if (now - app->state_enter_time_ms >= 1000)
+                {
+                    PLOG_I("STATE", "唤醒打断延迟到期, 开始录音发送");
+                    if (app->recorder_initialized)
+                    {
+                        audio_recorder_module_start_sending(&app->recorder_mod);
+                    }
+                    app->listen_delayed = 0;
                 }
             }
         }
@@ -2299,7 +2320,7 @@ int main(int argc, char *argv[])
             struct pollfd pfd;
             pfd.fd = app->self_pipe[0];
             pfd.events = POLLIN;
-            poll(&pfd, 1, 200);
+            poll(&pfd, 1, 50);
         }
     }
 

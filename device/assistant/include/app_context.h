@@ -55,6 +55,7 @@ typedef struct app_context_t {
     uint64_t wakeup_start_time_ms;
     uint64_t last_wifi_check_ms;
     uint64_t boot_time_ms;
+    int listen_delayed;
 
     int in_session;
     int needs_activation;
@@ -79,8 +80,14 @@ typedef struct app_context_t {
 
     volatile int pending_api_wakeup;
     volatile int pending_api_abort;
+    volatile int pending_api_activate;
     volatile int pending_api_config;
     char pending_config_buf[256];
+
+    uint64_t listen_timeout_ms;
+    uint64_t session_timeout_ms;
+    uint64_t wakeup_cooldown_ms;
+    uint64_t ws_ping_interval_ms;
 } app_context_t;
 
 #endif

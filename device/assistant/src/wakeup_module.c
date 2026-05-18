@@ -306,6 +306,13 @@ int wakeup_init(wakeup_module_t *mod, audio_dispatcher_t *disp,
         PLOG_W("WAKEUP", "dlopen libstream_source.so失败: %s (非致命)", dlerror());
     }
 
+    /* 预加载libdds.so（libsair_asr.so的运行时依赖） */
+    void *dds_lib = dlopen("libdds.so", RTLD_NOW | RTLD_GLOBAL);
+    if (!dds_lib)
+    {
+        PLOG_W("WAKEUP", "dlopen libdds.so失败: %s", dlerror());
+    }
+
     /* 加载ASR引擎核心动态库（致命错误） */
     mod->asr_lib = dlopen("libsair_asr.so", RTLD_NOW | RTLD_GLOBAL);
     if (!mod->asr_lib)
@@ -424,8 +431,7 @@ int wakeup_start(wakeup_module_t *mod)
         }
         if (!mod->asr_init_done)
         {
-            PLOG_W("WAKEUP", "ASR初始化超时(5秒), 放弃启动");
-            return -1;
+            PLOG_W("WAKEUP", "ASR init_done超时(5秒), 仍然尝试启动 (DUI认证可能未完成但唤醒词仍可用)");
         }
         else
         {

@@ -14,6 +14,7 @@
 
 #include "mcp_handler.h"
 #include "plog.h"
+#include "xiaozhi_config.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,8 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <linux/input.h>
 
 /* 动态加载符号的宏，加载失败时输出警告日志 */
 #define LOAD_SYM(h, name, type)                     \
@@ -258,16 +261,56 @@ static int read_proc_int(const char *path, const char *key)
     return val;
 }
 
-/**
- * @brief 执行MCP工具调用
- * @param mcp MCP处理器实例指针
- * @param name 工具名称
- * @param args_json 参数JSON字符串
- * @param args_len 参数JSON长度
- * @param result 结果输出缓冲区
- * @param result_size 结果缓冲区大小
- * @return 0成功，-1失败
- */
+static int inject_key_event(int key_code)
+{
+    int fd = open("/dev/input/event2", O_WRONLY | O_NONBLOCK);
+    if (fd < 0)
+    {
+        PLOG_W("MCP", "inject_key: 打开/dev/input/event2失败: %m");
+        return -1;
+    }
+    struct input_event ev;
+    memset(&ev, 0, sizeof(ev));
+    gettimeofday(&ev.time, NULL);
+    ev.type = EV_KEY;
+    ev.code = key_code;
+    ev.value = 1;
+    write(fd, &ev, sizeof(ev));
+    memset(&ev, 0, sizeof(ev));
+    gettimeofday(&ev.time, NULL);
+    ev.type = EV_SYN;
+    ev.code = SYN_REPORT;
+    ev.value = 0;
+    write(fd, &ev, sizeof(ev));
+    memset(&ev, 0, sizeof(ev));
+    gettimeofday(&ev.time, NULL);
+    ev.type = EV_KEY;
+    ev.code = key_code;
+    ev.value = 0;
+    write(fd, &ev, sizeof(ev));
+    memset(&ev, 0, sizeof(ev));
+    gettimeofday(&ev.time, NULL);
+    ev.type = EV_SYN;
+    ev.code = SYN_REPORT;
+    ev.value = 0;
+    write(fd, &ev, sizeof(ev));
+    close(fd);
+    return 0;
+}
+
+static int inject_key_repeat(int key_code, int count)
+{
+    for (int i = 0; i < count; i++)
+    {
+        if (inject_key_event(key_code) < 0)
+            return -1;
+        if (i < count - 1)
+            usleep(80000);
+    }
+    PLOG_I("MCP", "inject_key_repeat: code=%d count=%d", key_code, count);
+    return 0;
+}
+
 static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json, size_t args_len, char *result, int result_size)
 {
     /* 获取设备状态：音量、亮度、充电状态、电池、CPU负载、内存 */
@@ -283,12 +326,10 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
         if (mcp->power_get_battery_cap)
             battery = mcp->power_get_battery_cap();
 
-        /* 读取内存信息 */
         int mem_total = read_proc_int("/proc/meminfo", "MemTotal");
         int mem_free = read_proc_int("/proc/meminfo", "MemFree");
         int cached = read_proc_int("/proc/meminfo", "Cached");
 
-        /* 读取CPU负载 */
         char loadbuf[64] = "";
         FILE *lf = fopen("/proc/loadavg", "r");
         if (lf)
@@ -301,27 +342,57 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
             *sp = '\0';
 
         int mem_used_kb = (mem_total > 0 && mem_free >= 0) ? (mem_total - mem_free - (cached > 0 ? cached : 0)) : 0;
+        int vol_pct = (vol >= 0 && vol <= 40) ? vol * 100 / 40 : 0;
 
         snprintf(result, result_size,
-                 "volume=%d brightness=%d charging=%d battery=%d%% cpu_load=%s mem_used=%dKB mem_free=%dKB mem_total=%dKB",
-                 vol, backlight, charge_st, battery,
+                 "volume=%d%% brightness=%d charging=%s battery=%d%% cpu_load=%s mem_used=%dKB mem_free=%dKB mem_total=%dKB",
+                 vol_pct, backlight, charge_st ? "yes" : "no", battery,
                  loadbuf[0] ? loadbuf : "N/A",
                  mem_used_kb, mem_free >= 0 ? mem_free : 0, mem_total >= 0 ? mem_total : 0);
         return 0;
     }
 
-    /* 设置音量（0-100） */
-    if (strcmp(name, "self.audio_speaker.set_volume") == 0)
+    if (strcmp(name, "self.audio_speaker.volume_up") == 0)
     {
-        int vol = find_int(args_json, args_len, "volume", -1);
-        if (vol < 0 || vol > 100)
+        int vol = 0;
+        if (mcp->sound_get_sys_volume)
+            vol = mcp->sound_get_sys_volume();
+        int steps = (vol < 40) ? 2 : 0;
+        int ret = -1;
+        if (steps > 0)
+            ret = inject_key_repeat(INJECT_KEY_VOLUP, steps);
+        if (ret < 0 && mcp->sound_set_sys_volume && vol < 40)
         {
-            snprintf(result, result_size, "invalid volume: %d (range 0-100)", vol);
-            return -1;
+            mcp->sound_set_sys_volume(vol + 2);
+            PLOG_I("MCP", "volume_up: 按键注入失败, 后备sound_set %d->%d", vol, vol + 2);
         }
-        if (mcp->sound_set_sys_volume)
-            mcp->sound_set_sys_volume(vol * 40 / 100);
-        snprintf(result, result_size, "volume set to %d", vol);
+        else
+        {
+            PLOG_I("MCP", "volume_up: 按键注入%d步 (vol=%d)", steps, vol);
+        }
+        snprintf(result, result_size, "volume up (%d->%d)", vol, vol < 40 ? vol + 2 : vol);
+        return 0;
+    }
+
+    if (strcmp(name, "self.audio_speaker.volume_down") == 0)
+    {
+        int vol = 0;
+        if (mcp->sound_get_sys_volume)
+            vol = mcp->sound_get_sys_volume();
+        int steps = (vol > 0) ? 2 : 0;
+        int ret = -1;
+        if (steps > 0)
+            ret = inject_key_repeat(INJECT_KEY_VOLDOWN, steps);
+        if (ret < 0 && mcp->sound_set_sys_volume && vol > 0)
+        {
+            mcp->sound_set_sys_volume(vol - 2);
+            PLOG_I("MCP", "volume_down: 按键注入失败, 后备sound_set %d->%d", vol, vol - 2);
+        }
+        else
+        {
+            PLOG_I("MCP", "volume_down: 按键注入%d步 (vol=%d)", steps, vol);
+        }
+        snprintf(result, result_size, "volume down (%d->%d)", vol, vol > 0 ? vol - 2 : vol);
         return 0;
     }
 
@@ -432,14 +503,15 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
     {
         snprintf(result, result_size,
                  "Available MCP tools: "
-                 "1.self.get_device_status - Get device status (volume,brightness,battery,CPU load,memory); "
-                 "2.self.audio_speaker.set_volume - Set volume (0-100); "
-                 "3.self.screen.set_brightness - Set brightness (0-900); "
-                 "4.self.get_system_info - Get system info; "
-                 "5.self.clean_junk - Clean temp files and drop caches to free memory; "
-                 "6.self.get_mcp_tools - List all available MCP tools; "
-                 "7.self.reboot - Reboot device (user only); "
-                 "8.self.poweroff - Power off device (user only)");
+                 "1.self.get_device_status - Get device status (volume%%,brightness,battery,CPU,memory); "
+                 "2.self.audio_speaker.volume_up - Increase volume by one step (shows native volume bar); "
+                 "3.self.audio_speaker.volume_down - Decrease volume by one step (shows native volume bar); "
+                 "4.self.screen.set_brightness - Set brightness (0-900); "
+                 "5.self.get_system_info - Get system info; "
+                 "6.self.clean_junk - Clean temp files and drop caches; "
+                 "7.self.get_mcp_tools - List all MCP tools; "
+                 "8.self.reboot - Reboot device (user only); "
+                 "9.self.poweroff - Power off device (user only)");
         return 0;
     }
 
@@ -567,8 +639,9 @@ void mcp_handler_process_message(mcp_handler_t *mcp, const char *json, size_t le
                 int n = snprintf(json, sizeof(json),
                                  "{\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%lld,"
                                  "\"result\":{\"tools\":["
-                                 "{\"name\":\"self.get_device_status\",\"description\":\"Get the real-time status of the device including volume, brightness, charging state, battery level, CPU load and memory usage\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
-                                 "{\"name\":\"self.audio_speaker.set_volume\",\"description\":\"Set the volume of the audio speaker on the device\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"volume\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":100}},\"required\":[\"volume\"]}},"
+                                 "{\"name\":\"self.get_device_status\",\"description\":\"Get the real-time status of the device including volume percentage, brightness, charging state, battery level, CPU load and memory usage\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.audio_speaker.volume_up\",\"description\":\"Increase the device volume by one step. This triggers the native volume button event so the volume bar animation is shown on screen. Use when user says turn up volume or make it louder\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.audio_speaker.volume_down\",\"description\":\"Decrease the device volume by one step. This triggers the native volume button event so the volume bar animation is shown on screen. Use when user says turn down volume or make it quieter\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.screen.set_brightness\",\"description\":\"Set the brightness level of the device screen\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"brightness\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":900}},\"required\":[\"brightness\"]}},"
                                  "{\"name\":\"self.get_system_info\",\"description\":\"Get system information including version, volume, brightness and battery\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.clean_junk\",\"description\":\"Clean temporary files and drop system caches to free memory and improve performance\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
