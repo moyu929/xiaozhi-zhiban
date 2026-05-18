@@ -828,27 +828,6 @@ def deploy_sair(serial=None, binary_path=None):
     return {"ok": True, "binary": binary_path, "mode": "cold", "rebooting": True}
 
 
-def uninstall_sair(serial=None):
-    logger.info("ADB卸载sair: serial=%s", serial)
-    r = _adb(["shell", "pidof sair"], serial=serial)
-    if r["ok"] and r["stdout"].strip():
-        pid = r["stdout"].strip().split()[0]
-        logger.info("sair运行中(pid=%s)，先停止", pid)
-        _adb(["shell", f"kill {pid}"], serial=serial, timeout=5)
-        time.sleep(1)
-        r2 = _adb(["shell", "pidof sair"], serial=serial)
-        if r2["ok"] and r2["stdout"].strip():
-            logger.info("sair未正常退出，强制终止")
-            _adb(["shell", "killall -9 sair"], serial=serial, timeout=5)
-            time.sleep(0.5)
-    _adb(["shell", f"rm -f {SAIR_REMOTE_PATH}"], serial=serial)
-    _adb(["shell", f"rm -f {SAIR_REMOTE_PATH}_new"], serial=serial)
-    _adb(["shell", f"rm -f {SAIR_REMOTE_PATH}.bak"], serial=serial)
-    _remove_sair_autostart(serial)
-    logger.info("sair卸载完成: serial=%s", serial)
-    return {"ok": True}
-
-
 def hot_update_sair(serial=None, binary_path=None):
     if binary_path is None:
         binary_path = _find_sair_binary()
@@ -870,10 +849,10 @@ def hot_update_sair(serial=None, binary_path=None):
 def _find_sair_binary():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return _find_file([
+        os.path.join(base_dir, "..", "device", "assistant", "prebuilt", "sair"),
         os.path.join(base_dir, "..", "device", "assistant", "build", "sair"),
-        os.path.join(base_dir, "device", "build", "sair"),
-        os.path.join(base_dir, "..", "device", "assistant", "sair"),
-        os.path.join(base_dir, "device", "assistant", "sair"),
+        os.path.join(base_dir, "device", "assistant", "prebuilt", "sair"),
+        os.path.join(base_dir, "device", "assistant", "build", "sair"),
     ])
 
 
