@@ -300,7 +300,7 @@ def _api_services(handler, xwebd, body, query):
 @_api_route("POST", "/api/services/toggle")
 @_requires_xwebd
 def _api_services_toggle(handler, xwebd, body, query):
-    return xwebd._request("POST", "/api/services/toggle", body)
+    return xwebd._request("POST", "/api/services/toggle", data=body)
 
 
 @_api_route("GET", "/api/panel/logs/stream")
@@ -446,7 +446,7 @@ def _api_processes(handler, xwebd, body, query):
 @_api_route("POST", "/api/processes/control")
 @_requires_xwebd
 def _api_processes_control(handler, xwebd, body, query):
-    return xwebd._request("POST", "/api/processes/control", body)
+    return xwebd._request("POST", "/api/processes/control", data=body)
 
 
 @_api_route("GET", "/api/usb/mode")
@@ -458,7 +458,7 @@ def _api_usb_mode(handler, xwebd, body, query):
 @_api_route("POST", "/api/usb/mode")
 @_requires_xwebd
 def _api_usb_mode_set(handler, xwebd, body, query):
-    return xwebd._request("POST", "/api/usb/mode", body)
+    return xwebd._request("POST", "/api/usb/mode", data=body)
 
 
 @_api_route("GET", "/api/xwebd/diag")
@@ -547,7 +547,7 @@ def _api_assistant_config_put(handler, xwebd, body, query):
 @_api_route("PUT", "/api/xwebd/config")
 @_requires_xwebd
 def _api_xwebd_config_put(handler, xwebd, body, query):
-    return xwebd._request("PUT", "/api/config", body)
+    return xwebd._request("PUT", "/api/config", data=body)
 
 
 @_api_route("POST", "/api/reboot")
