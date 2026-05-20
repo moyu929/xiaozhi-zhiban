@@ -1040,9 +1040,9 @@ async function refreshServices() {
         { name: '看门狗脚本', key: 'watchdog', status: d.boot_watchdog && (d.boot_watchdog.deployed || d.boot_watchdog.running), toggle: true, service: 'boot_watchdog',
           statusText: d.boot_watchdog ? (d.boot_watchdog.running ? '运行中' : (d.boot_watchdog.deployed ? '已部署' : '未部署')) : '未知', hint: '重启保留' },
         { name: 'Telnet 终端', key: 'telnet', status: d.telnet && d.telnet.running, toggle: true, service: 'telnet',
-          statusText: d.telnet && d.telnet.running ? '运行中' : '已停止', hint: '重启失效' },
+          statusText: d.telnet && d.telnet.running ? '运行中' : '已停止', hint: '重启保留' },
         { name: 'USB存储卡', key: 'usb_lun', status: d.usb_lun && d.usb_lun.enabled, toggle: true, service: 'usb_lun',
-          statusText: d.usb_lun && d.usb_lun.enabled ? '已开启' : '已关闭', hint: '重启失效' }
+          statusText: d.usb_lun && d.usb_lun.enabled ? '已开启' : '已关闭', hint: '重启保留' }
     ];
 
     var html = '';

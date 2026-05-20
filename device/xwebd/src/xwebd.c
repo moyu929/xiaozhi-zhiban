@@ -71,6 +71,9 @@ static int g_daemon = 0;
 static int g_upload_max_mb = XWEBD_UPLOAD_MAX_MB_DEFAULT;
 static volatile pid_t g_upload_pid = 0;
 
+static int g_persist_usb_lun = -1;
+static int g_persist_telnet = -1;
+
 static int g_plog_fd = -1;
 static int g_plog_level = 3;
 static pthread_mutex_t g_plog_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -992,6 +995,49 @@ static int handle_post_usb_mode(int fd, const char *body, const char *query) {
     return rc;
 }
 
+static void save_persist_conf(void) {
+    char buf[128];
+    int len = snprintf(buf, sizeof(buf), "usb_lun=%d\ntelnet=%d\n",
+                       g_persist_usb_lun >= 0 ? g_persist_usb_lun : 0,
+                       g_persist_telnet >= 0 ? g_persist_telnet : 1);
+    int fd = open(XWEBD_PERSIST_CONF, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) {
+        write(fd, buf, len);
+        close(fd);
+        XLOG_I(TAG, "持久化配置已保存");
+    }
+}
+
+static void load_persist_conf(void) {
+    char buf[256];
+    int n = read_file_string(XWEBD_PERSIST_CONF, buf, sizeof(buf));
+    if (n <= 0) return;
+    char *p;
+    p = strstr(buf, "usb_lun=");
+    if (p) g_persist_usb_lun = atoi(p + 8);
+    p = strstr(buf, "telnet=");
+    if (p) g_persist_telnet = atoi(p + 7);
+    XLOG_I(TAG, "持久化配置已加载: usb_lun=%d, telnet=%d", g_persist_usb_lun, g_persist_telnet);
+}
+
+static void apply_persist_conf(void) {
+    if (g_persist_usb_lun >= 0) {
+        if (g_persist_usb_lun) {
+            system("echo /dev/mmcblk0p1 > /sys/class/android_usb/android0/f_mass_storage/lun0/file 2>/dev/null");
+            XLOG_I(TAG, "恢复USB LUN: 开启");
+        } else {
+            system("echo '' > /sys/class/android_usb/android0/f_mass_storage/lun0/file 2>/dev/null");
+            XLOG_I(TAG, "恢复USB LUN: 关闭");
+        }
+    }
+    if (g_persist_telnet >= 0) {
+        if (!g_persist_telnet) {
+            system("killall telnetd 2>/dev/null");
+            XLOG_I(TAG, "恢复Telnet: 关闭");
+        }
+    }
+}
+
 static int handle_post_service_toggle(int fd, const char *body, const char *query) {
     char service[32] = "";
     char action[16] = "";
@@ -1008,6 +1054,8 @@ static int handle_post_service_toggle(int fd, const char *body, const char *quer
         } else {
             system("echo '' > /sys/class/android_usb/android0/f_mass_storage/lun0/file");
         }
+        g_persist_usb_lun = enable;
+        save_persist_conf();
         XLOG_I(TAG, "USB LUN: %s", enable ? "enabled" : "disabled");
     } else if (strcmp(service, "telnet") == 0) {
         if (enable) {
@@ -1015,6 +1063,8 @@ static int handle_post_service_toggle(int fd, const char *body, const char *quer
         } else {
             system("killall telnetd 2>/dev/null");
         }
+        g_persist_telnet = enable;
+        save_persist_conf();
         XLOG_I(TAG, "Telnet: %s", enable ? "enabled" : "disabled");
     } else if (strcmp(service, "autostart") == 0) {
         char buf[2048];
@@ -2666,6 +2716,8 @@ static void worker_loop(void) {
     XLOG_I(TAG, "xwebd工作进程已启动 (v%s, 端口 %d)", XWEBD_VERSION, g_port);
 
     cleanup_startup_residuals();
+    load_persist_conf();
+    apply_persist_conf();
 
     g_server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (g_server_fd < 0) {

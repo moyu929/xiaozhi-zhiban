@@ -41,12 +41,13 @@
 #define XWEBD_TEST_SH_NEW    "/var/upgrade/test.sh.new" /* 自启动脚本更新时的临时文件 */
 
 #define XWEBD_WATCHDOG_SH    "/var/upgrade/boot_watchdog.sh" /* 开机看门狗脚本路径 */
+#define XWEBD_PERSIST_CONF   "/var/upgrade/xwebd_persist.conf" /* 持久化配置文件路径 */
 #define XWEBD_SAIR_LOG       "/var/upgrade/xiaozhi.log"  /* 助手程序(sair)日志文件路径 */
 #define XWEBD_SAIR_BIN       "/var/upgrade/sair"         /* 助手程序(sair)二进制文件路径(sair为Assistant的二进制文件名，平台约束不可改名) */
 #define XWEBD_SAIR_BACKUP    "/var/upgrade/sair_backup"  /* 助手程序(sair)备份文件路径 */
 
 /* 受保护文件列表: 这些文件禁止通过API删除，以\0分隔 */
-#define XWEBD_PROTECT_FILES  "xwebd\0sair\0sair_backup\0boot_watchdog.sh\0test.sh\0test.sh.new\0xiaozhi.log\0"
+#define XWEBD_PROTECT_FILES  "xwebd\0sair\0sair_backup\0boot_watchdog.sh\0test.sh\0test.sh.new\0xiaozhi.log\0xwebd_persist.conf\0"
 /* 清理时截断(清空内容)而非删除的文件列表，以\0分隔 */
 #define XWEBD_TRUNCATE_FILES "xwebd.log\0"
 /* 清理时直接删除的文件名模式列表，以\0分隔 */
