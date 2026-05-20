@@ -763,18 +763,300 @@ static int handle_get_services(int fd, const char *body, const char *query) {
         FILE *pf = popen("pidof xwebd 2>/dev/null", "r");
         if (pf) { char pbuf[16]; if (fgets(pbuf, sizeof(pbuf), pf)) xwebd_running = 1; pclose(pf); }
     }
+    int usb_lun_enabled = 0;
+    {
+        char lun_buf[256] = "";
+        int lf = open("/sys/class/android_usb/android0/f_mass_storage/lun0/file", O_RDONLY);
+        if (lf >= 0) {
+            int nr = read(lf, lun_buf, sizeof(lun_buf) - 1);
+            close(lf);
+            if (nr > 0) {
+                lun_buf[nr] = '\0';
+                while (nr > 0 && (lun_buf[nr-1] == '\n' || lun_buf[nr-1] == '\r')) lun_buf[--nr] = '\0';
+                usb_lun_enabled = (lun_buf[0] != '\0');
+            }
+        }
+    }
 
-    char buf[768];
+    char buf[1024];
     int len = snprintf(buf, sizeof(buf),
         "{\"telnet\":{\"running\":%s},"
         "\"boot_watchdog\":{\"deployed\":%s,\"running\":%s},"
         "\"xwebd\":{\"running\":%s,\"autostart\":%s},"
-        "\"sair\":{\"installed\":%s,\"running\":%s}}",
+        "\"sair\":{\"installed\":%s,\"running\":%s},"
+        "\"usb_lun\":{\"enabled\":%s}}",
         telnet_running ? "true" : "false",
         watchdog_exists ? "true" : "false", watchdog_running ? "true" : "false",
         xwebd_running ? "true" : "false", xwebd_autostart ? "true" : "false",
-        sair_installed ? "true" : "false", sair_running ? "true" : "false");
+        sair_installed ? "true" : "false", sair_running ? "true" : "false",
+        usb_lun_enabled ? "true" : "false");
     return send_response(fd, 200, "application/json", buf, len);
+}
+
+typedef struct {
+    const char *name;
+    const char *desc;
+    int controllable;
+    const char *category;
+} process_info_t;
+
+static const process_info_t g_known_processes[] = {
+    {"launcher",         "UI启动器，管理屏幕界面和音量条",     1, "系统"},
+    {"sair_main",        "语音助手(自定义版)",                  0, "核心"},
+    {"sair",             "语音助手(原生版)",                    0, "核心"},
+    {"audio_service",    "音频服务，提供录音和播放接口",        1, "核心"},
+    {"msg_server",       "消息总线，进程间通信",                1, "系统"},
+    {"wifiNetd",         "WiFi网络守护进程",                    0, "核心"},
+    {"xwebd",            "面板内核HTTP服务",                    0, "核心"},
+    {"manager",          "进程管理器，启动和管理系统服务",      0, "核心"},
+    {"music_player",     "本地音乐播放器(原版sair依赖)",        1, "可选"},
+    {"smart_player",     "智能播放器，整合sair/mqtt/在线音乐",  1, "可选"},
+    {"olmedia_service",  "在线媒体服务(原版sair依赖)",          1, "可选"},
+    {"mqtt_handle",      "MQTT消息处理(原版sair依赖)",          1, "可选"},
+    {"mqtt_custom_server","MQTT自定义服务(原版sair依赖)",       1, "可选"},
+    {NULL, NULL, 0, NULL}
+};
+
+static const process_info_t *find_process_info(const char *name) {
+    for (int i = 0; g_known_processes[i].name; i++) {
+        if (strcmp(name, g_known_processes[i].name) == 0)
+            return &g_known_processes[i];
+    }
+    return NULL;
+}
+
+static int handle_get_processes(int fd, const char *body, const char *query) {
+    char running_names[32][64];
+    int running_pids[32];
+    int running_rss[32];
+    int running_count = 0;
+
+    FILE *pf = popen(
+        "for p in /proc/[0-9]*/status; do "
+        "pid=$(echo $p | cut -d/ -f3); "
+        "name=$(grep '^Name:' $p 2>/dev/null | awk '{print $2}'); "
+        "rss=$(grep '^VmRSS:' $p 2>/dev/null | awk '{print $2}'); "
+        "if [ -n \"$name\" ] && [ -n \"$rss\" ] && [ \"$rss\" != \"0\" ]; then "
+        "echo \"$pid|$name|$rss\"; "
+        "fi; done",
+        "r");
+    if (!pf)
+        return send_error(fd, 500, "Failed to list processes");
+
+    char line[256];
+    while (fgets(line, sizeof(line), pf)) {
+        int pid = 0, rss = 0;
+        char name[64] = "";
+        if (sscanf(line, "%d|%63[^|]|%d", &pid, name, &rss) != 3)
+            continue;
+        if (rss <= 0) continue;
+        if (find_process_info(name) && running_count < 32) {
+            strncpy(running_names[running_count], name, 63);
+            running_names[running_count][63] = '\0';
+            running_pids[running_count] = pid;
+            running_rss[running_count] = rss;
+            running_count++;
+        }
+    }
+    pclose(pf);
+
+    char *buf = malloc(8192);
+    if (!buf) return send_error(fd, 500, "Out of memory");
+    int pos = 0;
+
+    APPEND_PRINTF(buf, pos, (int)8192, "{\"processes\":[");
+
+    int first = 1;
+    for (int i = 0; g_known_processes[i].name; i++) {
+        const char *pname = g_known_processes[i].name;
+        int found = 0;
+        for (int j = 0; j < running_count; j++) {
+            if (strcmp(pname, running_names[j]) == 0) {
+                if (!first) APPEND_PRINTF(buf, pos, (int)8192, ",");
+                first = 0;
+                APPEND_PRINTF(buf, pos, (int)8192,
+                    "{\"name\":\"%s\",\"pid\":%d,\"rss\":%d,"
+                    "\"desc\":\"%s\",\"category\":\"%s\","
+                    "\"controllable\":%s,\"running\":true}",
+                    pname, running_pids[j], running_rss[j],
+                    g_known_processes[i].desc, g_known_processes[i].category,
+                    g_known_processes[i].controllable ? "true" : "false");
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            if (!first) APPEND_PRINTF(buf, pos, (int)8192, ",");
+            first = 0;
+            APPEND_PRINTF(buf, pos, (int)8192,
+                "{\"name\":\"%s\",\"pid\":0,\"rss\":0,"
+                "\"desc\":\"%s\",\"category\":\"%s\","
+                "\"controllable\":%s,\"running\":false}",
+                pname,
+                g_known_processes[i].desc, g_known_processes[i].category,
+                g_known_processes[i].controllable ? "true" : "false");
+        }
+    }
+
+    APPEND_PRINTF(buf, pos, (int)8192, "]}");
+    int ret = send_json(fd, 200, buf);
+    free(buf);
+    return ret;
+}
+
+static int handle_post_process_control(int fd, const char *body, const char *query) {
+    char name[64] = "";
+    char action[16] = "";
+
+    parse_json_str(body, "name", name, sizeof(name));
+    parse_json_str(body, "action", action, sizeof(action));
+
+    if (!name[0] || !action[0])
+        return send_error(fd, 400, "Missing 'name' or 'action'");
+
+    const process_info_t *info = find_process_info(name);
+    if (!info)
+        return send_error(fd, 404, "Unknown process");
+    if (!info->controllable)
+        return send_error(fd, 403, "Process not controllable");
+
+    if (strcmp(action, "stop") == 0) {
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "killall %s 2>/dev/null", name);
+        int rc = system(cmd);
+        XLOG_I(TAG, "进程控制: 停止 %s (rc=%d)", name, rc);
+        char resp[256];
+        int len = snprintf(resp, sizeof(resp), "{\"ok\":true,\"action\":\"stop\",\"name\":\"%s\"}", name);
+        return send_response(fd, 200, "application/json", resp, len);
+    }
+    else if (strcmp(action, "start") == 0) {
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "/usr/bin/%s &", name);
+        int rc = system(cmd);
+        XLOG_I(TAG, "进程控制: 启动 %s (rc=%d)", name, rc);
+        int ok = (rc == 0);
+        char resp[256];
+        int len = snprintf(resp, sizeof(resp), "{\"ok\":%s,\"action\":\"start\",\"name\":\"%s\",\"rc\":%d}", ok ? "true" : "false", name, rc);
+        return send_response(fd, 200, "application/json", resp, len);
+    }
+    else {
+        return send_error(fd, 400, "Invalid action, use 'stop' or 'start'");
+    }
+}
+
+static int handle_get_usb_mode(int fd, const char *body, const char *query) {
+    char functions[64] = "";
+    char enable[8] = "";
+    char lun0[128] = "";
+
+    FILE *pf;
+    pf = popen("cat /sys/class/android_usb/android0/functions 2>/dev/null", "r");
+    if (pf) { fgets(functions, sizeof(functions), pf); pclose(pf); }
+    functions[strcspn(functions, "\n")] = '\0';
+
+    pf = popen("cat /sys/class/android_usb/android0/enable 2>/dev/null", "r");
+    if (pf) { fgets(enable, sizeof(enable), pf); pclose(pf); }
+    enable[strcspn(enable, "\n")] = '\0';
+
+    pf = popen("cat /sys/class/android_usb/android0/f_mass_storage/lun0/file 2>/dev/null", "r");
+    if (pf) { fgets(lun0, sizeof(lun0), pf); pclose(pf); }
+    lun0[strcspn(lun0, "\n")] = '\0';
+
+    const char *mode = "disabled";
+    if (enable[0] == '1') {
+        if (strstr(functions, "mass_storage") && strstr(functions, "adb"))
+            mode = "mass_adb";
+        else if (strstr(functions, "mass_storage"))
+            mode = "charge";
+        else if (strstr(functions, "adb"))
+            mode = "adb";
+    }
+
+    char resp[512];
+    int len = snprintf(resp, sizeof(resp),
+        "{\"mode\":\"%s\",\"functions\":\"%s\",\"enabled\":%s,\"lun0\":\"%s\"}",
+        mode, functions, enable[0] == '1' ? "true" : "false", lun0);
+    return send_response(fd, 200, "application/json", resp, len);
+}
+
+static int handle_post_usb_mode(int fd, const char *body, const char *query) {
+    int rc = send_response(fd, 200, "application/json", "{\"ok\":true}", 9);
+    int trigger_fd = open("/sys/monitor/usb_port/config/run", O_WRONLY);
+    if (trigger_fd >= 0) {
+        write(trigger_fd, "1", 1);
+        close(trigger_fd);
+        XLOG_I(TAG, "USB hotplug重检测已触发, 设备将重新显示模式选择页面");
+    } else {
+        XLOG_W(TAG, "无法触发hotplug重检测: %s", strerror(errno));
+    }
+    return rc;
+}
+
+static int handle_post_service_toggle(int fd, const char *body, const char *query) {
+    char service[32] = "";
+    char action[16] = "";
+    if (parse_json_str(body, "service", service, sizeof(service)) < 0)
+        return send_error(fd, 400, "Missing 'service' field");
+    if (parse_json_str(body, "action", action, sizeof(action)) < 0)
+        return send_error(fd, 400, "Missing 'action' field");
+
+    int enable = (strcmp(action, "enable") == 0);
+
+    if (strcmp(service, "usb_lun") == 0) {
+        if (enable) {
+            system("echo /dev/mmcblk0p1 > /sys/class/android_usb/android0/f_mass_storage/lun0/file");
+        } else {
+            system("echo '' > /sys/class/android_usb/android0/f_mass_storage/lun0/file");
+        }
+        XLOG_I(TAG, "USB LUN: %s", enable ? "enabled" : "disabled");
+    } else if (strcmp(service, "telnet") == 0) {
+        if (enable) {
+            system("busybox telnetd -p 23 -l /bin/sh 2>/dev/null");
+        } else {
+            system("killall telnetd 2>/dev/null");
+        }
+        XLOG_I(TAG, "Telnet: %s", enable ? "enabled" : "disabled");
+    } else if (strcmp(service, "autostart") == 0) {
+        char buf[2048];
+        int n = read_file_string(XWEBD_TEST_SH, buf, sizeof(buf));
+        if (n <= 0)
+            return send_error(fd, 500, "Cannot read test.sh");
+        char *p = strstr(buf, "xwebd");
+        if (enable && !p) {
+            char *ins_point = strstr(buf, "# 开机频率检测");
+            if (ins_point) {
+                char new_buf[3072];
+                int prefix_len = (int)(ins_point - buf);
+                snprintf(new_buf, sizeof(new_buf), "%.*s/var/upgrade/xwebd -d\n\n%s", prefix_len, buf, ins_point);
+                int wf = open(XWEBD_TEST_SH, O_WRONLY | O_TRUNC);
+                if (wf >= 0) { write(wf, new_buf, strlen(new_buf)); close(wf); }
+            }
+        } else if (!enable && p) {
+            char *line_start = p;
+            while (line_start > buf && *(line_start - 1) != '\n') line_start--;
+            char *line_end = strchr(p, '\n');
+            if (!line_end) line_end = buf + n;
+            else line_end++;
+            char new_buf[2048];
+            int prefix_len = (int)(line_start - buf);
+            int suffix_len = (int)(buf + n - line_end);
+            snprintf(new_buf, sizeof(new_buf), "%.*s%.*s", prefix_len, buf, suffix_len, line_end);
+            int wf = open(XWEBD_TEST_SH, O_WRONLY | O_TRUNC);
+            if (wf >= 0) { write(wf, new_buf, strlen(new_buf)); close(wf); }
+        }
+        XLOG_I(TAG, "Autostart: %s", enable ? "enabled" : "disabled");
+    } else if (strcmp(service, "boot_watchdog") == 0) {
+        if (enable) {
+            system(XWEBD_WATCHDOG_SH " &");
+        } else {
+            system("killall boot_watchdog.sh 2>/dev/null");
+        }
+        XLOG_I(TAG, "Boot watchdog: %s", enable ? "enabled" : "disabled");
+    } else {
+        return send_error(fd, 400, "Unknown service");
+    }
+
+    return send_response(fd, 200, "application/json", "{\"ok\":true}", 9);
 }
 
 static int handle_get_diag(int fd, const char *body, const char *query) {
@@ -1948,6 +2230,11 @@ static const route_t g_routes[] = {
     {"POST",   "/api/files/batch-delete",   handle_batch_delete},
     {"POST",   "/api/files/cleanup",        handle_cleanup},
     {"GET",    "/api/services",             handle_get_services},
+    {"POST",   "/api/services/toggle",      handle_post_service_toggle},
+    {"GET",    "/api/processes",            handle_get_processes},
+    {"POST",   "/api/processes/control",    handle_post_process_control},
+    {"GET",    "/api/usb/mode",             handle_get_usb_mode},
+    {"POST",   "/api/usb/mode",             handle_post_usb_mode},
     {"GET",    "/api/diag",                 handle_get_diag},
     {"GET",    "/api/assistant/env",        handle_get_assistant_env},
     {"GET",    "/api/assistant/status",      handle_get_assistant_status},

@@ -297,6 +297,11 @@ def _api_status(handler, xwebd, body, query):
 def _api_services(handler, xwebd, body, query):
     return xwebd._request("GET", "/api/services")
 
+@_api_route("POST", "/api/services/toggle")
+@_requires_xwebd
+def _api_services_toggle(handler, xwebd, body, query):
+    return xwebd._request("POST", "/api/services/toggle", body)
+
 
 @_api_route("GET", "/api/panel/logs/stream")
 def _api_panel_logs_stream(handler, xwebd, body, query):
@@ -430,6 +435,30 @@ def _api_device_logs_stream(handler, xwebd, body, query):
     except Exception as e:
         logger.debug("设备日志SSE断开: %s", e)
     return _STREAM_SENTINEL
+
+
+@_api_route("GET", "/api/processes")
+@_requires_xwebd
+def _api_processes(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/processes")
+
+
+@_api_route("POST", "/api/processes/control")
+@_requires_xwebd
+def _api_processes_control(handler, xwebd, body, query):
+    return xwebd._request("POST", "/api/processes/control", body)
+
+
+@_api_route("GET", "/api/usb/mode")
+@_requires_xwebd
+def _api_usb_mode(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/usb/mode")
+
+
+@_api_route("POST", "/api/usb/mode")
+@_requires_xwebd
+def _api_usb_mode_set(handler, xwebd, body, query):
+    return xwebd._request("POST", "/api/usb/mode", body)
 
 
 @_api_route("GET", "/api/xwebd/diag")
