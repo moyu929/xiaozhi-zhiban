@@ -281,27 +281,6 @@ function resolveConfirm(result) {
 // ==================== Mode Switching ====================
 
 function toggleMode() {
-    if (S.mode === 'wired') {
-        if (S.wl.connected) {
-            stopPolling();
-            S.wl.connected = false;
-            S.wl.xwebd = false;
-            S.wl.sair = false;
-            updateConnUI(false);
-            updateConnStatus('xwebdConnStatus', false);
-            updateConnStatus('assistantConnStatus', false);
-            $('btnConnect').textContent = '连接';
-            $('btnConnect').className = 'btn btn-primary';
-            $('btnConnect').disabled = false;
-        }
-        resetWirelessUI();
-    } else {
-        if (S.adb.connected) {
-            adbDisconnect();
-        } else {
-            resetWiredUI();
-        }
-    }
     S.mode = S.mode === 'wired' ? 'wireless' : 'wired';
     applyMode();
 }
@@ -732,7 +711,7 @@ async function adbFactoryReset() {
         $('btnConnect').disabled = false;
         resetWirelessUI();
         toast('恢复出厂设置完成，设备将重启', 'success');
-        showWiredRebootOverlays();
+        showWiredOverlays();
         waitForReconnect(_adbReconnectOpts());
     } else {
         toast('恢复出厂设置失败: ' + (r.error || '未知错误'), 'error');
@@ -786,9 +765,7 @@ async function connectDevice() {
     btn.disabled = true;
     btn.textContent = '连接中...';
     flashEl(btn);
-    showOverlay('deviceOverlay');
-    showOverlay('assistantOverlay');
-    showOverlay('xwebdOverlay');
+    showWirelessOverlays();
 
     if (S.adb.serial) {
         if (S.timers.adbInfo) { clearInterval(S.timers.adbInfo); S.timers.adbInfo = null; }
@@ -836,9 +813,7 @@ async function connectDevice() {
         toast(r.error ? '连接失败：' + r.error : '连接失败', 'error');
     }
 
-    hideOverlay('deviceOverlay');
-    hideOverlay('assistantOverlay');
-    hideOverlay('xwebdOverlay');
+    hideWirelessOverlays();
     if (!S.wl.connected) { btn.disabled = false; btn.textContent = '连接'; btn.className = 'btn btn-primary'; }
 }
 
@@ -869,11 +844,8 @@ function resetWirelessUI() {
     $('logXwebd').innerHTML = '<div class="empty-state">等待连接设备...</div>';
     $('logAssistant').innerHTML = '<div class="empty-state">等待连接设备...</div>';
     $('logPanel').innerHTML = '<div class="empty-state">暂无日志</div>';
-    var svcIds = ['svcTelnet','svcWatchdog','svcAutostart','svcXwebd','svcAssistant'];
-    for (var i = 0; i < svcIds.length; i++) {
-        var el = $(svcIds[i]);
-        if (el) { el.textContent = '未知'; el.className = 'svc-status svc-unknown'; }
-    }
+    $('svcList').innerHTML = '<div class="empty-state">等待连接设备...</div>';
+    $('processSummary').textContent = '';
     $('btnXwebdRestart').style.display = '';
     $('btnXwebdRemove').style.display = '';
     $('btnXwebdUpdate').style.display = '';
@@ -954,6 +926,7 @@ function refreshAll() {
     refreshAssistantStatus();
     refreshXwebdStatus();
     refreshServices();
+    refreshProcesses();
     refreshFiles();
     refreshLogPanel('panel', false);
     refreshLogPanel('xwebd', false);
@@ -1056,20 +1029,196 @@ async function refreshServices() {
     var r = await api('/api/services');
     if (r.error) return;
     var d = r.data || r;
-    setSvcStatus('svcTelnet', d.telnet && d.telnet.running, d.telnet ? (d.telnet.running ? '运行中' : '已停止') : '未知');
-    var wd = d.boot_watchdog || {};
-    setSvcStatus('svcWatchdog', wd.deployed || wd.running, (wd.running ? '运行中' : (wd.deployed ? '已部署' : '未部署')));
-    var xw = d.xwebd || {};
-    setSvcStatus('svcAutostart', xw.autostart, xw.autostart ? '自启动已启用' : '自启动未启用');
-    setSvcStatus('svcXwebd', xw.running, xw.running ? '运行中' : '已停止');
-    var sr = d.sair || {};
-    setSvcStatus('svcAssistant', sr.running, sr.running ? '运行中' : (sr.installed ? '已停止' : '未安装'));
+
+    var items = [
+        { name: '面板内核', key: 'xwebd_running', status: d.xwebd && d.xwebd.running, toggle: false,
+          statusText: d.xwebd && d.xwebd.running ? '运行中' : '已停止' },
+        { name: '面板内核自启动', key: 'autostart', status: d.xwebd && d.xwebd.autostart, toggle: true, service: 'autostart',
+          statusText: d.xwebd && d.xwebd.autostart ? '已启用' : '未启用', hint: '重启保留' },
+        { name: '语音助手', key: 'sair', status: d.sair && d.sair.running, toggle: false,
+          statusText: d.sair ? (d.sair.running ? '运行中' : (d.sair.installed ? '已停止' : '未安装')) : '未知' },
+        { name: '看门狗脚本', key: 'watchdog', status: d.boot_watchdog && (d.boot_watchdog.deployed || d.boot_watchdog.running), toggle: true, service: 'boot_watchdog',
+          statusText: d.boot_watchdog ? (d.boot_watchdog.running ? '运行中' : (d.boot_watchdog.deployed ? '已部署' : '未部署')) : '未知', hint: '重启保留' },
+        { name: 'Telnet 终端', key: 'telnet', status: d.telnet && d.telnet.running, toggle: true, service: 'telnet',
+          statusText: d.telnet && d.telnet.running ? '运行中' : '已停止', hint: '重启失效' },
+        { name: 'USB存储卡', key: 'usb_lun', status: d.usb_lun && d.usb_lun.enabled, toggle: true, service: 'usb_lun',
+          statusText: d.usb_lun && d.usb_lun.enabled ? '已开启' : '已关闭', hint: '重启失效' }
+    ];
+
+    var html = '';
+    items.forEach(function(item) {
+        var statusCls = item.status ? 'svc-on' : 'svc-off';
+        html += '<div class="svc-item">';
+        html += '<span class="svc-name">' + item.name + '</span>';
+        if (item.toggle) {
+            html += '<label class="svc-toggle">';
+            html += '<input type="checkbox"' + (item.status ? ' checked' : '') + ' onchange="toggleService(\'' + item.service + '\', this.checked)">';
+            html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
+            html += '</label>';
+            if (item.hint) html += '<span class="svc-hint">' + item.hint + '</span>';
+        } else {
+            html += '<span class="svc-status ' + statusCls + '">' + item.statusText + '</span>';
+        }
+        html += '</div>';
+    });
+    $('svcList').innerHTML = html;
+}
+
+async function toggleService(service, enable) {
+    if (!S.wl.connected) return;
+    var action = enable ? 'enable' : 'disable';
+    var r = await api('/api/services/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: service, action: action }),
+    });
+    if (r.ok) {
+        toast(service + ' 已' + (enable ? '开启' : '关闭'), 'success');
+        await new Promise(function(resolve) { setTimeout(resolve, 500); });
+        await refreshServices();
+    } else {
+        toast('操作失败: ' + (r.error || ''), 'error');
+        await refreshServices();
+    }
 }
 
 async function refreshServicesWithFlash() {
     await refreshServices();
     var svcList = document.querySelector('.svc-list');
     if (svcList) flashEl(svcList);
+}
+
+var _procFilterCategory = '';
+var _procFilterAction = '';
+var _procCache = [];
+
+function _procSortKey(p) {
+    var stateOrder;
+    if (!p.running && p.controllable) stateOrder = 0;
+    else if (p.running && p.controllable) stateOrder = 1;
+    else stateOrder = 2;
+    var catOrder;
+    if (p.category === '可选') catOrder = 0;
+    else if (p.category === '核心') catOrder = 1;
+    else catOrder = 2;
+    return stateOrder * 10 + catOrder;
+}
+
+function renderProcesses() {
+    var procs = _procCache.slice();
+    procs.sort(function(a, b) { return _procSortKey(a) - _procSortKey(b); });
+
+    var filtered = procs;
+    if (_procFilterCategory) {
+        filtered = filtered.filter(function(p) { return p.category === _procFilterCategory; });
+    }
+    if (_procFilterAction) {
+        if (_procFilterAction === 'start') {
+            filtered = filtered.filter(function(p) { return !p.running && p.controllable; });
+        } else if (_procFilterAction === 'stop') {
+            filtered = filtered.filter(function(p) { return p.running && p.controllable; });
+        } else if (_procFilterAction === 'protected') {
+            filtered = filtered.filter(function(p) { return !p.controllable; });
+        }
+    }
+
+    var runningCount = 0;
+    var totalRss = 0;
+    procs.forEach(function(p) {
+        if (p.running) { runningCount++; totalRss += p.rss || 0; }
+    });
+    var summaryEl = $('processSummary');
+    if (summaryEl) summaryEl.textContent = '共 ' + procs.length + ' 个进程 · 运行中 ' + runningCount + ' · 总内存 ' + (totalRss / 1024).toFixed(1) + ' MB';
+    var html = '<table class="file-table process-table"><thead><tr><th>进程</th><th>PID</th><th>内存</th>';
+    html += '<th class="proc-filter-th"><span>类别</span><select class="proc-filter-select" onchange="_procFilterCategory=this.value;renderProcesses()">';
+    html += '<option value="">全部</option><option value="核心"' + (_procFilterCategory === '核心' ? ' selected' : '') + '>核心</option><option value="系统"' + (_procFilterCategory === '系统' ? ' selected' : '') + '>系统</option><option value="可选"' + (_procFilterCategory === '可选' ? ' selected' : '') + '>可选</option></select></th>';
+    html += '<th>说明</th>';
+    html += '<th class="proc-filter-th"><span>操作</span><select class="proc-filter-select" onchange="_procFilterAction=this.value;renderProcesses()">';
+    html += '<option value="">全部</option><option value="start"' + (_procFilterAction === 'start' ? ' selected' : '') + '>待启动</option><option value="stop"' + (_procFilterAction === 'stop' ? ' selected' : '') + '>可停止</option><option value="protected"' + (_procFilterAction === 'protected' ? ' selected' : '') + '>受保护</option></select></th>';
+    html += '</tr></thead><tbody>';
+
+    if (!filtered.length) {
+        html += '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:12px">无匹配进程</td></tr>';
+    }
+    filtered.forEach(function(p) {
+        var rssStr = p.running ? (p.rss >= 1024 ? (p.rss / 1024).toFixed(1) + ' MB' : p.rss + ' KB') : '--';
+        var catCls = 'process-cat-' + (p.category === '核心' ? 'core' : p.category === '系统' ? 'sys' : 'opt');
+        var statusCls = p.running ? 'process-running' : 'process-stopped';
+        html += '<tr class="' + statusCls + '">';
+        html += '<td><span class="process-name">' + escapeHtml(p.name) + '</span></td>';
+        html += '<td>' + (p.running ? p.pid : '--') + '</td>';
+        html += '<td>' + rssStr + '</td>';
+        html += '<td><span class="process-cat ' + catCls + '">' + escapeHtml(p.category) + '</span></td>';
+        html += '<td class="process-desc">' + escapeHtml(p.desc) + '</td>';
+        html += '<td class="process-actions">';
+        if (p.controllable) {
+            if (p.running) {
+                html += '<button class="btn btn-danger btn-xs" onclick="processControl(\'' + escapeHtml(p.name) + '\',\'stop\')">停止</button>';
+            } else {
+                html += '<button class="btn btn-accent btn-xs" onclick="processControl(\'' + escapeHtml(p.name) + '\',\'start\')">启动</button>';
+            }
+        } else {
+            html += '<span class="process-locked">受保护</span>';
+        }
+        html += '</td></tr>';
+    });
+    html += '</tbody></table>';
+    $('processContainer').innerHTML = html;
+}
+
+async function refreshProcesses() {
+    if (!S.wl.connected) return;
+    var r = await api('/api/processes');
+    if (r.error) {
+        $('processContainer').innerHTML = '<div class="empty-state">获取进程列表失败</div>';
+        return;
+    }
+    _procCache = r.processes || [];
+    if (!_procCache.length) {
+        $('processContainer').innerHTML = '<div class="empty-state">暂无进程信息</div>';
+        return;
+    }
+    renderProcesses();
+}
+
+async function processControl(name, action) {
+    var actionLabel = action === 'stop' ? '停止' : '启动';
+    if (action === 'stop') {
+        if (!await showConfirm('确定停止进程 ' + name + '？\n\n停止后可能影响设备功能，可随时重新启动', {danger: true})) return;
+    } else {
+        toast('正在启动 ' + name + '...', 'info');
+    }
+    var r = await api('/api/processes/control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name, action: action }),
+    });
+    if (r.ok) {
+        toast(name + ' 已' + actionLabel, 'success');
+        await new Promise(function(resolve) { setTimeout(resolve, 800); });
+        await refreshProcesses();
+    } else {
+        toast(actionLabel + ' ' + name + ' 失败: ' + (r.error || ''), 'error');
+        await refreshProcesses();
+    }
+}
+
+async function reselectUsbMode() {
+    if (!S.wl.connected) return;
+    if (!await showConfirm('确定重新选择USB模式？\n\n设备将重新显示USB模式选择页面')) return;
+    toast('正在触发USB重选...', 'info');
+    try {
+        var ctl = new AbortController();
+        var tid = setTimeout(function() { ctl.abort(); }, 3000);
+        await fetch('/api/usb/mode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+            signal: ctl.signal,
+        });
+        clearTimeout(tid);
+    } catch (e) {}
+    toast('设备将重新显示USB模式选择页面', 'success');
 }
 
 function setSvcStatus(elId, ok, text) {
@@ -1452,25 +1601,27 @@ async function doXwebdRemove() {
 
 // ==================== Reconnect ====================
 
-function showWiredRebootOverlays() {
+function showWiredOverlays() {
     showOverlay('adbDeviceOverlay');
     showOverlay('adbAssistantOverlay');
     showOverlay('adbControlOverlay');
 }
-function hideWiredRebootOverlays() {
+function hideWiredOverlays() {
     hideOverlay('adbDeviceOverlay');
     hideOverlay('adbAssistantOverlay');
     hideOverlay('adbControlOverlay');
 }
-function showWirelessRebootOverlays() {
+function showWirelessOverlays() {
     showOverlay('deviceOverlay');
     showOverlay('xwebdOverlay');
+    showOverlay('processOverlay');
     showOverlay('serviceOverlay');
     showOverlay('assistantOverlay');
 }
-function hideWirelessRebootOverlays() {
+function hideWirelessOverlays() {
     hideOverlay('deviceOverlay');
     hideOverlay('xwebdOverlay');
+    hideOverlay('processOverlay');
     hideOverlay('serviceOverlay');
     hideOverlay('assistantOverlay');
 }
@@ -1508,12 +1659,12 @@ function _adbReconnectOpts() {
             return false;
         },
         onReconnect: async function() {
-            hideWiredRebootOverlays();
+            hideWiredOverlays();
             toast('设备已重新连接', 'success');
             await selectAdbDevice(S.adb.serial);
         },
         onTimeout: function() {
-            hideWiredRebootOverlays();
+            hideWiredOverlays();
             toast('重连超时，请手动扫描', 'error');
         }
     };
@@ -1521,13 +1672,13 @@ function _adbReconnectOpts() {
 
 function adbWaitForReconnect() {
     toast('设备重启中，等待重新连接...', 'info');
-    showWiredRebootOverlays();
+    showWiredOverlays();
     waitForReconnect(_adbReconnectOpts());
 }
 
 async function adbRebootAndReconnect() {
     if (!await showConfirm('确定重启设备？', {danger: true})) return;
-    showWiredRebootOverlays();
+    showWiredOverlays();
     await api('/api/adb/reboot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1538,7 +1689,7 @@ async function adbRebootAndReconnect() {
 
 async function wirelessRebootAndReconnect() {
     if (!await showConfirm('确定重启设备？', {danger: true})) return;
-    showWirelessRebootOverlays();
+    showWirelessOverlays();
     await api('/api/reboot', { method: 'POST' });
     wirelessWaitForReconnect();
 }
@@ -1579,11 +1730,11 @@ function wirelessWaitForReconnect() {
                 startPolling();
                 refreshAll();
                 updateConnStatus('xwebdConnStatus', true);
-                hideWirelessRebootOverlays();
+                hideWirelessOverlays();
                 toast('设备已重新连接', 'success');
             },
             onTimeout: function() {
-                hideWirelessRebootOverlays();
+                hideWirelessOverlays();
                 $('btnConnect').disabled = false;
                 toast('重连超时，请手动连接', 'error');
             }

@@ -71,6 +71,8 @@
 
 ## 🚀 快速开始
 
+> 🎬 **使用教程视频**：[点击观看](https://www.douyin.com/jingxuan?modal_id=7641665060917497130)
+
 ### 前提条件
 
 - **Python 3.8+**（运行 Panel 控制面板）

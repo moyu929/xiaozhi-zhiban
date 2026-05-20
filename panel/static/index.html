@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>小智 · 智伴</title>
-<link rel="stylesheet" href="/style.css?v=13">
+<link rel="stylesheet" href="/style.css?v=20">
 </head>
 <body>
 <canvas id="particles"></canvas>
@@ -142,7 +142,7 @@
       <!-- ==================== 无线模式 ==================== -->
       <div class="panel-page" id="wirelessPage">
         <div class="panel-page-inner">
-        <div class="grid-3col">
+        <div class="grid-2col">
           <section class="card" id="deviceSection">
             <div class="card-header"><h2>设备状态</h2></div>
             <div class="connect-bar" style="margin-bottom:14px">
@@ -165,6 +165,7 @@
               <button class="btn btn-danger" onclick="wirelessRebootAndReconnect()">重启</button>
               <button class="btn btn-danger btn-outline" onclick="doPoweroff()">关机</button>
               <button class="btn btn-danger btn-outline" onclick="doCleanup()">清理垃圾</button>
+              <button class="btn btn-ghost" onclick="reselectUsbMode()">重选USB模式</button>
             </div>
             <div class="section-overlay" id="deviceOverlay" style="display:none"><div class="spinner"></div></div>
           </section>
@@ -200,30 +201,22 @@
             </div>
             <div class="section-overlay" id="xwebdOverlay" style="display:none"><div class="spinner"></div></div>
           </section>
+        </div>
+
+        <div class="grid-2-1">
+          <section class="card">
+            <div class="card-header"><h2>进程管理</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" onclick="refreshProcesses()">刷新</button></div></div>
+            <div id="processSummary" class="process-summary"></div>
+<div id="processContainer" class="process-container">
+              <div class="empty-state">等待连接设备...</div>
+            </div>
+            <div class="section-overlay" id="processOverlay" style="display:none"><div class="spinner"></div></div>
+          </section>
 
           <section class="card">
             <div class="card-header"><h2>服务状态</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" id="btnRefreshSvc" onclick="refreshServicesWithFlash()">刷新</button></div></div>
-            <div class="svc-list">
-              <div class="svc-item">
-                <span class="svc-name">面板内核</span>
-                <span id="svcXwebd" class="svc-status svc-unknown">未知</span>
-              </div>
-              <div class="svc-item">
-                <span class="svc-name">面板内核自启动</span>
-                <span id="svcAutostart" class="svc-status svc-unknown">未知</span>
-              </div>
-              <div class="svc-item">
-                <span class="svc-name">语音助手</span>
-                <span id="svcAssistant" class="svc-status svc-unknown">未知</span>
-              </div>
-              <div class="svc-item">
-                <span class="svc-name">看门狗脚本</span>
-                <span id="svcWatchdog" class="svc-status svc-unknown">未知</span>
-              </div>
-              <div class="svc-item">
-                <span class="svc-name">Telnet 终端</span>
-                <span id="svcTelnet" class="svc-status svc-unknown">未知</span>
-              </div>
+            <div class="svc-list" id="svcList">
+              <div class="empty-state">等待连接设备...</div>
             </div>
             <div class="section-overlay" id="serviceOverlay" style="display:none"><div class="spinner"></div></div>
           </section>
@@ -481,6 +474,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=15"></script>
+<script src="/app.js?v=21"></script>
 </body>
 </html>
