@@ -2202,6 +2202,18 @@ document.addEventListener('DOMContentLoaded', function() {
     applyMode();
     updateSairLocks();
     renderMcpTools();
+
+    document.querySelectorAll('.process-container,.file-container,.log-container,.diag-container,.mcp-tools-list,.adb-device-list,.modal').forEach(function(el) {
+        el.addEventListener('wheel', function(e) {
+            var st = el.scrollTop;
+            var atTop = st <= 0;
+            var atBottom = st + el.clientHeight >= el.scrollHeight;
+            if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
+                e.preventDefault();
+            }
+        }, { passive: false });
+    });
+
     document.addEventListener('click', function(e) {
         if (e.target.classList.contains('btn-copy')) {
             copyActivationCode(e.target);

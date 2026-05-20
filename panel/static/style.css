@@ -324,12 +324,11 @@ body {
   flex: 1;
   overflow-y: auto;
   max-height: 320px;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
 }
-.assistant-right .mcp-tools-list::-webkit-scrollbar {
-  display: none;
-}
+.assistant-right .mcp-tools-list::-webkit-scrollbar { width: 4px; }
+.assistant-right .mcp-tools-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
 @media (max-width: 900px) {
   .grid-2col, .grid-3col, .grid-2-1 { grid-template-columns: 1fr; }
@@ -533,12 +532,11 @@ body {
 .adb-device-list {
   max-height: 200px;
   overflow-y: auto;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
 }
-.adb-device-list::-webkit-scrollbar {
-  display: none;
-}
+.adb-device-list::-webkit-scrollbar { width: 4px; }
+.adb-device-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 .adb-device-item {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -1270,12 +1268,11 @@ body {
 .process-container {
   height: 280px;
   overflow-y: auto;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
 }
-.process-container::-webkit-scrollbar {
-  display: none;
-}
+.process-container::-webkit-scrollbar { width: 4px; }
+.process-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 .process-summary {
   font-size: 12px;
   color: var(--text-muted);
@@ -1284,8 +1281,9 @@ body {
 }
 .process-table thead {
   position: sticky;
-  top: -1px;
+  top: 0;
   z-index: 2;
+  will-change: transform;
 }
 .process-table thead th {
   background: var(--bg-card);
