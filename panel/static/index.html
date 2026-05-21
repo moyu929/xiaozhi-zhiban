@@ -255,6 +255,13 @@
                 <label class="form-label">MCP 接入点 <span class="form-hint">（从 xiaozhi.me 控制台获取的智能体专属端点）</span></label>
                 <input type="text" id="cfgMcpEndpoint" class="input-text" value="" placeholder="wss://api.xiaozhi.me/mcp/?token=...">
               </div>
+              <div class="form-group">
+                <label class="form-label">监听模式 <span class="form-hint">（AutoStop：一问一答；Realtime：可随时打断）</span></label>
+                <select id="cfgListeningMode" class="select">
+                  <option value="autostop">AutoStop（自动停止）</option>
+                  <option value="realtime">Realtime（实时模式）</option>
+                </select>
+              </div>
               <div style="display:flex;gap:8px;margin-bottom:12px">
                 <button class="btn btn-accent" onclick="saveAssistantConfig()" style="flex:1">保存配置</button>
                 <button class="btn btn-ghost" onclick="restoreAssistantDefaults()" style="flex:1">恢复默认值</button>
