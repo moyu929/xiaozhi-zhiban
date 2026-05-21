@@ -615,21 +615,14 @@ def _remove_xwebd_autostart(serial=None):
 
 
 def _ensure_sair_autostart(serial=None):
-    r = _adb(["shell", f"grep -q '{SAIR_REMOTE_PATH}' {TEST_SH_PATH} && echo found || echo missing"], serial=serial)
-    if not r["ok"]:
-        return {"ok": False, "error": "cannot read test.sh"}
-    if "found" in r["stdout"]:
-        return {"ok": True, "error": ""}
-    logger.info("添加sair自启动到test.sh")
-    r = _adb(["shell", f"echo 'sleep 3 && LD_LIBRARY_PATH=/usr/lib:/lib:$LD_LIBRARY_PATH {SAIR_REMOTE_PATH} >> /var/upgrade/sair_boot.log 2>&1 &' >> {TEST_SH_PATH}"], serial=serial)
-    if not r["ok"]:
-        return {"ok": False, "error": "cannot modify test.sh"}
+    _remove_sair_autostart(serial)
     return {"ok": True, "error": ""}
 
 
 def _remove_sair_autostart(serial=None):
-    logger.info("移除sair自启动")
+    logger.info("清理test.sh中的sair自启动行")
     _adb(["shell", f"sed -i '/{SAIR_REMOTE_PATH}/d' {TEST_SH_PATH}"], serial=serial)
+    _adb(["shell", f"sed -i '/killall sair/d' {TEST_SH_PATH}"], serial=serial)
     return {"ok": True, "error": ""}
 
 
@@ -814,7 +807,6 @@ def deploy_sair(serial=None, binary_path=None):
     r = _push_binary(binary_path, SAIR_REMOTE_PATH, serial)
     if not r["ok"]:
         return {"ok": False, "error": r['error']}
-    _ensure_sair_autostart(serial)
     _adb(["shell", "reboot"], serial=serial, timeout=5)
     logger.info("sair冷部署完成，设备重启中: serial=%s", serial)
     return {"ok": True, "binary": binary_path, "mode": "cold", "rebooting": True}
