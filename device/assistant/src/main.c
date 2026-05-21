@@ -665,6 +665,8 @@ static void on_proto_audio(audio_packet_t *packet, void *user_data)
 
     xiaozhi_state_t state = state_machine_get_state(&app->sm);
 
+    app->last_tts_audio_ms = get_time_ms();
+
     if (state == kStateListening || state == kStateConnecting)
     {
         PLOG_I("PROTO", "收到首包音频, 转换到 Speaking 状态");
@@ -1469,10 +1471,15 @@ static void check_timeouts(app_context_t *app)
     uint64_t now = get_time_ms();
     xiaozhi_state_t state = state_machine_get_state(&app->sm);
 
-    /* 会话总超时检查 */
+    /* 会话总超时检查（Speaking状态下TTS活跃时暂停计时） */
     if (app->in_session && now - app->session_start_ms > g_app.session_timeout_ms)
     {
-        if (state != kStateCleaning)
+        if (state == kStateSpeaking && app->last_tts_audio_ms > 0
+            && now - app->last_tts_audio_ms < SPEAK_TIMEOUT_MS)
+        {
+            app->session_start_ms = now - g_app.session_timeout_ms;
+        }
+        else if (state != kStateCleaning)
         {
             PLOG_W("TIMEOUT", "会话超时");
             state_machine_transition(&app->sm, kStateCleaning);
@@ -1565,8 +1572,12 @@ static void check_timeouts(app_context_t *app)
         break;
 
     case kStateSpeaking:
-        /* 说话超时 */
-        if (now - app->state_enter_time_ms > SPEAK_TIMEOUT_MS)
+        /* 说话超时（TTS数据活跃时持续刷新） */
+        if (app->last_tts_audio_ms > 0 && now - app->last_tts_audio_ms < SPEAK_TIMEOUT_MS)
+        {
+            app->state_enter_time_ms = now - SPEAK_TIMEOUT_MS;
+        }
+        else if (now - app->state_enter_time_ms > SPEAK_TIMEOUT_MS)
         {
             PLOG_W("TIMEOUT", "说话超时");
             state_machine_transition(&app->sm, kStateCleaning);

@@ -30,13 +30,17 @@ static int g_plog_level = PLOG_LEVEL_INFO;
 static pthread_mutex_t g_plog_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* 当前日志文件大小 */
 static off_t g_plog_size = 0;
-/* 日志文件路径 */
 static char g_plog_path[256] = PLOG_PATH_DEFAULT;
+static time_t g_plog_last_sync = 0;
+static int g_plog_write_count = 0;
+#define PLOG_SYNC_INTERVAL_SEC 30
+#define PLOG_SYNC_WRITE_COUNT 100
 
 /* 日志轮转阈值：文件超过1MB时触发轮转 */
 #define PLOG_MAX_SIZE (1024 * 1024)
 /* 轮转后保留的日志大小：256KB */
 #define PLOG_KEEP_SIZE (256 * 1024)
+#define PLOG_ROTATE_BUF_SIZE (8 * 1024)
 
 /**
  * @brief 日志文件轮转
@@ -51,12 +55,11 @@ static void plog_rotate(void)
     close(g_plog_fd);
     g_plog_fd = -1;
 
-    /* 读取日志文件尾部数据 */
     int src_fd = open(g_plog_path, O_RDONLY);
     if (src_fd < 0)
     {
         g_plog_fd = open(g_plog_path,
-                         O_WRONLY | O_CREAT | O_TRUNC | O_SYNC, 0644);
+                         O_WRONLY | O_CREAT | O_TRUNC, 0644);
         g_plog_size = 0;
         return;
     }
@@ -68,54 +71,61 @@ static void plog_rotate(void)
         keep_offset = file_size - PLOG_KEEP_SIZE;
     }
 
-    char *buf = malloc(PLOG_KEEP_SIZE);
-    if (!buf)
+    char tmp_path[260];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.rot", g_plog_path);
+    int dst_fd = open(tmp_path,
+                      O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (dst_fd < 0)
     {
         close(src_fd);
         g_plog_fd = open(g_plog_path,
-                         O_WRONLY | O_CREAT | O_TRUNC | O_SYNC, 0644);
+                         O_WRONLY | O_CREAT | O_TRUNC, 0644);
         g_plog_size = 0;
         return;
     }
 
-    /* 从keep_offset位置读取数据 */
-    lseek(src_fd, keep_offset, SEEK_SET);
-    ssize_t total_read = 0;
-    while (total_read < PLOG_KEEP_SIZE)
+    if (keep_offset > 0)
     {
-        ssize_t n = read(src_fd, buf + total_read, PLOG_KEEP_SIZE - total_read);
-        if (n <= 0)
-            break;
-        total_read += n;
-    }
-    close(src_fd);
-
-    /* 找到第一个换行符，从完整行开始保留 */
-    char *start = buf;
-    if (total_read > 0 && keep_offset > 0)
-    {
-        char *nl = memchr(buf, '\n', total_read);
-        if (nl)
+        lseek(src_fd, keep_offset, SEEK_SET);
+        char skip_buf[256];
+        ssize_t n = read(src_fd, skip_buf, sizeof(skip_buf));
+        if (n > 0)
         {
-            start = nl + 1;
-            total_read -= (start - buf);
+            char *nl = memchr(skip_buf, '\n', n);
+            if (nl)
+                lseek(src_fd, keep_offset + (nl - skip_buf) + 1, SEEK_SET);
+            else
+                lseek(src_fd, keep_offset, SEEK_SET);
         }
     }
 
-    /* 截断文件并写入保留的数据 */
-    g_plog_fd = open(g_plog_path,
-                     O_WRONLY | O_CREAT | O_TRUNC | O_SYNC, 0644);
-    if (g_plog_fd >= 0 && total_read > 0)
+    char buf[PLOG_ROTATE_BUF_SIZE];
+    off_t total_written = 0;
+    while (1)
     {
-        write(g_plog_fd, start, total_read);
-        g_plog_size = total_read;
+        ssize_t n = read(src_fd, buf, sizeof(buf));
+        if (n <= 0) break;
+        ssize_t w = write(dst_fd, buf, n);
+        if (w > 0) total_written += w;
+    }
+
+    close(src_fd);
+    close(dst_fd);
+
+    if (total_written > 0)
+    {
+        rename(tmp_path, g_plog_path);
+        g_plog_fd = open(g_plog_path,
+                         O_WRONLY | O_CREAT | O_APPEND, 0644);
+        g_plog_size = total_written;
     }
     else
     {
+        unlink(tmp_path);
+        g_plog_fd = open(g_plog_path,
+                         O_WRONLY | O_CREAT | O_TRUNC, 0644);
         g_plog_size = 0;
     }
-
-    free(buf);
 }
 
 /* 日志级别名称表 */
@@ -143,7 +153,7 @@ void plog_init(const char *path)
         strncpy(g_plog_path, PLOG_PATH_DEFAULT, sizeof(g_plog_path) - 1);
     }
     g_plog_fd = open(g_plog_path,
-                     O_WRONLY | O_CREAT | O_APPEND | O_SYNC, 0644);
+                     O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (g_plog_fd >= 0)
     {
         struct stat st;
@@ -247,7 +257,28 @@ void plog_vwrite(int level, const char *tag, const char *fmt, va_list ap)
         plog_rotate();
         int w = write(g_plog_fd, buf, len);
         if (w > 0)
+        {
             g_plog_size += w;
+            g_plog_write_count++;
+        }
+        if (g_plog_write_count >= PLOG_SYNC_WRITE_COUNT)
+        {
+            fsync(g_plog_fd);
+            g_plog_write_count = 0;
+            g_plog_last_sync = time(NULL);
+        }
+        else
+        {
+            time_t now = time(NULL);
+            if (g_plog_last_sync == 0)
+                g_plog_last_sync = now;
+            else if (now - g_plog_last_sync >= PLOG_SYNC_INTERVAL_SEC)
+            {
+                fsync(g_plog_fd);
+                g_plog_last_sync = now;
+                g_plog_write_count = 0;
+            }
+        }
     }
     pthread_mutex_unlock(&g_plog_mutex);
 }
