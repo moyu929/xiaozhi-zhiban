@@ -1042,7 +1042,9 @@ async function refreshServices() {
         { name: 'Telnet 终端', key: 'telnet', status: d.telnet && d.telnet.running, toggle: true, service: 'telnet',
           statusText: d.telnet && d.telnet.running ? '运行中' : '已停止', hint: '重启保留' },
         { name: 'USB存储卡', key: 'usb_lun', status: d.usb_lun && d.usb_lun.enabled, toggle: true, service: 'usb_lun',
-          statusText: d.usb_lun && d.usb_lun.enabled ? '已开启' : '已关闭', hint: '重启保留' }
+          statusText: d.usb_lun && d.usb_lun.enabled ? '已开启' : '已关闭', hint: '重启保留' },
+        { name: '呼吸灯', key: 'led', status: d.led && d.led.enabled, toggle: true, service: 'led',
+          statusText: d.led && d.led.enabled ? '已开启' : '已关闭', hint: '重启保留' }
     ];
 
     var html = '';

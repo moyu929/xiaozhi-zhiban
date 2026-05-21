@@ -27,6 +27,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/stat.h>
@@ -73,6 +74,7 @@ static volatile pid_t g_upload_pid = 0;
 
 static int g_persist_usb_lun = -1;
 static int g_persist_telnet = -1;
+static int g_persist_led = -1;
 
 static int g_plog_fd = -1;
 static int g_plog_level = 3;
@@ -197,6 +199,77 @@ static void xlog_write(int level, const char *tag, const char *fmt, ...) {
     va_start(ap, fmt);
     xlog_vwrite(level, tag, fmt, ap);
     va_end(ap);
+}
+
+/* ===== 呼吸灯控制 ===== */
+
+static int send_led_cmd(int enable) {
+    if (access("/tmp/service/mqtt_custom_server", F_OK) != 0) {
+        XLOG_W(TAG, "呼吸灯控制: mqtt_custom_server socket不存在");
+        return -1;
+    }
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        XLOG_W(TAG, "呼吸灯控制: 创建socket失败: %s", strerror(errno));
+        return -1;
+    }
+    struct timeval tv = {3, 0};
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    char my_path[128];
+    snprintf(my_path, sizeof(my_path), "/tmp/service/xwebd_led_%d", getpid());
+    unlink(my_path);
+    strncpy(addr.sun_path, my_path, sizeof(addr.sun_path) - 1);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        XLOG_W(TAG, "呼吸灯控制: bind失败: %s", strerror(errno));
+        close(fd);
+        return -1;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, "/tmp/service/mqtt_custom_server", sizeof(addr.sun_path) - 1);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        XLOG_W(TAG, "呼吸灯控制: connect失败: %s", strerror(errno));
+        close(fd);
+        unlink(my_path);
+        return -1;
+    }
+    struct {
+        int msg_type;
+        int need_resp;
+        int unknown;
+        int data_size;
+        int data;
+    } msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_type = 0x2cec;
+    msg.need_resp = 1;
+    msg.unknown = 0;
+    msg.data_size = 4;
+    msg.data = enable;
+    int ret = send(fd, &msg, sizeof(msg), 0);
+    if (ret != sizeof(msg)) {
+        XLOG_W(TAG, "呼吸灯控制: send失败: ret=%d expected=%d (%s)", ret, (int)sizeof(msg), strerror(errno));
+        close(fd);
+        unlink(my_path);
+        return -1;
+    }
+    if (msg.need_resp) {
+        char resp[256];
+        int nr = recv(fd, resp, sizeof(resp), 0);
+        if (nr <= 0) {
+            XLOG_W(TAG, "呼吸灯控制: recv失败: %s", strerror(errno));
+        } else {
+            XLOG_I(TAG, "呼吸灯控制: 收到响应(%d字节)", nr);
+        }
+    }
+    close(fd);
+    unlink(my_path);
+    XLOG_I(TAG, "呼吸灯控制: 已发送0x2cec消息 enable=%d -> mqtt_custom_server", enable);
+    return 0;
 }
 
 /* ===== HTTP工具函数 ===== */
@@ -780,6 +853,7 @@ static int handle_get_services(int fd, const char *body, const char *query) {
             }
         }
     }
+    int led_enabled = (g_persist_led < 0) ? 1 : g_persist_led;
 
     char buf[1024];
     int len = snprintf(buf, sizeof(buf),
@@ -787,12 +861,14 @@ static int handle_get_services(int fd, const char *body, const char *query) {
         "\"boot_watchdog\":{\"deployed\":%s,\"running\":%s},"
         "\"xwebd\":{\"running\":%s,\"autostart\":%s},"
         "\"sair\":{\"installed\":%s,\"running\":%s},"
-        "\"usb_lun\":{\"enabled\":%s}}",
+        "\"usb_lun\":{\"enabled\":%s},"
+        "\"led\":{\"enabled\":%s}}",
         telnet_running ? "true" : "false",
         watchdog_exists ? "true" : "false", watchdog_running ? "true" : "false",
         xwebd_running ? "true" : "false", xwebd_autostart ? "true" : "false",
         sair_installed ? "true" : "false", sair_running ? "true" : "false",
-        usb_lun_enabled ? "true" : "false");
+        usb_lun_enabled ? "true" : "false",
+        led_enabled ? "true" : "false");
     return send_response(fd, 200, "application/json", buf, len);
 }
 
@@ -983,7 +1059,7 @@ static int handle_get_usb_mode(int fd, const char *body, const char *query) {
 }
 
 static int handle_post_usb_mode(int fd, const char *body, const char *query) {
-    int rc = send_response(fd, 200, "application/json", "{\"ok\":true}", 9);
+    int rc = send_json(fd, 200, "{\"ok\":true}");
     int trigger_fd = open("/sys/monitor/usb_port/config/run", O_WRONLY);
     if (trigger_fd >= 0) {
         write(trigger_fd, "1", 1);
@@ -997,9 +1073,10 @@ static int handle_post_usb_mode(int fd, const char *body, const char *query) {
 
 static void save_persist_conf(void) {
     char buf[128];
-    int len = snprintf(buf, sizeof(buf), "usb_lun=%d\ntelnet=%d\n",
+    int len = snprintf(buf, sizeof(buf), "usb_lun=%d\ntelnet=%d\nled=%d\n",
                        g_persist_usb_lun >= 0 ? g_persist_usb_lun : 0,
-                       g_persist_telnet >= 0 ? g_persist_telnet : 1);
+                       g_persist_telnet >= 0 ? g_persist_telnet : 1,
+                       g_persist_led >= 0 ? g_persist_led : 1);
     int fd = open(XWEBD_PERSIST_CONF, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) {
         write(fd, buf, len);
@@ -1017,7 +1094,9 @@ static void load_persist_conf(void) {
     if (p) g_persist_usb_lun = atoi(p + 8);
     p = strstr(buf, "telnet=");
     if (p) g_persist_telnet = atoi(p + 7);
-    XLOG_I(TAG, "持久化配置已加载: usb_lun=%d, telnet=%d", g_persist_usb_lun, g_persist_telnet);
+    p = strstr(buf, "led=");
+    if (p) g_persist_led = atoi(p + 4);
+    XLOG_I(TAG, "持久化配置已加载: usb_lun=%d, telnet=%d, led=%d", g_persist_usb_lun, g_persist_telnet, g_persist_led);
 }
 
 static void apply_persist_conf(void) {
@@ -1034,6 +1113,20 @@ static void apply_persist_conf(void) {
         if (!g_persist_telnet) {
             system("killall telnetd 2>/dev/null");
             XLOG_I(TAG, "恢复Telnet: 关闭");
+        }
+    }
+    if (g_persist_led >= 0) {
+        int retries = 5;
+        while (retries > 0) {
+            if (send_led_cmd(g_persist_led) == 0) break;
+            retries--;
+            if (retries > 0) {
+                XLOG_I(TAG, "呼吸灯恢复: 等待mqtt_custom_server启动, 剩余重试%d次", retries);
+                sleep(3);
+            }
+        }
+        if (retries <= 0) {
+            XLOG_W(TAG, "呼吸灯恢复: 发送消息失败, mqtt_custom_server可能未启动");
         }
     }
 }
@@ -1102,11 +1195,18 @@ static int handle_post_service_toggle(int fd, const char *body, const char *quer
             system("killall boot_watchdog.sh 2>/dev/null");
         }
         XLOG_I(TAG, "Boot watchdog: %s", enable ? "enabled" : "disabled");
+    } else if (strcmp(service, "led") == 0) {
+        if (send_led_cmd(enable) != 0) {
+            XLOG_W(TAG, "呼吸灯: 发送控制消息失败");
+        }
+        g_persist_led = enable;
+        save_persist_conf();
+        XLOG_I(TAG, "呼吸灯: %s", enable ? "enabled" : "disabled");
     } else {
         return send_error(fd, 400, "Unknown service");
     }
 
-    return send_response(fd, 200, "application/json", "{\"ok\":true}", 9);
+    return send_json(fd, 200, "{\"ok\":true}");
 }
 
 static int handle_get_diag(int fd, const char *body, const char *query) {
