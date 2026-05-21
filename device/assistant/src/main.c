@@ -1404,7 +1404,8 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
         watchdog_set_timeout(&app->watchdog, WD_TIMEOUT_ACTIVE);
         if (protocol_handler_is_connected(&app->proto))
         {
-            protocol_handler_send_start_listening(&app->proto, "auto");
+            protocol_handler_send_start_listening(&app->proto,
+                app->listening_mode == LISTENING_MODE_REALTIME ? "realtime" : "auto");
         }
         if (app->recorder_initialized && !app->listen_delayed)
         {
@@ -1417,11 +1418,26 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
         }
         break;
     case kStateSpeaking:
-        PLOG_I("STATE", "Speaking: 播放TTS语音");
+        PLOG_I("STATE", "Speaking: 播放TTS语音 (模式=%s)",
+               app->listening_mode == LISTENING_MODE_REALTIME ? "realtime" : "autostop");
         watchdog_set_timeout(&app->watchdog, WD_TIMEOUT_ACTIVE);
-        if (app->wakeup.started && !wakeup_is_feed_active(&app->wakeup))
+        if (app->listening_mode == LISTENING_MODE_REALTIME)
         {
-            wakeup_resume_feed(&app->wakeup);
+            if (app->recorder_initialized && !audio_recorder_module_is_sending(&app->recorder_mod))
+            {
+                audio_recorder_module_start_sending(&app->recorder_mod);
+            }
+            if (app->wakeup.started && wakeup_is_feed_active(&app->wakeup))
+            {
+                wakeup_pause_feed(&app->wakeup);
+            }
+        }
+        else
+        {
+            if (app->wakeup.started && !wakeup_is_feed_active(&app->wakeup))
+            {
+                wakeup_resume_feed(&app->wakeup);
+            }
         }
         break;
     case kStateCleaning:
@@ -2009,6 +2025,7 @@ int main(int argc, char *argv[])
     g_app.session_timeout_ms = SESSION_TIMEOUT_MS;
     g_app.wakeup_cooldown_ms = WAKEUP_COOLDOWN_MS;
     g_app.ws_ping_interval_ms = WS_PING_INTERVAL_MS;
+    g_app.listening_mode = LISTENING_MODE_AUTOSTOP;
 
     /* 创建self-pipe用于子线程通知主循环 */
     if (pipe(app->self_pipe) == 0)
@@ -2088,6 +2105,26 @@ int main(int argc, char *argv[])
                 {
                     strncpy(app->config.mcp_endpoint, mline, sizeof(app->config.mcp_endpoint) - 1);
                     PLOG_I("INIT", "已加载缓存的MCP接入点: %s", app->config.mcp_endpoint);
+                }
+            }
+            fclose(mfp);
+        }
+    }
+
+    {
+        FILE *mfp = fopen("/var/upgrade/.listening_mode", "r");
+        if (mfp)
+        {
+            char mline[32] = {0};
+            if (fgets(mline, sizeof(mline), mfp))
+            {
+                int mlen = strlen(mline);
+                while (mlen > 0 && (mline[mlen - 1] == '\n' || mline[mlen - 1] == '\r'))
+                    mline[--mlen] = '\0';
+                if (strcmp(mline, "realtime") == 0)
+                {
+                    app->listening_mode = LISTENING_MODE_REALTIME;
+                    PLOG_I("INIT", "已加载监听模式: realtime");
                 }
             }
             fclose(mfp);

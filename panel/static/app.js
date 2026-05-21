@@ -837,6 +837,7 @@ function resetWirelessUI() {
     $('xwebdVersion').textContent = '--';
     $('cfgMcpEndpoint').value = '';
     $('cfgSairLogLevel').value = '';
+    $('cfgListeningMode').value = 'autostop';
     $('cfgLogLevel').value = '';
     $('cfgUploadMax').value = '10';
     $('diagContainer').innerHTML = '<div class="empty-state">点击「运行自检」检测设备是否满足语音助手运行环境</div>';
@@ -1235,6 +1236,7 @@ async function refreshConfig() {
     var r = await api('/api/assistant/config');
     if (!r.error) {
         if (r.mcp_endpoint) $('cfgMcpEndpoint').value = r.mcp_endpoint;
+        if (r.listening_mode) $('cfgListeningMode').value = r.listening_mode;
     }
     var r2 = await api('/api/xwebd/config');
     if (!r2.error) {
@@ -1333,6 +1335,8 @@ async function saveAssistantConfig() {
     if (mcpEndpoint) config.mcp_endpoint = mcpEndpoint;
     var logLevel = $('cfgSairLogLevel').value;
     if (logLevel) config.log_level = logLevel;
+    var listeningMode = $('cfgListeningMode').value;
+    if (listeningMode) config.listening_mode = listeningMode;
     var listenTimeout = parseInt($('cfgListenTimeout').value);
     var sessionTimeout = parseInt($('cfgSessionTimeout').value);
     var wakeupCooldown = parseInt($('cfgWakeupCooldown').value);
@@ -1367,6 +1371,7 @@ async function restoreAssistantDefaults() {
     if (!await showConfirm('确定恢复助手配置为默认值？', {icon: '🔄'})) return;
     $('cfgMcpEndpoint').value = '';
     $('cfgSairLogLevel').value = 'INFO';
+    $('cfgListeningMode').value = 'autostop';
     $('cfgListenTimeout').value = '120';
     $('cfgSessionTimeout').value = '300';
     $('cfgWakeupCooldown').value = '3';
@@ -1377,6 +1382,7 @@ async function restoreAssistantDefaults() {
         body: JSON.stringify({
             mcp_endpoint: '',
             log_level: 'INFO',
+            listening_mode: 'autostop',
             listen_timeout: 120000,
             session_timeout: 300000,
             wakeup_cooldown: 3000,
@@ -2221,6 +2227,13 @@ document.addEventListener('DOMContentLoaded', function() {
             copyActivationCode(e.target);
         }
     });
+
+    $('cfgListeningMode').addEventListener('change', function() {
+        var mode = this.value;
+        var label = mode === 'realtime' ? 'Realtime（实时模式）' : 'AutoStop（自动停止）';
+        toast('监听模式已切换为 ' + label + '，点击「保存配置」生效', 'info');
+    });
+
     connectPanelSSE();
     refreshLogPanel('panel', false);
     window.addEventListener('resize', updateViewportHeight);

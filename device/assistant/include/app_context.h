@@ -90,6 +90,7 @@ typedef struct app_context_t {
     uint64_t ws_ping_interval_ms;
     uint64_t last_button_wakeup_ms;
     uint64_t last_tts_audio_ms;
+    int listening_mode;
 } app_context_t;
 
 #endif

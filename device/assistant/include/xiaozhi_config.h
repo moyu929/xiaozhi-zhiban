@@ -53,6 +53,9 @@
 #define DEFAULT_WS_URL           "wss://api.tenclass.net/xiaozhi/v1/"
 #define PLOG_PATH                "/var/upgrade/xiaozhi.log"
 
+#define LISTENING_MODE_AUTOSTOP  0
+#define LISTENING_MODE_REALTIME  1
+
 #define GOODIX_KEY_HOME    102
 #define GOODIX_KEY_BACK     30
 #define GOODIX_KEY_VOLUP   242

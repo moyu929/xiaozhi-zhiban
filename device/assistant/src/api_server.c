@@ -97,7 +97,7 @@ void api_server_write_config(void)
         "{\"ws_url\":\"%s\",\"ws_token\":\"%s\",\"log_level\":\"%s\","
         "\"listen_timeout\":%llu,\"session_timeout\":%llu,"
         "\"wakeup_cooldown\":%llu,\"ws_ping_interval\":%llu,"
-        "\"mcp_endpoint\":\"%s\"}\n",
+        "\"mcp_endpoint\":\"%s\",\"listening_mode\":\"%s\"}\n",
         g_app.config.ws_url,
         g_app.config.ws_token,
         plog_lvl == PLOG_LEVEL_DEBUG ? "DEBUG" :
@@ -107,7 +107,8 @@ void api_server_write_config(void)
         (unsigned long long)g_app.session_timeout_ms,
         (unsigned long long)g_app.wakeup_cooldown_ms,
         (unsigned long long)g_app.ws_ping_interval_ms,
-        g_app.config.mcp_endpoint);
+        g_app.config.mcp_endpoint,
+        g_app.listening_mode == LISTENING_MODE_REALTIME ? "realtime" : "autostop");
     write_file_atomic("/tmp/sair_config.json", buf, len);
 }
 
@@ -290,6 +291,29 @@ void api_server_check_commands(void)
                 {
                     fprintf(mfp, "%s\n", mcp_endpoint);
                     fclose(mfp);
+                }
+            }
+        }
+        {
+            char mode_str[32] = {0};
+            if (parse_json_str(buf, "listening_mode", mode_str, sizeof(mode_str)) == 0 && mode_str[0])
+            {
+                int new_mode = g_app.listening_mode;
+                if (strcmp(mode_str, "realtime") == 0)
+                    new_mode = LISTENING_MODE_REALTIME;
+                else if (strcmp(mode_str, "autostop") == 0)
+                    new_mode = LISTENING_MODE_AUTOSTOP;
+                if (new_mode != g_app.listening_mode)
+                {
+                    g_app.listening_mode = new_mode;
+                    PLOG_I(TAG, "listening_mode 配置已更新: %s", mode_str);
+                    api_server_write_config();
+                    FILE *mfp = fopen("/var/upgrade/.listening_mode", "w");
+                    if (mfp)
+                    {
+                        fprintf(mfp, "%s\n", mode_str);
+                        fclose(mfp);
+                    }
                 }
             }
         }
