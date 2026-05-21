@@ -2835,6 +2835,7 @@ int main(int argc, char *argv[]) {
 
     time_t last_health_check = time(NULL);
     int health_fail_count = 0;
+    int restart_delay = 2;
 
     while (1) {
         int status;
@@ -2876,8 +2877,10 @@ int main(int argc, char *argv[]) {
                 break;
             }
 
-            XLOG_I(TAG, "2秒后重启工作进程...");
-            sleep(2);
+            XLOG_I(TAG, "%d秒后重启工作进程...", restart_delay);
+            sleep(restart_delay);
+            if (restart_delay < 30) restart_delay *= 2;
+            if (restart_delay > 30) restart_delay = 30;
 
             worker_pid = fork();
             if (worker_pid < 0) {
@@ -2891,6 +2894,7 @@ int main(int argc, char *argv[]) {
             XLOG_I(TAG, "工作进程已重启, 新pid=%d", worker_pid);
             last_health_check = time(NULL);
             health_fail_count = 0;
+            restart_delay = 2;
             continue;
         }
 
@@ -2960,8 +2964,10 @@ int main(int argc, char *argv[]) {
                 kill(worker_pid, SIGKILL);
                 sleep(1);
                 waitpid(worker_pid, &status, 0);
-                XLOG_I(TAG, "工作进程已被强制终止, 2秒后重启...");
-                sleep(2);
+                XLOG_I(TAG, "工作进程已被强制终止, %d秒后重启...", restart_delay);
+                sleep(restart_delay);
+                if (restart_delay < 30) restart_delay *= 2;
+                if (restart_delay > 30) restart_delay = 30;
 
                 worker_pid = fork();
                 if (worker_pid < 0) {

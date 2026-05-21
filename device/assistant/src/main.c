@@ -1739,11 +1739,60 @@ __attribute__((constructor)) static void early_init(void)
  * @param argv 参数数组
  * @return 0正常退出
  */
+static int check_network(void)
+{
+    FILE *f = fopen("/sys/class/net/wlan0/operstate", "r");
+    if (f)
+    {
+        char state[32] = {0};
+        fgets(state, sizeof(state), f);
+        fclose(f);
+        if (strstr(state, "up"))
+            return 1;
+    }
+    f = fopen("/proc/net/route", "r");
+    if (f)
+    {
+        char line[256];
+        while (fgets(line, sizeof(line), f))
+        {
+            unsigned int dest, mask;
+            if (sscanf(line, "%*s %x %*x %*x %*x %*x %*x %x", &dest, &mask) >= 1)
+            {
+                if (dest == 0 && mask != 0)
+                {
+                    fclose(f);
+                    return 1;
+                }
+            }
+        }
+        fclose(f);
+    }
+    return 0;
+}
+
+static int wait_for_network(int timeout_sec)
+{
+    PLOG_I("NET", "等待网络连接 (最多%d秒)...", timeout_sec);
+    int waited = 0;
+    while (waited < timeout_sec)
+    {
+        if (check_network())
+        {
+            PLOG_I("NET", "网络已连接 (等待%d秒)", waited);
+            return 0;
+        }
+        sleep(2);
+        waited += 2;
+    }
+    PLOG_W("NET", "等待网络超时 (%d秒)", timeout_sec);
+    return -1;
+}
+
 int main(int argc, char *argv[])
 {
     int ret;
 
-    /* 初始化日志系统 */
     plog_init(PLOG_PATH);
     plog_set_level(PLOG_LEVEL_DEBUG);
 
@@ -1751,6 +1800,13 @@ int main(int argc, char *argv[])
     PLOG_I("BOOT", "=== 小智助手启动标记 ===");
     PLOG_I("BOOT", "=== pid=%d time=%ld ===", getpid(), (long)time(NULL));
     PLOG_I("BOOT", "========================================");
+
+    if (wait_for_network(300) != 0)
+    {
+        PLOG_W("BOOT", "网络不可用, 30秒后退出等待重启");
+        sleep(30);
+        return 1;
+    }
 
     /* 记录系统内存信息 */
     {
