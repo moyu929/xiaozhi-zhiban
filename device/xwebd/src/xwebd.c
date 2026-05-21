@@ -541,6 +541,8 @@ static int handle_get_system(int fd, const char *body, const char *query) {
     long disk_total = 0, disk_used = 0, disk_free = 0;
     int assistant_installed = 0, assistant_running = 0;
     char assistant_version[32] = "";
+    int cpu_usage = -1;
+    int key_backlight = -1;
 
     read_proc_line("/proc/device-tree/model", model, sizeof(model));
     read_proc_line("/proc/version", kernel, sizeof(kernel));
@@ -659,6 +661,34 @@ static int handle_get_system(int fd, const char *body, const char *query) {
         }
     }
 
+    {
+        FILE *sf = fopen("/proc/stat", "r");
+        if (sf) {
+            long long user1, nice1, sys1, idle1;
+            if (fscanf(sf, "cpu %lld %lld %lld %lld", &user1, &nice1, &sys1, &idle1) == 4) {
+                fclose(sf);
+                usleep(200000);
+                sf = fopen("/proc/stat", "r");
+                if (sf) {
+                    long long user2, nice2, sys2, idle2;
+                    if (fscanf(sf, "cpu %lld %lld %lld %lld", &user2, &nice2, &sys2, &idle2) == 4) {
+                        long long d_total = (user2 - user1) + (nice2 - nice1) + (sys2 - sys1) + (idle2 - idle1);
+                        long long d_idle = idle2 - idle1;
+                        if (d_total > 0) cpu_usage = (int)(100 * (d_total - d_idle) / d_total);
+                    }
+                }
+            }
+            if (sf) fclose(sf);
+        }
+    }
+
+    {
+        char bl_buf[8] = {0};
+        if (read_file_string("/sys/class/input/input2/bl_onoff", bl_buf, sizeof(bl_buf)) > 0) {
+            key_backlight = (bl_buf[0] == '1') ? 1 : 0;
+        }
+    }
+
     char esc_model[128], esc_kernel[128], esc_cpu[256], esc_wifi_ip[64];
     json_escape(model, esc_model, sizeof(esc_model));
     json_escape(kernel, esc_kernel, sizeof(esc_kernel));
@@ -671,13 +701,15 @@ static int handle_get_system(int fd, const char *body, const char *query) {
         "\"uptime_s\":%.0f,\"battery_cap\":%d,"
         "\"wifi_connected\":%s,\"wifi_ip\":\"%s\","
         "\"disk_total_kb\":%ld,\"disk_used_kb\":%ld,\"disk_free_kb\":%ld,"
-        "\"assistant_installed\":%s,\"assistant_running\":%s,\"assistant_version\":\"%s\"}",
+        "\"assistant_installed\":%s,\"assistant_running\":%s,\"assistant_version\":\"%s\","
+        "\"cpu_usage\":%d,\"key_backlight\":%d}",
         esc_model, esc_kernel, esc_cpu,
         mem_total, mem_free, mem_cached,
         uptime, battery,
         wifi_connected ? "true" : "false", esc_wifi_ip,
         disk_total, disk_used, disk_free,
-        assistant_installed ? "true" : "false", assistant_running ? "true" : "false", assistant_version);
+        assistant_installed ? "true" : "false", assistant_running ? "true" : "false", assistant_version,
+        cpu_usage, key_backlight);
 
     return send_response(fd, 200, "application/json", buf, len);
 }
@@ -854,6 +886,13 @@ static int handle_get_services(int fd, const char *body, const char *query) {
         }
     }
     int led_enabled = (g_persist_led < 0) ? 1 : g_persist_led;
+    int key_backlight_enabled = -1;
+    {
+        char bl_buf[8] = {0};
+        if (read_file_string("/sys/class/input/input2/bl_onoff", bl_buf, sizeof(bl_buf)) > 0) {
+            key_backlight_enabled = (bl_buf[0] == '1') ? 1 : 0;
+        }
+    }
 
     char buf[1024];
     int len = snprintf(buf, sizeof(buf),
@@ -862,13 +901,15 @@ static int handle_get_services(int fd, const char *body, const char *query) {
         "\"xwebd\":{\"running\":%s,\"autostart\":%s},"
         "\"sair\":{\"installed\":%s,\"running\":%s},"
         "\"usb_lun\":{\"enabled\":%s},"
-        "\"led\":{\"enabled\":%s}}",
+        "\"led\":{\"enabled\":%s},"
+        "\"key_backlight\":{\"enabled\":%s}}",
         telnet_running ? "true" : "false",
         watchdog_exists ? "true" : "false", watchdog_running ? "true" : "false",
         xwebd_running ? "true" : "false", xwebd_autostart ? "true" : "false",
         sair_installed ? "true" : "false", sair_running ? "true" : "false",
         usb_lun_enabled ? "true" : "false",
-        led_enabled ? "true" : "false");
+        led_enabled ? "true" : "false",
+        key_backlight_enabled == -1 ? "null" : (key_backlight_enabled ? "true" : "false"));
     return send_response(fd, 200, "application/json", buf, len);
 }
 
@@ -1202,6 +1243,16 @@ static int handle_post_service_toggle(int fd, const char *body, const char *quer
         g_persist_led = enable;
         save_persist_conf();
         XLOG_I(TAG, "呼吸灯: %s", enable ? "enabled" : "disabled");
+    } else if (strcmp(service, "key_backlight") == 0) {
+        int bl_fd = open("/sys/class/input/input2/bl_onoff", O_WRONLY);
+        if (bl_fd >= 0) {
+            write(bl_fd, enable ? "1" : "0", 1);
+            close(bl_fd);
+            XLOG_I(TAG, "按键背光: %s", enable ? "enabled" : "disabled");
+        } else {
+            XLOG_W(TAG, "按键背光: 打开sysfs失败");
+            return send_error(fd, 500, "Cannot control key backlight");
+        }
     } else {
         return send_error(fd, 400, "Unknown service");
     }

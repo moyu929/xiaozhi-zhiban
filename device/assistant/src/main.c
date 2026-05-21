@@ -97,7 +97,6 @@ __attribute__((weak)) int sys_is_soft_watchdog_forbid(void) { return 0; }
 
 /* 全局运行标志，0=停止，1=运行中 */
 static volatile int g_running = 0;
-/* 热更新挂起标志，收到SIGUSR2时置1 */
 static volatile sig_atomic_t g_hot_update_pending = 0;
 
 /* 全局应用上下文 */
@@ -794,6 +793,10 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
                 }
             }
         }
+        else if (strcmp(state_str, "sentence_start") == 0)
+        {
+            PLOG_I("PROTO", "TTS sentence_start");
+        }
     }
     else if (strcmp(type_str, "stt") == 0)
     {
@@ -859,6 +862,32 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
     {
         PLOG_I("PROTO", "收到 goodbye");
         state_machine_transition(&app->sm, kStateCleaning);
+    }
+    else if (strcmp(type_str, "listen") == 0)
+    {
+        char state_str[32] = {0};
+        json_extract_str(json, len, "\"state\"", state_str, sizeof(state_str));
+        PLOG_I("PROTO", "收到服务端listen: state=%s", state_str);
+
+        if (strcmp(state_str, "start") == 0)
+        {
+            xiaozhi_state_t cur = state_machine_get_state(&app->sm);
+            if (cur == kStateSpeaking)
+            {
+                PLOG_I("PROTO", "Speaking状态收到服务端listen start, 中止TTS播放");
+                app->ignore_tts_audio = 1;
+                app->player.aborted = true;
+                audio_player_stop(&app->player);
+                if (protocol_handler_is_connected(&app->proto))
+                {
+                    protocol_handler_send_abort(&app->proto, "server_listening");
+                    protocol_handler_clear_send_queue(&app->proto);
+                }
+                app->listen_delayed = 0;
+                app->listen_skip_frames = 0;
+                state_machine_transition(&app->sm, kStateListening);
+            }
+        }
     }
     else if (strcmp(type_str, "mcp") == 0 || strcmp(type_str, "iot") == 0)
     {
@@ -1264,11 +1293,11 @@ static void proc_srv_msg(void *req_header_ptr, int *resp_result)
     case MSG_SAIR_AEC_STOP:       /* 平台SDK IPC消息ID - 回声消除停止 */
     case MSG_SAIR_CHOOSE_AI:      /* 平台SDK IPC消息ID - 选择AI */
     case MSG_SAIR_REGISTER_CB:    /* 平台SDK IPC消息ID - 注册回调 */
-    case MSG_SAIR_STATUS_UPDATE:  /* 平台SDK IPC消息ID - 状态更新 */
-    case MSG_SAIR_GET_INFO:       /* 平台SDK IPC消息ID - 获取信息 */
-    case MSG_SAIR_POST_EVENT:     /* 平台SDK IPC消息ID - 投递事件 */
-    case MSG_SAIR_RECORD_REQUEST: /* 平台SDK IPC消息ID - 录音请求 */
-    case MSG_SAIR_GET_EVENT:      /* 平台SDK IPC消息ID - 获取事件 */
+    case MSG_SAIR_STATUS_UPDATE:
+    case MSG_SAIR_GET_INFO:
+    case MSG_SAIR_POST_EVENT:
+    case MSG_SAIR_RECORD_REQUEST:
+    case MSG_SAIR_GET_EVENT:
         if (resp_result)
             *resp_result = 1;
         break;
@@ -1404,14 +1433,29 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
         watchdog_set_timeout(&app->watchdog, WD_TIMEOUT_ACTIVE);
         if (protocol_handler_is_connected(&app->proto))
         {
-            protocol_handler_send_start_listening(&app->proto,
-                app->listening_mode == LISTENING_MODE_REALTIME ? "realtime" : "auto");
+            if (app->listening_mode == LISTENING_MODE_REALTIME && from == kStateSpeaking)
+            {
+                PLOG_I("STATE", "Realtime模式: Speaking→Listening, 跳过重复start_listening");
+            }
+            else
+            {
+                protocol_handler_send_start_listening(&app->proto,
+                    app->listening_mode == LISTENING_MODE_REALTIME ? "realtime" : "auto");
+            }
         }
-        if (app->recorder_initialized && !app->listen_delayed)
+        if (app->recorder_initialized)
         {
-            audio_recorder_module_start_sending(&app->recorder_mod);
+            if (app->listen_delayed)
+            {
+                audio_recorder_module_start_sending_skip(&app->recorder_mod, app->listen_skip_frames);
+                app->listen_delayed = 0;
+                app->listen_skip_frames = 0;
+            }
+            else if (!audio_recorder_module_is_sending(&app->recorder_mod))
+            {
+                audio_recorder_module_start_sending(&app->recorder_mod);
+            }
         }
-        /* 监听时暂停唤醒词检测 */
         if (app->wakeup.started && wakeup_is_feed_active(&app->wakeup))
         {
             wakeup_pause_feed(&app->wakeup);
@@ -1644,7 +1688,8 @@ static void process_pending_wakeup(app_context_t *app)
             protocol_handler_clear_send_queue(&app->proto);
         }
         broadcast_sair_awake(app->pending_wakeup_type);
-        app->listen_delayed = 1;
+        app->listen_delayed = 0;
+        app->listen_skip_frames = 0;
         state_machine_transition(&app->sm, kStateListening);
         return;
     }
@@ -1683,6 +1728,7 @@ static void process_pending_wakeup(app_context_t *app)
     app->in_session = 1;
     app->session_start_ms = now;
     app->listen_delayed = 1;
+    app->listen_skip_frames = RECORDER_SKIP_FRAMES_WAKEUP;
 
     broadcast_sair_awake(app->pending_wakeup_type);
 
@@ -1731,10 +1777,10 @@ static void process_pending_key(app_context_t *app, volatile sig_atomic_t *flag,
  */
 static void do_hot_update(app_context_t *app)
 {
-    struct stat st;
-    if (stat("/var/upgrade/sair_new", &st) != 0)
+    struct stat st_sair;
+    if (stat("/var/upgrade/sair", &st_sair) != 0)
     {
-        PLOG_E("OTA", "热更新: sair_new不存在, 跳过");
+        PLOG_E("OTA", "热更新: /var/upgrade/sair不存在, 跳过");
         return;
     }
 
@@ -1771,7 +1817,7 @@ static void do_hot_update(app_context_t *app)
     }
 
     usleep(500000);
-    PLOG_I("OTA", "热更新: 资源已释放, 替换二进制并执行新版本");
+    PLOG_I("OTA", "热更新: 资源已释放, 执行新版本 /var/upgrade/sair");
 
     int max_fd = sysconf(_SC_OPEN_MAX);
     if (max_fd > 4096)
@@ -1779,16 +1825,10 @@ static void do_hot_update(app_context_t *app)
     for (int fd = 3; fd < max_fd; fd++)
         close(fd);
 
-    unlink("/var/upgrade/sair_old");
-    rename("/var/upgrade/sair", "/var/upgrade/sair_old");
-    rename("/var/upgrade/sair_new", "/var/upgrade/sair");
-
     char *new_argv[] = {"/var/upgrade/sair", NULL};
     execvp("/var/upgrade/sair", new_argv);
 
-    PLOG_E("OTA", "execvp 失败, 正在回滚");
-    rename("/var/upgrade/sair", "/var/upgrade/sair_new");
-    rename("/var/upgrade/sair_old", "/var/upgrade/sair");
+    PLOG_E("OTA", "execvp 失败");
 }
 
 __attribute__((constructor)) static void early_init(void)
@@ -2412,24 +2452,6 @@ int main(int argc, char *argv[])
                             app->pending_wakeup_type = 0;
                         }
                     }
-                }
-            }
-        }
-
-        /* Listening状态下延迟录音到期检查 */
-        {
-            xiaozhi_state_t cur_state = state_machine_get_state(&app->sm);
-            if (cur_state == kStateListening && app->listen_delayed)
-            {
-                uint64_t now = get_time_ms();
-                if (now - app->state_enter_time_ms >= 1000)
-                {
-                    PLOG_I("STATE", "唤醒打断延迟到期, 开始录音发送");
-                    if (app->recorder_initialized)
-                    {
-                        audio_recorder_module_start_sending(&app->recorder_mod);
-                    }
-                    app->listen_delayed = 0;
                 }
             }
         }

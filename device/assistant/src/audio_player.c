@@ -261,6 +261,11 @@ int audio_player_stop_with_wait(audio_player_t *player, bool wait_for_completion
     pthread_mutex_lock(&player->mutex);
     player->playing = false;
 
+    if (player->ts_queue)
+    {
+        timestamp_queue_clear(player->ts_queue);
+    }
+
     if (wait_for_completion && player->track_handle && player->track_open)
     {
         pthread_mutex_unlock(&player->mutex);

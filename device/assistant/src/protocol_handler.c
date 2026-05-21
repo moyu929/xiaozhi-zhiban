@@ -539,7 +539,7 @@ int protocol_handler_connect(protocol_handler_t *proto)
     char hello_json[1024];
     snprintf(hello_json, sizeof(hello_json),
              "{\"type\":\"hello\",\"version\":2,\"transport\":\"websocket\","
-             "\"features\":{\"mcp\":true,\"aec\":false},"
+             "\"features\":{\"mcp\":true,\"aec\":true},"
              "\"audio_params\":{\"format\":\"opus\",\"sample_rate\":%d,\"channels\":%d,\"frame_duration\":%d}}",
              proto->config.sample_rate,
              proto->config.channels,
@@ -835,7 +835,7 @@ void timestamp_queue_push(timestamp_queue_t *q, uint32_t ts)
     {
         q->head = (q->head + 1) % PROTO_MAX_TIMESTAMPS;
         q->count--;
-        PLOG_W("PROTO", "时间戳队列已满，丢弃最旧值");
+        PLOG_W("PROTO", "AEC时间戳队列已满，丢弃最旧值 (ts=%u)", q->timestamps[q->head]);
     }
 
     int idx = (q->head + q->count) % PROTO_MAX_TIMESTAMPS;

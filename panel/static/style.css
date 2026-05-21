@@ -1016,7 +1016,9 @@ body {
 .btn-outline { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
 .btn-outline:hover { background: var(--danger); color: #fff; }
 
-.svc-list { display: flex; flex-direction: column; gap: 8px; }
+.svc-list { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent; }
+.svc-list::-webkit-scrollbar { width: 4px; }
+.svc-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
 .svc-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--bg-secondary); border-radius: var(--radius-sm); font-size: 13px; }
 
@@ -1266,8 +1268,6 @@ body {
 }
 
 .process-container {
-  height: 280px;
-  overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.1) transparent;
 }
@@ -1279,26 +1279,47 @@ body {
   margin-left: 12px;
   white-space: nowrap;
 }
-.process-table thead {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  will-change: transform;
+.process-table-wrap {
+  display: flex;
+  flex-direction: column;
+  height: 280px;
 }
-.process-table thead th {
-  background: var(--bg-card);
-  box-shadow: 0 1px 0 var(--bg-card);
+.process-table-header {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-color);
 }
+.process-table-scroll {
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+}
+.process-table-scroll::-webkit-scrollbar { width: 4px; }
+.process-table-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 .process-table {
+  table-layout: fixed;
+  width: 100%;
+  border-collapse: collapse;
   font-size: 12px;
 }
-.process-table th {
+.process-table-head th {
   font-size: 11px;
-  padding: 6px 8px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 8px 8px;
+  text-align: left;
+  background: var(--bg-card);
 }
-.process-table td {
+.process-table-body td {
   padding: 5px 8px;
   vertical-align: middle;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-secondary);
+}
+.process-table-body tr:hover td {
+  background: rgba(255,255,255,0.02);
 }
 .process-name {
   font-family: "SF Mono", "Fira Code", "Consolas", monospace;

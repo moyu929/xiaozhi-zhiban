@@ -35,7 +35,15 @@ static void do_encode_send(audio_recorder_module_t *rec)
 
     if (opus_len > 0)
     {
-        protocol_handler_send_audio(rec->proto, rec->opus_output_buf, opus_len);
+        if (rec->skip_frames > 0)
+        {
+            rec->skip_frames--;
+            PLOG_D("REC", "跳过唤醒音帧 (剩余=%d)", rec->skip_frames);
+        }
+        else
+        {
+            protocol_handler_send_audio(rec->proto, rec->opus_output_buf, opus_len);
+        }
     }
     else if (opus_len < 0)
     {
@@ -157,15 +165,21 @@ void audio_recorder_module_destroy(audio_recorder_module_t *rec)
  */
 int audio_recorder_module_start_sending(audio_recorder_module_t *rec)
 {
+    return audio_recorder_module_start_sending_skip(rec, 0);
+}
+
+int audio_recorder_module_start_sending_skip(audio_recorder_module_t *rec, int skip_frames)
+{
     if (!rec)
         return -1;
 
     pthread_mutex_lock(&rec->mutex);
     rec->right_channel_count = 0;
+    rec->skip_frames = skip_frames;
     rec->sending = true;
     pthread_mutex_unlock(&rec->mutex);
 
-    PLOG_I("REC", "已开始发送录音");
+    PLOG_I("REC", "已开始发送录音 (跳过前%d帧=%dms)", skip_frames, skip_frames * 60);
     return 0;
 }
 
