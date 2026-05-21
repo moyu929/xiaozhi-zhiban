@@ -55,8 +55,6 @@ typedef struct app_context_t {
     uint64_t wakeup_start_time_ms;
     uint64_t last_wifi_check_ms;
     uint64_t boot_time_ms;
-    int listen_delayed;
-    int listen_skip_frames;
 
     int in_session;
     int needs_activation;

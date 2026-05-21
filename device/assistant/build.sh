@@ -77,6 +77,9 @@ $CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/audio_player.c" -o "$BUILD_DIR/audio_pla
 echo "[14/18] Compiling audio_recorder.o"
 $CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/audio_recorder.c" -o "$BUILD_DIR/audio_recorder.o"
 
+echo "[14b/18] Compiling audio_precache.o"
+$CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/audio_precache.c" -o "$BUILD_DIR/audio_precache.o"
+
 echo "[15/18] Compiling mcp_handler.o"
 $CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/mcp_handler.c" -o "$BUILD_DIR/mcp_handler.o"
 
@@ -107,6 +110,7 @@ $CC --sysroot=$SYSROOT \
     $BUILD_DIR/protocol_handler.o \
     $BUILD_DIR/audio_player.o \
     $BUILD_DIR/audio_recorder.o \
+    $BUILD_DIR/audio_precache.o \
     $BUILD_DIR/mcp_handler.o \
     $BUILD_DIR/api_server.o \
     $BUILD_DIR/diag_module.o \

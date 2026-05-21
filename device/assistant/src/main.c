@@ -33,6 +33,8 @@
 #include <mqueue.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <linux/input.h>
 #include <poll.h>
 #include <dirent.h>
@@ -98,6 +100,79 @@ __attribute__((weak)) int sys_is_soft_watchdog_forbid(void) { return 0; }
 /* 全局运行标志，0=停止，1=运行中 */
 static volatile int g_running = 0;
 static volatile sig_atomic_t g_hot_update_pending = 0;
+
+typedef struct {
+    int type;
+    char content[SUBTITLE_MAX_LEN];
+} sair_content_t;
+
+static sair_content_t g_subtitle;
+static pthread_mutex_t g_subtitle_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static int mic_set_enable(int enable)
+{
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0)
+        return -1;
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, MIC_SERVICE_SOCKET, sizeof(addr.sun_path) - 1);
+
+    struct timeval tv = {.tv_sec = 2, .tv_usec = 0};
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    {
+        close(fd);
+        return -1;
+    }
+
+    int msg[4] = {MIC_CMD_SET_ENABLE, 1, 0, 0};
+    int payload = enable;
+    char buf[sizeof(int) * 4 + sizeof(int)];
+    memcpy(buf, msg, sizeof(msg));
+    memcpy(buf + sizeof(msg), &payload, sizeof(int));
+
+    if (send(fd, buf, sizeof(buf), 0) != sizeof(buf))
+    {
+        close(fd);
+        return -1;
+    }
+
+    char resp[64];
+    recv(fd, resp, sizeof(resp), 0);
+    close(fd);
+    return 0;
+}
+
+static void subtitle_set(int type, const char *text)
+{
+    pthread_mutex_lock(&g_subtitle_mutex);
+    g_subtitle.type = type;
+    if (text)
+    {
+        strncpy(g_subtitle.content, text, SUBTITLE_MAX_LEN - 1);
+        g_subtitle.content[SUBTITLE_MAX_LEN - 1] = '\0';
+    }
+    else
+    {
+        g_subtitle.content[0] = '\0';
+    }
+    pthread_mutex_unlock(&g_subtitle_mutex);
+
+    PLOG_I("SUB", "字幕更新: type=%d text='%.64s'", type, text ? text : "");
+}
+
+static void subtitle_clear(void)
+{
+    pthread_mutex_lock(&g_subtitle_mutex);
+    g_subtitle.type = SUBTITLE_TYPE_NONE;
+    g_subtitle.content[0] = '\0';
+    pthread_mutex_unlock(&g_subtitle_mutex);
+}
 
 /* 全局应用上下文 */
 app_context_t g_app;
@@ -747,6 +822,10 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
                 PLOG_E("PROTO", "audio_recorder_module_init 失败: %d", rec_ret);
             }
         }
+        else
+        {
+            audio_recorder_module_set_proto(&app->recorder_mod, &app->proto);
+        }
 
         state_machine_transition(&app->sm, kStateListening);
     }
@@ -785,7 +864,6 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
             {
                 PLOG_I("PROTO", "TTS 结束 (正常完成)");
                 audio_player_stop_with_wait(&app->player, true);
-                app->listen_delayed = 0;
                 xiaozhi_state_t cur_state = state_machine_get_state(&app->sm);
                 if (cur_state != kStateCleaning)
                 {
@@ -795,14 +873,26 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
         }
         else if (strcmp(state_str, "sentence_start") == 0)
         {
-            PLOG_I("PROTO", "TTS sentence_start");
+            char tts_text[SUBTITLE_MAX_LEN] = {0};
+            json_extract_str(json, len, "\"text\"", tts_text, sizeof(tts_text));
+            PLOG_I("PROTO", "TTS sentence_start: text='%.64s'", tts_text);
+            if (tts_text[0])
+            {
+                subtitle_set(SUBTITLE_TYPE_TTS, tts_text);
+            }
         }
     }
     else if (strcmp(type_str, "stt") == 0)
     {
         char state_str[32] = {0};
         json_extract_str(json, len, "\"state\"", state_str, sizeof(state_str));
-        PLOG_I("PROTO", "STT %s", state_str);
+        char stt_text[SUBTITLE_MAX_LEN] = {0};
+        json_extract_str(json, len, "\"text\"", stt_text, sizeof(stt_text));
+        PLOG_I("PROTO", "STT %s text='%.64s'", state_str, stt_text);
+        if (stt_text[0])
+        {
+            subtitle_set(SUBTITLE_TYPE_ASR, stt_text);
+        }
     }
     else if (strcmp(type_str, "llm") == 0)
     {
@@ -883,8 +973,6 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
                     protocol_handler_send_abort(&app->proto, "server_listening");
                     protocol_handler_clear_send_queue(&app->proto);
                 }
-                app->listen_delayed = 0;
-                app->listen_skip_frames = 0;
                 state_machine_transition(&app->sm, kStateListening);
             }
         }
@@ -1297,10 +1385,33 @@ static void proc_srv_msg(void *req_header_ptr, int *resp_result)
     case MSG_SAIR_GET_INFO:
     case MSG_SAIR_POST_EVENT:
     case MSG_SAIR_RECORD_REQUEST:
-    case MSG_SAIR_GET_EVENT:
         if (resp_result)
             *resp_result = 1;
         break;
+    case MSG_SAIR_GET_EVENT:
+    {
+        pthread_mutex_lock(&g_subtitle_mutex);
+        if (g_subtitle.type != SUBTITLE_TYPE_NONE)
+        {
+            int content_len = strlen(g_subtitle.content) + 1;
+            int total_size = (int)sizeof(int) + content_len;
+            if (total_size <= 4096)
+            {
+                memcpy(hdr->payload, &g_subtitle.type, sizeof(int));
+                memcpy(hdr->payload + sizeof(int), g_subtitle.content, content_len);
+                hdr->payload_size = total_size;
+            }
+            PLOG_I("SUB", "GET_EVENT响应: type=%d content='%.64s'", g_subtitle.type, g_subtitle.content);
+        }
+        else
+        {
+            PLOG_D("SUB", "GET_EVENT响应: 无字幕内容");
+        }
+        pthread_mutex_unlock(&g_subtitle_mutex);
+        if (resp_result)
+            *resp_result = 1;
+        break;
+    }
     default:
         PLOG_D("IPC", "服务消息: 未处理 cmd=0x%X", cmd);
         break;
@@ -1351,10 +1462,9 @@ static void do_session_cleanup(app_context_t *app, uint64_t now, uint64_t prev_s
     if (app->recorder_initialized)
     {
         audio_recorder_module_stop_sending(&app->recorder_mod);
-        uint64_t step_ms = get_time_ms();
-        audio_recorder_module_destroy(&app->recorder_mod);
-        app->recorder_initialized = 0;
-        PLOG_D("CLEANUP", "录音模块销毁: %llums", (unsigned long long)(get_time_ms() - step_ms));
+        audio_precache_stop(&app->recorder_mod.precache);
+        app->recorder_mod.proto = NULL;
+        PLOG_D("CLEANUP", "录音模块已停止 (保留编码器供precache复用)");
     }
 
     uint64_t total_ms = get_time_ms() - now;
@@ -1445,11 +1555,19 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
         }
         if (app->recorder_initialized)
         {
-            if (app->listen_delayed)
+            if (app->recorder_mod.precache.active)
             {
-                audio_recorder_module_start_sending_skip(&app->recorder_mod, app->listen_skip_frames);
-                app->listen_delayed = 0;
-                app->listen_skip_frames = 0;
+                audio_recorder_module_start_sending(&app->recorder_mod);
+                if (protocol_handler_is_connected(&app->proto))
+                {
+                    int cached = audio_precache_drain_to_proto(&app->recorder_mod.precache, &app->proto);
+                    (void)cached;
+                }
+                else
+                {
+                    audio_precache_stop(&app->recorder_mod.precache);
+                    PLOG_W("STATE", "precache排空时连接不可用, 丢弃缓存");
+                }
             }
             else if (!audio_recorder_module_is_sending(&app->recorder_mod))
             {
@@ -1489,6 +1607,7 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
         watchdog_set_timeout(&app->watchdog, WD_TIMEOUT_ACTIVE);
         app->connecting = 0;
         app->ignore_tts_audio = 0;
+        subtitle_clear();
         /* 清理时暂停唤醒词检测 */
         if (app->wakeup.started)
         {
@@ -1505,6 +1624,7 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
         /* 停止录音发送 */
         if (app->recorder_initialized)
         {
+            audio_precache_stop(&app->recorder_mod.precache);
             audio_recorder_module_stop_sending(&app->recorder_mod);
         }
         /* 停止并释放播放器音轨 */
@@ -1688,8 +1808,10 @@ static void process_pending_wakeup(app_context_t *app)
             protocol_handler_clear_send_queue(&app->proto);
         }
         broadcast_sair_awake(app->pending_wakeup_type);
-        app->listen_delayed = 0;
-        app->listen_skip_frames = 0;
+        if (app->recorder_initialized)
+        {
+            audio_precache_start(&app->recorder_mod.precache);
+        }
         state_machine_transition(&app->sm, kStateListening);
         return;
     }
@@ -1727,8 +1849,12 @@ static void process_pending_wakeup(app_context_t *app)
     app->last_wakeup_ms = now;
     app->in_session = 1;
     app->session_start_ms = now;
-    app->listen_delayed = 1;
-    app->listen_skip_frames = RECORDER_SKIP_FRAMES_WAKEUP;
+
+    if (app->recorder_initialized)
+    {
+        audio_precache_start(&app->recorder_mod.precache);
+        PLOG_I("WAKEUP", "音频预缓存已启动, 唤醒后音频将被缓存");
+    }
 
     broadcast_sair_awake(app->pending_wakeup_type);
 
@@ -2174,6 +2300,21 @@ int main(int argc, char *argv[])
     /* 初始化音频分发器 */
     audio_dispatcher_init(&app->audio_disp);
     heap_check("pre-wakeup");
+
+    /* 早期初始化录音模块（仅编码器+回调，无proto），使precache可用 */
+    {
+        int rec_ret = audio_recorder_module_early_init(&app->recorder_mod, &app->audio_disp);
+        if (rec_ret == 0)
+        {
+            app->recorder_initialized = 1;
+            PLOG_I("INIT", "录音模块早期初始化成功 (precache可用)");
+        }
+        else
+        {
+            PLOG_W("INIT", "录音模块早期初始化失败: %d", rec_ret);
+        }
+    }
+    heap_check("post-recorder-early");
 
     /* 初始化唤醒词检测模块 */
     ret = wakeup_init(&app->wakeup, &app->audio_disp, on_wakeup_event, app);

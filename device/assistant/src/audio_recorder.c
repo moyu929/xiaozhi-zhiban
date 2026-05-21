@@ -35,14 +35,13 @@ static void do_encode_send(audio_recorder_module_t *rec)
 
     if (opus_len > 0)
     {
-        if (rec->skip_frames > 0)
-        {
-            rec->skip_frames--;
-            PLOG_D("REC", "跳过唤醒音帧 (剩余=%d)", rec->skip_frames);
-        }
-        else
+        if (rec->sending)
         {
             protocol_handler_send_audio(rec->proto, rec->opus_output_buf, opus_len);
+        }
+        else if (audio_precache_is_active(&rec->precache))
+        {
+            audio_precache_push(&rec->precache, rec->opus_output_buf, opus_len);
         }
     }
     else if (opus_len < 0)
@@ -63,7 +62,10 @@ static void do_encode_send(audio_recorder_module_t *rec)
 static void on_audio_data(const int16_t *data, int len, void *user_data)
 {
     audio_recorder_module_t *rec = (audio_recorder_module_t *)user_data;
-    if (!rec || !rec->sending)
+    if (!rec)
+        return;
+
+    if (!rec->sending && !audio_precache_is_active(&rec->precache))
         return;
 
     pthread_mutex_lock(&rec->mutex);
@@ -102,13 +104,11 @@ int audio_recorder_module_init(audio_recorder_module_t *rec, protocol_handler_t 
     rec->proto = proto;
     rec->disp = disp;
 
-    /* 录音参数：16kHz单声道，60ms帧时长，16kbps码率 */
     rec->sample_rate = 16000;
     rec->channels = 1;
     rec->frame_duration = 60;
     rec->bitrate = 16000;
 
-    /* 创建Opus编码器 */
     int error;
     rec->opus_encoder = opus_encoder_create(rec->sample_rate, rec->channels,
                                             OPUS_APPLICATION_VOIP, &error);
@@ -118,20 +118,65 @@ int audio_recorder_module_init(audio_recorder_module_t *rec, protocol_handler_t 
         return -1;
     }
 
-    /* 配置Opus编码器参数 */
     opus_encoder_ctl((OpusEncoder *)rec->opus_encoder, OPUS_SET_BITRATE(rec->bitrate));
-    opus_encoder_ctl((OpusEncoder *)rec->opus_encoder, OPUS_SET_COMPLEXITY(0)); /* 最低复杂度，节省CPU */
-    opus_encoder_ctl((OpusEncoder *)rec->opus_encoder, OPUS_SET_VBR(1));        /* 启用可变码率 */
-    opus_encoder_ctl((OpusEncoder *)rec->opus_encoder, OPUS_SET_DTX(1));        /* 启用不连续传输 */
-    opus_encoder_ctl((OpusEncoder *)rec->opus_encoder, OPUS_SET_INBAND_FEC(0)); /* 禁用带内前向纠错 */
+    opus_encoder_ctl((OpusEncoder *)rec->opus_encoder, OPUS_SET_COMPLEXITY(0));
+    opus_encoder_ctl((OpusEncoder *)rec->opus_encoder, OPUS_SET_VBR(1));
+    opus_encoder_ctl((OpusEncoder *)rec->opus_encoder, OPUS_SET_DTX(1));
+    opus_encoder_ctl((OpusEncoder *)rec->opus_encoder, OPUS_SET_INBAND_FEC(0));
 
     pthread_mutex_init(&rec->mutex, NULL);
+    audio_precache_init(&rec->precache);
 
-    /* 注册音频数据回调 */
     audio_dispatcher_register(disp, on_audio_data, rec);
 
     PLOG_I("REC", "初始化完成: 采样率=%d 声道=%d 码率=%d", rec->sample_rate, rec->channels, rec->bitrate);
     return 0;
+}
+
+int audio_recorder_module_early_init(audio_recorder_module_t *rec, audio_dispatcher_t *disp)
+{
+    if (!rec || !disp)
+        return -1;
+
+    memset(rec, 0, sizeof(audio_recorder_module_t));
+    rec->disp = disp;
+
+    rec->sample_rate = 16000;
+    rec->channels = 1;
+    rec->frame_duration = 60;
+    rec->bitrate = 16000;
+
+    int error;
+    rec->opus_encoder = opus_encoder_create(rec->sample_rate, rec->channels,
+                                            OPUS_APPLICATION_VOIP, &error);
+    if (!rec->opus_encoder || error != OPUS_OK)
+    {
+        PLOG_E("REC", "opus_encoder_create(early) 创建失败: %d (%s)", error, opus_strerror(error));
+        return -1;
+    }
+
+    opus_encoder_ctl((OpusEncoder *)rec->opus_encoder, OPUS_SET_BITRATE(rec->bitrate));
+    opus_encoder_ctl((OpusEncoder *)rec->opus_encoder, OPUS_SET_COMPLEXITY(0));
+    opus_encoder_ctl((OpusEncoder *)rec->opus_encoder, OPUS_SET_VBR(1));
+    opus_encoder_ctl((OpusEncoder *)rec->opus_encoder, OPUS_SET_DTX(1));
+    opus_encoder_ctl((OpusEncoder *)rec->opus_encoder, OPUS_SET_INBAND_FEC(0));
+
+    pthread_mutex_init(&rec->mutex, NULL);
+    audio_precache_init(&rec->precache);
+
+    audio_dispatcher_register(disp, on_audio_data, rec);
+
+    PLOG_I("REC", "早期初始化完成 (无proto): 采样率=%d 声道=%d 码率=%d",
+           rec->sample_rate, rec->channels, rec->bitrate);
+    return 0;
+}
+
+void audio_recorder_module_set_proto(audio_recorder_module_t *rec, protocol_handler_t *proto)
+{
+    if (!rec || !proto)
+        return;
+    rec->proto = proto;
+    PLOG_I("REC", "proto 已关联");
 }
 
 /**
@@ -145,6 +190,8 @@ void audio_recorder_module_destroy(audio_recorder_module_t *rec)
 
     audio_recorder_module_stop_sending(rec);
 
+    audio_precache_stop(&rec->precache);
+
     /* 取消注册音频回调 */
     audio_dispatcher_unregister(rec->disp, on_audio_data);
 
@@ -155,6 +202,7 @@ void audio_recorder_module_destroy(audio_recorder_module_t *rec)
         rec->opus_encoder = NULL;
     }
 
+    audio_precache_destroy(&rec->precache);
     pthread_mutex_destroy(&rec->mutex);
 }
 
@@ -165,21 +213,15 @@ void audio_recorder_module_destroy(audio_recorder_module_t *rec)
  */
 int audio_recorder_module_start_sending(audio_recorder_module_t *rec)
 {
-    return audio_recorder_module_start_sending_skip(rec, 0);
-}
-
-int audio_recorder_module_start_sending_skip(audio_recorder_module_t *rec, int skip_frames)
-{
     if (!rec)
         return -1;
 
     pthread_mutex_lock(&rec->mutex);
     rec->right_channel_count = 0;
-    rec->skip_frames = skip_frames;
     rec->sending = true;
     pthread_mutex_unlock(&rec->mutex);
 
-    PLOG_I("REC", "已开始发送录音 (跳过前%d帧=%dms)", skip_frames, skip_frames * 60);
+    PLOG_I("REC", "已开始发送录音");
     return 0;
 }
 
