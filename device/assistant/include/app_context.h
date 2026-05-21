@@ -88,6 +88,7 @@ typedef struct app_context_t {
     uint64_t session_timeout_ms;
     uint64_t wakeup_cooldown_ms;
     uint64_t ws_ping_interval_ms;
+    uint64_t last_button_wakeup_ms;
 } app_context_t;
 
 #endif

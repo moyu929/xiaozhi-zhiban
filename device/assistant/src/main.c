@@ -1165,10 +1165,32 @@ static void proc_sys_msg(void *msg_ptr)
         PLOG_I("IPC", "MSG_SAIR_ENABLE");
         wakeup_resume_feed(&g_app.wakeup);
         break;
-    case MSG_SAIR_DISABLE: /* MSG_SAIR_DISABLE: 平台SDK IPC消息ID - 禁用助手 */
+    case MSG_SAIR_DISABLE:
         PLOG_I("IPC", "MSG_SAIR_DISABLE");
         wakeup_pause_feed(&g_app.wakeup);
         break;
+    case 0x39:
+    {
+        uint64_t now = get_time_ms();
+        if (now - g_app.last_button_wakeup_ms < 2000)
+        {
+            PLOG_D("IPC", "唤醒按钮 0x39: 冷却中, 忽略");
+        }
+        else
+        {
+            PLOG_I("IPC", "唤醒按钮 0x39: 触发唤醒");
+            g_app.last_button_wakeup_ms = now;
+            g_app.pending_wakeup = 1;
+            g_app.pending_wakeup_type = 1;
+            if (g_app.self_pipe[1] >= 0)
+            {
+                char c = 'W';
+                write(g_app.self_pipe[1], &c, 1);
+            }
+            kill(getpid(), SIGUSR1);
+        }
+        break;
+    }
     default:
         PLOG_D("IPC", "系统消息: 未处理 type=0x%X", msg_type);
         break;
@@ -1208,8 +1230,32 @@ static void proc_srv_msg(void *req_header_ptr, int *resp_result)
         if (resp_result)
             *resp_result = 1;
         break;
-    case MSG_SAIR_AI_START:       /* 平台SDK IPC消息ID - AI开始 */
-    case MSG_SAIR_AI_STOP:        /* 平台SDK IPC消息ID - AI停止 */
+    case MSG_SAIR_AI_START:
+    {
+        uint64_t now = get_time_ms();
+        if (now - g_app.last_button_wakeup_ms < 2000)
+        {
+            PLOG_I("IPC", "MSG_SAIR_AI_START: 唤醒按钮冷却中 (%llums < 2000ms), 忽略",
+                   (unsigned long long)(now - g_app.last_button_wakeup_ms));
+        }
+        else
+        {
+            PLOG_I("IPC", "MSG_SAIR_AI_START: 唤醒按钮触发唤醒");
+            g_app.last_button_wakeup_ms = now;
+            g_app.pending_wakeup = 1;
+            g_app.pending_wakeup_type = 1;
+            if (g_app.self_pipe[1] >= 0)
+            {
+                char c = 'W';
+                write(g_app.self_pipe[1], &c, 1);
+            }
+            kill(getpid(), SIGUSR1);
+        }
+        if (resp_result)
+            *resp_result = 1;
+        break;
+    }
+    case MSG_SAIR_AI_STOP:
     case MSG_SAIR_ASR_START:      /* 平台SDK IPC消息ID - 语音识别开始 */
     case MSG_SAIR_ASR_STOP:       /* 平台SDK IPC消息ID - 语音识别停止 */
     case MSG_SAIR_AEC_START:      /* 平台SDK IPC消息ID - 回声消除开始 */
