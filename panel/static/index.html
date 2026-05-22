@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>小智 · 智伴</title>
-<link rel="stylesheet" href="/style.css?v=23">
+<link rel="stylesheet" href="/style.css?v=25">
 </head>
 <body>
 <canvas id="particles"></canvas>
@@ -154,7 +154,7 @@
               <div class="stat-item"><span class="stat-label">设备型号</span><span id="devModel" class="stat-value">--</span></div>
               <div class="stat-item"><span class="stat-label">内核版本</span><span id="devKernel" class="stat-value">--</span></div>
               <div class="stat-item"><span class="stat-label">CPU</span><span id="devCpu" class="stat-value">--</span></div>
-              <div class="stat-item"><span class="stat-label">设备IP</span><span id="devIp" class="stat-value">--</span></div>
+              <div class="stat-item"><span class="stat-label">CPU占用</span><span id="devCpuUsage" class="stat-value">--</span></div>
               <div class="stat-item"><span class="stat-label">WiFi</span><span id="devWifi" class="stat-value">--</span></div>
               <div class="stat-item"><span class="stat-label">电量</span><span id="devBattery" class="stat-value">--</span></div>
               <div class="stat-item"><span class="stat-label">运行时间</span><span id="devUptime" class="stat-value">--</span></div>
@@ -441,7 +441,7 @@
       <div class="help-section">
         <h3>MCP 协议</h3>
         <ul>
-          <li>语音助手通过 <strong>MCP (Model Context Protocol)</strong> 协议控制设备硬件（音量、亮度、重启等）</li>
+          <li>语音助手通过 <strong>MCP (Model Context Protocol)</strong> 协议控制设备硬件（音量、重启等）</li>
           <li>MCP 消息通过 WebSocket 连接传输，接入点地址可在「服务状态 → MCP 可视化管理」中配置</li>
           <li>不同设备的 MCP 接入点可能不同，首次使用需手动配置正确的 WebSocket 地址</li>
         </ul>
@@ -460,7 +460,7 @@
           <li>部署固件时请勿断开设备连接</li>
           <li>重启设备后需要等待约 30 秒才能重新连接</li>
           <li>删除设备文件时请谨慎操作，系统文件不可删除</li>
-          <li>设备音量/亮度由语音助手通过 MCP 协议控制，无需手动调节</li>
+          <li>设备音量由语音助手通过 MCP 协议控制，无需手动调节</li>
         </ul>
       </div>
     </div>
@@ -480,6 +480,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=25"></script>
+<script src="/app.js?v=29"></script>
 </body>
 </html>

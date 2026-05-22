@@ -11,7 +11,6 @@ var S = {
     mcpTools: [
         { name: 'self.get_device_status', desc: '获取设备实时状态', params: '{"type":"object","properties":{}}' },
         { name: 'self.audio_speaker.set_volume', desc: '设置音量 (0-100)', params: '{"type":"object","properties":{"volume":{"type":"integer","minimum":0,"maximum":100}},"required":["volume"]}' },
-        { name: 'self.screen.set_brightness', desc: '设置屏幕亮度 (0-900)', params: '{"type":"object","properties":{"brightness":{"type":"integer","minimum":0,"maximum":900}},"required":["brightness"]}' },
         { name: 'self.get_system_info', desc: '获取系统信息', params: '{"type":"object","properties":{}}' },
         { name: 'self.clean_junk', desc: '清理临时文件', params: '{"type":"object","properties":{}}' },
         { name: 'self.reboot', desc: '重启设备', params: '{"type":"object","properties":{}}' },
@@ -821,7 +820,7 @@ function resetWirelessUI() {
     $('devModel').textContent = '--';
     $('devKernel').textContent = '--';
     $('devCpu').textContent = '--';
-    $('devIp').textContent = '--';
+    $('devCpuUsage').textContent = '--';
     $('devWifi').textContent = '--';
     $('devBattery').textContent = '--';
     $('devUptime').textContent = '--';
@@ -838,6 +837,10 @@ function resetWirelessUI() {
     $('cfgMcpEndpoint').value = '';
     $('cfgSairLogLevel').value = '';
     $('cfgListeningMode').value = 'autostop';
+    $('cfgListenTimeout').value = '';
+    $('cfgSessionTimeout').value = '';
+    $('cfgWakeupCooldown').value = '';
+    $('cfgWsPingInterval').value = '';
     $('cfgLogLevel').value = '';
     $('cfgUploadMax').value = '10';
     $('diagContainer').innerHTML = '<div class="empty-state">点击「运行自检」检测设备是否满足语音助手运行环境</div>';
@@ -846,12 +849,35 @@ function resetWirelessUI() {
     $('logAssistant').innerHTML = '<div class="empty-state">等待连接设备...</div>';
     $('logPanel').innerHTML = '<div class="empty-state">暂无日志</div>';
     $('svcList').innerHTML = '<div class="empty-state">等待连接设备...</div>';
+    $('processContainer').innerHTML = '<div class="empty-state">等待连接设备...</div>';
     $('processSummary').textContent = '';
+    _procCache = [];
+    _procFilterCategory = '';
+    _procFilterAction = '';
     $('btnXwebdRestart').style.display = '';
     $('btnXwebdRemove').style.display = '';
     $('btnXwebdUpdate').style.display = '';
     $('btnDeploy').disabled = false;
+    $('btnUpdate').disabled = false;
+    var btnActivate = $('btn-activate');
+    if (btnActivate) btnActivate.disabled = true;
+    var upgradeProgress = $('upgradeProgress');
+    if (upgradeProgress) upgradeProgress.style.display = 'none';
     $('footerInfo').textContent = '--';
+    S.wl.sairInstalled = false;
+    S.wl.sairNativeRunning = false;
+    S.mcpTools = [
+        { name: 'self.get_device_status', desc: '获取设备实时状态', params: '{"type":"object","properties":{}}' },
+        { name: 'self.audio_speaker.set_volume', desc: '设置音量 (0-100)', params: '{"type":"object","properties":{"volume":{"type":"integer","minimum":0,"maximum":100}},"required":["volume"]}' },
+        { name: 'self.get_system_info', desc: '获取系统信息', params: '{"type":"object","properties":{}}' },
+        { name: 'self.clean_junk', desc: '清理临时文件', params: '{"type":"object","properties":{}}' },
+        { name: 'self.reboot', desc: '重启设备', params: '{"type":"object","properties":{}}' },
+        { name: 'self.poweroff', desc: '关机', params: '{"type":"object","properties":{}}' },
+        { name: 'self.get_mcp_tools', desc: '列出所有MCP工具', params: '{"type":"object","properties":{}}' }
+    ];
+    S.mcpEditingIdx = -1;
+    renderMcpTools();
+    updateSairLocks();
 }
 
 function resetWiredUI() {
@@ -947,7 +973,7 @@ async function refreshStatus() {
         $('devModel').textContent = d.model || '--';
         $('devKernel').textContent = d.kernel || '--';
         $('devCpu').textContent = d.cpu || '--';
-        $('devIp').textContent = d.wifi_ip || d.ip || d.device_ip || S.wl.host || '--';
+        $('devCpuUsage').textContent = (d.cpu_usage >= 0) ? d.cpu_usage + '%' : '--';
         var wifiOk = d.wifi_connected;
         if (S.wl.connected && !wifiOk && d.wifi_ip) wifiOk = true;
         $('devWifi').textContent = wifiOk ? '已连接' : '未连接';
@@ -1045,7 +1071,9 @@ async function refreshServices() {
         { name: 'USB存储卡', key: 'usb_lun', status: d.usb_lun && d.usb_lun.enabled, toggle: true, service: 'usb_lun',
           statusText: d.usb_lun && d.usb_lun.enabled ? '已开启' : '已关闭', hint: '重启保留' },
         { name: '呼吸灯', key: 'led', status: d.led && d.led.enabled, toggle: true, service: 'led',
-          statusText: d.led && d.led.enabled ? '已开启' : '已关闭', hint: '重启保留' }
+          statusText: d.led && d.led.enabled ? '已开启' : '已关闭', hint: '重启保留' },
+        { name: '按键背光', key: 'key_backlight', status: d.key_backlight && d.key_backlight.enabled === true, toggle: true, service: 'key_backlight',
+          statusText: d.key_backlight ? (d.key_backlight.enabled === true ? '已开启' : (d.key_backlight.enabled === false ? '已关闭' : '不支持')) : '未知', hint: '重启保留' }
     ];
 
     var html = '';
@@ -1132,41 +1160,57 @@ function renderProcesses() {
     });
     var summaryEl = $('processSummary');
     if (summaryEl) summaryEl.textContent = '共 ' + procs.length + ' 个进程 · 运行中 ' + runningCount + ' · 总内存 ' + (totalRss / 1024).toFixed(1) + ' MB';
-    var html = '<table class="file-table process-table"><thead><tr><th>进程</th><th>PID</th><th>内存</th>';
-    html += '<th class="proc-filter-th"><span>类别</span><select class="proc-filter-select" onchange="_procFilterCategory=this.value;renderProcesses()">';
-    html += '<option value="">全部</option><option value="核心"' + (_procFilterCategory === '核心' ? ' selected' : '') + '>核心</option><option value="系统"' + (_procFilterCategory === '系统' ? ' selected' : '') + '>系统</option><option value="可选"' + (_procFilterCategory === '可选' ? ' selected' : '') + '>可选</option></select></th>';
-    html += '<th>说明</th>';
-    html += '<th class="proc-filter-th"><span>操作</span><select class="proc-filter-select" onchange="_procFilterAction=this.value;renderProcesses()">';
-    html += '<option value="">全部</option><option value="start"' + (_procFilterAction === 'start' ? ' selected' : '') + '>待启动</option><option value="stop"' + (_procFilterAction === 'stop' ? ' selected' : '') + '>可停止</option><option value="protected"' + (_procFilterAction === 'protected' ? ' selected' : '') + '>受保护</option></select></th>';
-    html += '</tr></thead><tbody>';
 
+    var colgroup = '<colgroup>'
+        + '<col style="width:15%">' 
+        + '<col style="width:8%">'
+        + '<col style="width:10%">'
+        + '<col style="width:14%">'
+        + '<col style="width:33%">'
+        + '<col style="width:20%">'
+        + '</colgroup>';
+
+    var headHtml = '<table class="process-table process-table-head">' + colgroup + '<thead><tr>'
+        + '<th>进程</th><th>PID</th><th>内存</th>'
+        + '<th class="proc-filter-th"><span>类别</span><select class="proc-filter-select" onchange="_procFilterCategory=this.value;renderProcesses()">'
+        + '<option value="">全部</option><option value="核心"' + (_procFilterCategory === '核心' ? ' selected' : '') + '>核心</option><option value="系统"' + (_procFilterCategory === '系统' ? ' selected' : '') + '>系统</option><option value="可选"' + (_procFilterCategory === '可选' ? ' selected' : '') + '>可选</option></select></th>'
+        + '<th>说明</th>'
+        + '<th class="proc-filter-th"><span>操作</span><select class="proc-filter-select" onchange="_procFilterAction=this.value;renderProcesses()">'
+        + '<option value="">全部</option><option value="start"' + (_procFilterAction === 'start' ? ' selected' : '') + '>待启动</option><option value="stop"' + (_procFilterAction === 'stop' ? ' selected' : '') + '>可停止</option><option value="protected"' + (_procFilterAction === 'protected' ? ' selected' : '') + '>受保护</option></select></th>'
+        + '</tr></thead></table>';
+
+    var bodyHtml = '<table class="process-table process-table-body">' + colgroup + '<tbody>';
     if (!filtered.length) {
-        html += '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:12px">无匹配进程</td></tr>';
+        bodyHtml += '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:12px">无匹配进程</td></tr>';
     }
     filtered.forEach(function(p) {
         var rssStr = p.running ? (p.rss >= 1024 ? (p.rss / 1024).toFixed(1) + ' MB' : p.rss + ' KB') : '--';
         var catCls = 'process-cat-' + (p.category === '核心' ? 'core' : p.category === '系统' ? 'sys' : 'opt');
         var statusCls = p.running ? 'process-running' : 'process-stopped';
-        html += '<tr class="' + statusCls + '">';
-        html += '<td><span class="process-name">' + escapeHtml(p.name) + '</span></td>';
-        html += '<td>' + (p.running ? p.pid : '--') + '</td>';
-        html += '<td>' + rssStr + '</td>';
-        html += '<td><span class="process-cat ' + catCls + '">' + escapeHtml(p.category) + '</span></td>';
-        html += '<td class="process-desc">' + escapeHtml(p.desc) + '</td>';
-        html += '<td class="process-actions">';
+        bodyHtml += '<tr class="' + statusCls + '">';
+        bodyHtml += '<td><span class="process-name">' + escapeHtml(p.name) + '</span></td>';
+        bodyHtml += '<td>' + (p.running ? p.pid : '--') + '</td>';
+        bodyHtml += '<td>' + rssStr + '</td>';
+        bodyHtml += '<td><span class="process-cat ' + catCls + '">' + escapeHtml(p.category) + '</span></td>';
+        bodyHtml += '<td class="process-desc">' + escapeHtml(p.desc) + '</td>';
+        bodyHtml += '<td class="process-actions">';
         if (p.controllable) {
             if (p.running) {
-                html += '<button class="btn btn-danger btn-xs" onclick="processControl(\'' + escapeHtml(p.name) + '\',\'stop\')">停止</button>';
+                bodyHtml += '<button class="btn btn-danger btn-xs" onclick="processControl(\'' + escapeHtml(p.name) + '\',\'stop\')">停止</button>';
             } else {
-                html += '<button class="btn btn-accent btn-xs" onclick="processControl(\'' + escapeHtml(p.name) + '\',\'start\')">启动</button>';
+                bodyHtml += '<button class="btn btn-accent btn-xs" onclick="processControl(\'' + escapeHtml(p.name) + '\',\'start\')">启动</button>';
             }
         } else {
-            html += '<span class="process-locked">受保护</span>';
+            bodyHtml += '<span class="process-locked">受保护</span>';
         }
-        html += '</td></tr>';
+        bodyHtml += '</td></tr>';
     });
-    html += '</tbody></table>';
-    $('processContainer').innerHTML = html;
+    bodyHtml += '</tbody></table>';
+
+    $('processContainer').innerHTML = '<div class="process-table-wrap">'
+        + '<div class="process-table-header">' + headHtml + '</div>'
+        + '<div class="process-table-scroll">' + bodyHtml + '</div>'
+        + '</div>';
 }
 
 async function refreshProcesses() {
@@ -2211,7 +2255,7 @@ document.addEventListener('DOMContentLoaded', function() {
     updateSairLocks();
     renderMcpTools();
 
-    document.querySelectorAll('.process-container,.file-container,.log-container,.diag-container,.mcp-tools-list,.adb-device-list,.modal').forEach(function(el) {
+    document.querySelectorAll('.svc-list,.file-container,.log-container,.diag-container,.mcp-tools-list,.adb-device-list,.modal').forEach(function(el) {
         el.addEventListener('wheel', function(e) {
             var st = el.scrollTop;
             var atTop = st <= 0;
@@ -2221,6 +2265,17 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }, { passive: false });
     });
+
+    document.addEventListener('wheel', function(e) {
+        var el = e.target.closest('.process-table-scroll');
+        if (!el) return;
+        var st = el.scrollTop;
+        var atTop = st <= 0;
+        var atBottom = st + el.clientHeight >= el.scrollHeight;
+        if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
+            e.preventDefault();
+        }
+    }, { passive: false });
 
     document.addEventListener('click', function(e) {
         if (e.target.classList.contains('btn-copy')) {

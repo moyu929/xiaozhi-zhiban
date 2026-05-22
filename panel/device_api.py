@@ -158,18 +158,6 @@ class XwebdAPI:
         logger.info("设置音量: %d", volume)
         return self._request("POST", "/api/volume", {"volume": volume})
 
-    def set_brightness(self, brightness):
-        """设置设备亮度
-
-        Args:
-            brightness: 亮度值（0-900）
-
-        Returns:
-            dict: {"ok": True} 成功，{"error": "..."} 失败
-        """
-        logger.info("设置亮度: %d", brightness)
-        return self._request("POST", "/api/brightness", {"brightness": brightness})
-
     def set_mute(self, muted):
         logger.info("设置静音: %s", muted)
         return self._request("POST", "/api/mute", {"muted": 1 if muted else 0})
