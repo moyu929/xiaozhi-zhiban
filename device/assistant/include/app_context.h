@@ -91,6 +91,7 @@ typedef struct app_context_t {
     uint64_t last_tts_audio_ms;
     int listening_mode;
     int precache_enabled;
+    int protocol_version;
 } app_context_t;
 
 #endif

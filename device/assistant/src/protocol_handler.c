@@ -102,7 +102,6 @@ static void on_ws_data(void *user_data, const char *data, size_t len, bool binar
 
     if (binary)
     {
-        /* 处理二进制音频数据 */
         audio_packet_t packet;
         memset(&packet, 0, sizeof(packet));
         packet.sample_rate = proto->server_sample_rate;
@@ -110,7 +109,6 @@ static void on_ws_data(void *user_data, const char *data, size_t len, bool binar
 
         if (len >= sizeof(binary_header_v2_t))
         {
-            /* 尝试解析v2协议头部 */
             binary_header_v2_t header;
             memcpy(&header, data, sizeof(header));
 
@@ -119,7 +117,6 @@ static void on_ws_data(void *user_data, const char *data, size_t len, bool binar
             uint32_t timestamp = ntohl(header.timestamp);
             uint32_t payload_size = ntohl(header.payload_size);
 
-            /* 验证v2头部有效性 */
             if ((version == 2 || (version == 0 && type <= 1 && payload_size > 0 && payload_size + sizeof(binary_header_v2_t) == len)) && payload_size > 0 && payload_size < len)
             {
                 PLOG_D("PROTO", "v2二进制帧: 类型=%d 时间戳=%u 大小=%u", type, timestamp, payload_size);
@@ -139,10 +136,55 @@ static void on_ws_data(void *user_data, const char *data, size_t len, bool binar
             }
             else
             {
-                /* v2头部无效，按v1协议处理（无头部） */
-                PLOG_D("PROTO", "v1二进制帧: 长度=%zu (头部 版本=%d 类型=%d 负载大小=%u 不匹配)",
-                       len, version, type, payload_size);
+                int parsed_v3 = 0;
+                if (len >= sizeof(binary_header_v3_t))
+                {
+                    binary_header_v3_t hdr3;
+                    memcpy(&hdr3, data, sizeof(hdr3));
+                    uint8_t type3 = hdr3.type;
+                    uint16_t psize3 = ntohs(hdr3.payload_size);
+                    if (type3 <= 1 && psize3 > 0 && psize3 + sizeof(binary_header_v3_t) == len)
+                    {
+                        PLOG_D("PROTO", "v3二进制帧: 类型=%d 大小=%u", type3, psize3);
+                        size_t copy_len = psize3;
+                        if (copy_len > PROTO_MAX_AUDIO_PAYLOAD)
+                            copy_len = PROTO_MAX_AUDIO_PAYLOAD;
+                        memcpy(packet.payload, data + sizeof(binary_header_v3_t), copy_len);
+                        packet.payload_size = copy_len;
+                        parsed_v3 = 1;
+                    }
+                }
+                if (!parsed_v3)
+                {
+                    PLOG_D("PROTO", "v1二进制帧: 长度=%zu (头部 版本=%d 类型=%d 负载大小=%u 不匹配)",
+                           len, version, type, payload_size);
 
+                    size_t copy_len = len;
+                    if (copy_len > PROTO_MAX_AUDIO_PAYLOAD)
+                        copy_len = PROTO_MAX_AUDIO_PAYLOAD;
+                    memcpy(packet.payload, data, copy_len);
+                    packet.payload_size = copy_len;
+                }
+            }
+        }
+        else if (len >= sizeof(binary_header_v3_t))
+        {
+            binary_header_v3_t hdr3;
+            memcpy(&hdr3, data, sizeof(hdr3));
+            uint8_t type3 = hdr3.type;
+            uint16_t psize3 = ntohs(hdr3.payload_size);
+            if (type3 <= 1 && psize3 > 0 && psize3 + sizeof(binary_header_v3_t) == len)
+            {
+                PLOG_D("PROTO", "v3二进制帧(短): 类型=%d 大小=%u", type3, psize3);
+                size_t copy_len = psize3;
+                if (copy_len > PROTO_MAX_AUDIO_PAYLOAD)
+                    copy_len = PROTO_MAX_AUDIO_PAYLOAD;
+                memcpy(packet.payload, data + sizeof(binary_header_v3_t), copy_len);
+                packet.payload_size = copy_len;
+            }
+            else
+            {
+                PLOG_D("PROTO", "v1二进制帧(短): 长度=%zu", len);
                 size_t copy_len = len;
                 if (copy_len > PROTO_MAX_AUDIO_PAYLOAD)
                     copy_len = PROTO_MAX_AUDIO_PAYLOAD;
@@ -152,8 +194,7 @@ static void on_ws_data(void *user_data, const char *data, size_t len, bool binar
         }
         else if (len > 0)
         {
-            /* 短数据，按v1协议处理 */
-            PLOG_D("PROTO", "v1二进制帧(短): 长度=%zu", len);
+            PLOG_D("PROTO", "v1二进制帧(极短): 长度=%zu", len);
 
             size_t copy_len = len;
             if (copy_len > PROTO_MAX_AUDIO_PAYLOAD)
@@ -500,11 +541,13 @@ int protocol_handler_connect(protocol_handler_t *proto)
     /* 设置WebSocket连接参数 */
     websocket_set_url(&proto->ws, proto->config.url);
     websocket_set_header(&proto->ws, "Authorization", proto->config.token[0] ? proto->config.token : "Bearer ");
-    websocket_set_header(&proto->ws, "Protocol-Version", "1");
+    char ver_str[8];
+    snprintf(ver_str, sizeof(ver_str), "%d", proto->protocol_version);
+    websocket_set_header(&proto->ws, "Protocol-Version", ver_str);
     websocket_set_header(&proto->ws, "Device-Id", proto->config.device_id);
     websocket_set_header(&proto->ws, "Client-Id", proto->config.client_id);
 
-    PLOG_I("PROTO", "正在连接到 %s", proto->config.url);
+    PLOG_I("PROTO", "正在连接到 %s (Protocol-Version: %d)", proto->config.url, proto->protocol_version);
 
     /* 如果发送线程未运行，则重新创建 */
     if (!proto->send_thread_running)
@@ -538,9 +581,10 @@ int protocol_handler_connect(protocol_handler_t *proto)
     /* 构造并发送hello消息 */
     char hello_json[1024];
     snprintf(hello_json, sizeof(hello_json),
-             "{\"type\":\"hello\",\"version\":1,\"transport\":\"websocket\","
+             "{\"type\":\"hello\",\"version\":%d,\"transport\":\"websocket\","
              "\"features\":{\"mcp\":true,\"aec\":true},"
              "\"audio_params\":{\"format\":\"opus\",\"sample_rate\":%d,\"channels\":%d,\"frame_duration\":%d}}",
+             proto->protocol_version,
              proto->config.sample_rate,
              proto->config.channels,
              proto->config.frame_duration);
@@ -637,9 +681,45 @@ int protocol_handler_send_audio(protocol_handler_t *proto, const uint8_t *opus_d
     if (!proto->connected || !proto->hello_received)
         return -1;
 
-    if (opus_len > sizeof(proto->send_queue[0]))
+    uint8_t frame_buf[PROTO_MAX_AUDIO_PAYLOAD + sizeof(binary_header_v2_t)];
+    size_t frame_len = 0;
+
+    if (proto->protocol_version == 2)
     {
-        PLOG_W("PROTO", "音频帧过大: %zu", opus_len);
+        binary_header_v2_t hdr;
+        hdr.version = htons(2);
+        hdr.type = htons(0);
+        hdr.reserved = 0;
+        hdr.timestamp = htonl(0);
+        hdr.payload_size = htonl((uint32_t)opus_len);
+        memcpy(frame_buf, &hdr, sizeof(hdr));
+        memcpy(frame_buf + sizeof(hdr), opus_data, opus_len);
+        frame_len = sizeof(hdr) + opus_len;
+    }
+    else if (proto->protocol_version == 3)
+    {
+        binary_header_v3_t hdr;
+        hdr.type = 0;
+        hdr.reserved = 0;
+        hdr.payload_size = htons((uint16_t)opus_len);
+        memcpy(frame_buf, &hdr, sizeof(hdr));
+        memcpy(frame_buf + sizeof(hdr), opus_data, opus_len);
+        frame_len = sizeof(hdr) + opus_len;
+    }
+    else
+    {
+        if (opus_len > sizeof(proto->send_queue[0]))
+        {
+            PLOG_W("PROTO", "音频帧过大: %zu", opus_len);
+            return -1;
+        }
+        memcpy(frame_buf, opus_data, opus_len);
+        frame_len = opus_len;
+    }
+
+    if (frame_len > sizeof(proto->send_queue[0]))
+    {
+        PLOG_W("PROTO", "音频帧过大: %zu", frame_len);
         return -1;
     }
 
@@ -666,8 +746,8 @@ int protocol_handler_send_audio(protocol_handler_t *proto, const uint8_t *opus_d
     }
 
     int idx = proto->send_queue_tail;
-    memcpy(proto->send_queue[idx], opus_data, opus_len);
-    proto->send_queue_len[idx] = opus_len;
+    memcpy(proto->send_queue[idx], frame_buf, frame_len);
+    proto->send_queue_len[idx] = frame_len;
 
     proto->send_queue_tail = (proto->send_queue_tail + 1) % PROTO_SEND_QUEUE_SIZE;
     proto->send_queue_count++;

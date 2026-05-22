@@ -195,6 +195,27 @@ static int read_precache_enabled(void)
     return 0;
 }
 
+static int read_protocol_version(void)
+{
+    char buf[256];
+    int fd = open("/var/upgrade/.xwebd_persist", O_RDONLY);
+    if (fd < 0)
+        return 1;
+    int n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0)
+        return 1;
+    buf[n] = '\0';
+    char *p = strstr(buf, "protocol_version=");
+    if (p)
+    {
+        int v = atoi(p + 17);
+        if (v >= 1 && v <= 3)
+            return v;
+    }
+    return 1;
+}
+
 /**
  * @brief 获取单调时钟的毫秒时间戳
  * @return 当前毫秒时间戳（基于CLOCK_MONOTONIC）
@@ -1226,6 +1247,7 @@ static void *connect_thread_func(void *arg)
         state_machine_transition(&app->sm, kStateCleaning);
         return NULL;
     }
+    app->proto.protocol_version = app->protocol_version;
     app->proto_initialized = 1;
 
     protocol_handler_set_callbacks(&app->proto, NULL, on_proto_disconnected,
@@ -2211,6 +2233,8 @@ int main(int argc, char *argv[])
     g_app.listening_mode = LISTENING_MODE_AUTOSTOP;
     app->precache_enabled = read_precache_enabled();
     PLOG_I("INIT", "音频预缓存: %s", app->precache_enabled ? "已启用" : "已禁用");
+    app->protocol_version = read_protocol_version();
+    PLOG_I("INIT", "协议版本: v%d", app->protocol_version);
 
     /* 创建self-pipe用于子线程通知主循环 */
     if (pipe(app->self_pipe) == 0)

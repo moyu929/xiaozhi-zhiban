@@ -20,6 +20,12 @@ typedef struct {
 } __attribute__((packed)) binary_header_v2_t;
 
 typedef struct {
+    uint8_t type;
+    uint8_t reserved;
+    uint16_t payload_size;
+} __attribute__((packed)) binary_header_v3_t;
+
+typedef struct {
     uint32_t timestamps[PROTO_MAX_TIMESTAMPS];
     int head;
     int count;
