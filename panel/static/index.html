@@ -262,6 +262,14 @@
                   <option value="realtime">Realtime（实时模式）</option>
                 </select>
               </div>
+              <div class="form-group">
+                <label class="form-label">协议版本 <span class="form-hint">（v1：裸Opus；v2：BinaryProtocol2；v3：BinaryProtocol3；修改后重启生效）</span></label>
+                <select id="cfgProtocolVersion" class="select">
+                  <option value="1">v1（默认）</option>
+                  <option value="2">v2</option>
+                  <option value="3">v3</option>
+                </select>
+              </div>
               <div style="display:flex;gap:8px;margin-bottom:12px">
                 <button class="btn btn-accent" onclick="saveAssistantConfig()" style="flex:1">保存配置</button>
                 <button class="btn btn-ghost" onclick="restoreAssistantDefaults()" style="flex:1">恢复默认值</button>
