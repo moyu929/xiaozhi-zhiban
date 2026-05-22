@@ -49,6 +49,15 @@
 #define MSG_SAIR_AWAKE_CMD       0x239
 #define MSG_SAIR_EMOTION         0x236
 
+#define SUBTITLE_TYPE_NONE       0
+#define SUBTITLE_TYPE_ASR        1
+#define SUBTITLE_TYPE_TTS        2
+#define SUBTITLE_MAX_LEN         512
+
+#define MIC_SERVICE_SOCKET       "/tmp/service/mqtt_custom_server"
+#define MIC_CMD_SET_ENABLE       0x2CF2
+#define MIC_CMD_GET_STATUS       0x2CF3
+
 #define DEFAULT_OTA_URL          "https://api.tenclass.net/xiaozhi/ota/"
 #define DEFAULT_WS_URL           "wss://api.tenclass.net/xiaozhi/v1/"
 #define PLOG_PATH                "/var/upgrade/xiaozhi.log"

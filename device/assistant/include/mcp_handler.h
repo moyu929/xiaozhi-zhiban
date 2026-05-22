@@ -14,10 +14,6 @@ typedef struct {
     int (*sound_get_sys_volume)(void);
     int (*sound_set_sys_mute)(int mute);
     int (*sound_is_sys_mute)(void);
-    int (*lcd_set_backlight)(int level);
-    int (*lcd_get_backlight)(void);
-    int (*lcd_save_brightness)(int level);
-    int (*lcd_read_brightness)(void);
     int (*power_get_charge_status)(int *out);
     int (*power_get_battery_cap)(void);
     int (*power_get_battery_voltage)(void);

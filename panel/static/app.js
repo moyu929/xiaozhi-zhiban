@@ -11,7 +11,6 @@ var S = {
     mcpTools: [
         { name: 'self.get_device_status', desc: '获取设备实时状态', params: '{"type":"object","properties":{}}' },
         { name: 'self.audio_speaker.set_volume', desc: '设置音量 (0-100)', params: '{"type":"object","properties":{"volume":{"type":"integer","minimum":0,"maximum":100}},"required":["volume"]}' },
-        { name: 'self.screen.set_brightness', desc: '设置屏幕亮度 (0-900)', params: '{"type":"object","properties":{"brightness":{"type":"integer","minimum":0,"maximum":900}},"required":["brightness"]}' },
         { name: 'self.get_system_info', desc: '获取系统信息', params: '{"type":"object","properties":{}}' },
         { name: 'self.clean_junk', desc: '清理临时文件', params: '{"type":"object","properties":{}}' },
         { name: 'self.reboot', desc: '重启设备', params: '{"type":"object","properties":{}}' },
@@ -870,7 +869,6 @@ function resetWirelessUI() {
     S.mcpTools = [
         { name: 'self.get_device_status', desc: '获取设备实时状态', params: '{"type":"object","properties":{}}' },
         { name: 'self.audio_speaker.set_volume', desc: '设置音量 (0-100)', params: '{"type":"object","properties":{"volume":{"type":"integer","minimum":0,"maximum":100}},"required":["volume"]}' },
-        { name: 'self.screen.set_brightness', desc: '设置屏幕亮度 (0-900)', params: '{"type":"object","properties":{"brightness":{"type":"integer","minimum":0,"maximum":900}},"required":["brightness"]}' },
         { name: 'self.get_system_info', desc: '获取系统信息', params: '{"type":"object","properties":{}}' },
         { name: 'self.clean_junk', desc: '清理临时文件', params: '{"type":"object","properties":{}}' },
         { name: 'self.reboot', desc: '重启设备', params: '{"type":"object","properties":{}}' },

@@ -61,13 +61,6 @@ int mcp_handler_init(mcp_handler_t *mcp)
     LOAD_SYM(mcp->lib_handle, sound_set_sys_mute, int (*)(int));
     LOAD_SYM(mcp->lib_handle, sound_is_sys_mute, int (*)(void));
 
-    /* 加载屏幕控制函数 */
-    LOAD_SYM(mcp->lib_handle, lcd_set_backlight, int (*)(int));
-    LOAD_SYM(mcp->lib_handle, lcd_get_backlight, int (*)(void));
-    LOAD_SYM(mcp->lib_handle, lcd_save_brightness, int (*)(int));
-    LOAD_SYM(mcp->lib_handle, lcd_read_brightness, int (*)(void));
-
-    /* 加载电源状态函数 */
     LOAD_SYM(mcp->lib_handle, power_get_charge_status, int (*)(int *));
     LOAD_SYM(mcp->lib_handle, power_get_battery_cap, int (*)(void));
     LOAD_SYM(mcp->lib_handle, power_get_battery_voltage, int (*)(void));
@@ -316,11 +309,9 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
     /* 获取设备状态：音量、亮度、充电状态、电池、CPU负载、内存 */
     if (strcmp(name, "self.get_device_status") == 0)
     {
-        int vol = 0, backlight = 0, charge_st = 0, battery = 0;
+        int vol = 0, charge_st = 0, battery = 0;
         if (mcp->sound_get_sys_volume)
             vol = mcp->sound_get_sys_volume();
-        if (mcp->lcd_get_backlight)
-            backlight = mcp->lcd_get_backlight();
         if (mcp->power_get_charge_status)
             mcp->power_get_charge_status(&charge_st);
         if (mcp->power_get_battery_cap)
@@ -345,8 +336,8 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
         int vol_pct = (vol >= 0 && vol <= 40) ? vol * 100 / 40 : 0;
 
         snprintf(result, result_size,
-                 "volume=%d%% brightness=%d charging=%s battery=%d%% cpu_load=%s mem_used=%dKB mem_free=%dKB mem_total=%dKB",
-                 vol_pct, backlight, charge_st ? "yes" : "no", battery,
+                 "volume=%d%% charging=%s battery=%d%% cpu_load=%s mem_used=%dKB mem_free=%dKB mem_total=%dKB",
+                 vol_pct, charge_st ? "yes" : "no", battery,
                  loadbuf[0] ? loadbuf : "N/A",
                  mem_used_kb, mem_free >= 0 ? mem_free : 0, mem_total >= 0 ? mem_total : 0);
         return 0;
@@ -396,22 +387,6 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
         return 0;
     }
 
-    /* 设置屏幕亮度（0-900） */
-    if (strcmp(name, "self.screen.set_brightness") == 0)
-    {
-        int b = find_int(args_json, args_len, "brightness", -1);
-        if (b < 0 || b > 900)
-        {
-            snprintf(result, result_size, "invalid brightness: %d (range 0-900)", b);
-            return -1;
-        }
-        if (mcp->lcd_set_backlight)
-            mcp->lcd_set_backlight(b);
-        snprintf(result, result_size, "brightness set to %d", b);
-        return 0;
-    }
-
-    /* 重启设备 */
     if (strcmp(name, "self.reboot") == 0)
     {
         snprintf(result, result_size, "rebooting");
@@ -436,19 +411,17 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
     /* 获取系统信息 */
     if (strcmp(name, "self.get_system_info") == 0)
     {
-        int vol = 0, backlight = 0, charge_st = 0, battery = 0;
+        int vol = 0, charge_st = 0, battery = 0;
         if (mcp->sound_get_sys_volume)
             vol = mcp->sound_get_sys_volume();
-        if (mcp->lcd_get_backlight)
-            backlight = mcp->lcd_get_backlight();
         if (mcp->power_get_charge_status)
             mcp->power_get_charge_status(&charge_st);
         if (mcp->power_get_battery_cap)
             battery = mcp->power_get_battery_cap();
 
         snprintf(result, result_size,
-                 "xiaozhi-assistant P5 | vol=%d/40 bl=%d/900 chg=%d bat=%d%%",
-                 vol, backlight, charge_st, battery);
+                 "xiaozhi-assistant P5 | vol=%d/40 chg=%d bat=%d%%",
+                 vol, charge_st, battery);
         return 0;
     }
 
@@ -503,15 +476,14 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
     {
         snprintf(result, result_size,
                  "Available MCP tools: "
-                 "1.self.get_device_status - Get device status (volume%%,brightness,battery,CPU,memory); "
+                 "1.self.get_device_status - Get device status (volume%%,battery,CPU,memory); "
                  "2.self.audio_speaker.volume_up - Increase volume by one step (shows native volume bar); "
                  "3.self.audio_speaker.volume_down - Decrease volume by one step (shows native volume bar); "
-                 "4.self.screen.set_brightness - Set brightness (0-900); "
-                 "5.self.get_system_info - Get system info; "
-                 "6.self.clean_junk - Clean temp files and drop caches; "
-                 "7.self.get_mcp_tools - List all MCP tools; "
-                 "8.self.reboot - Reboot device (user only); "
-                 "9.self.poweroff - Power off device (user only)");
+                 "4.self.get_system_info - Get system info; "
+                 "5.self.clean_junk - Clean temp files and drop caches; "
+                 "6.self.get_mcp_tools - List all MCP tools; "
+                 "7.self.reboot - Reboot device (user only); "
+                 "8.self.poweroff - Power off device (user only)");
         return 0;
     }
 
@@ -639,11 +611,10 @@ void mcp_handler_process_message(mcp_handler_t *mcp, const char *json, size_t le
                 int n = snprintf(json, sizeof(json),
                                  "{\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%lld,"
                                  "\"result\":{\"tools\":["
-                                 "{\"name\":\"self.get_device_status\",\"description\":\"Get the real-time status of the device including volume percentage, brightness, charging state, battery level, CPU load and memory usage\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.get_device_status\",\"description\":\"Get the real-time status of the device including volume percentage, charging state, battery level, CPU load and memory usage\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.audio_speaker.volume_up\",\"description\":\"Increase the device volume by one step. This triggers the native volume button event so the volume bar animation is shown on screen. Use when user says turn up volume or make it louder\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.audio_speaker.volume_down\",\"description\":\"Decrease the device volume by one step. This triggers the native volume button event so the volume bar animation is shown on screen. Use when user says turn down volume or make it quieter\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
-                                 "{\"name\":\"self.screen.set_brightness\",\"description\":\"Set the brightness level of the device screen\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"brightness\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":900}},\"required\":[\"brightness\"]}},"
-                                 "{\"name\":\"self.get_system_info\",\"description\":\"Get system information including version, volume, brightness and battery\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.get_system_info\",\"description\":\"Get system information including version, volume and battery\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.clean_junk\",\"description\":\"Clean temporary files and drop system caches to free memory and improve performance\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.get_mcp_tools\",\"description\":\"List and describe all available MCP tools on this device\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.reboot\",\"description\":\"Reboot the device\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}},"

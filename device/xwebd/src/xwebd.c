@@ -1112,6 +1112,14 @@ static int handle_post_usb_mode(int fd, const char *body, const char *query) {
     return rc;
 }
 
+static int is_usb_data_mode(void) {
+    char enable[8] = "";
+    char functions[64] = "";
+    read_file_string("/sys/class/android_usb/android0/enable", enable, sizeof(enable));
+    read_file_string("/sys/class/android_usb/android0/functions", functions, sizeof(functions));
+    return (enable[0] == '1' && strstr(functions, "adb") != NULL);
+}
+
 static void save_persist_conf(void) {
     char buf[128];
     int len = snprintf(buf, sizeof(buf), "usb_lun=%d\ntelnet=%d\nled=%d\n",
@@ -1141,15 +1149,6 @@ static void load_persist_conf(void) {
 }
 
 static void apply_persist_conf(void) {
-    if (g_persist_usb_lun >= 0) {
-        if (g_persist_usb_lun) {
-            system("echo /dev/mmcblk0p1 > /sys/class/android_usb/android0/f_mass_storage/lun0/file 2>/dev/null");
-            XLOG_I(TAG, "恢复USB LUN: 开启");
-        } else {
-            system("echo '' > /sys/class/android_usb/android0/f_mass_storage/lun0/file 2>/dev/null");
-            XLOG_I(TAG, "恢复USB LUN: 关闭");
-        }
-    }
     if (g_persist_telnet >= 0) {
         if (!g_persist_telnet) {
             system("killall telnetd 2>/dev/null");
@@ -1183,14 +1182,18 @@ static int handle_post_service_toggle(int fd, const char *body, const char *quer
     int enable = (strcmp(action, "enable") == 0);
 
     if (strcmp(service, "usb_lun") == 0) {
-        if (enable) {
-            system("echo /dev/mmcblk0p1 > /sys/class/android_usb/android0/f_mass_storage/lun0/file");
-        } else {
-            system("echo '' > /sys/class/android_usb/android0/f_mass_storage/lun0/file");
-        }
         g_persist_usb_lun = enable;
         save_persist_conf();
-        XLOG_I(TAG, "USB LUN: %s", enable ? "enabled" : "disabled");
+        if (is_usb_data_mode()) {
+            if (enable) {
+                system("echo /dev/mmcblk0p1 > /sys/class/android_usb/android0/f_mass_storage/lun0/file");
+            } else {
+                system("echo '' > /sys/class/android_usb/android0/f_mass_storage/lun0/file");
+            }
+            XLOG_I(TAG, "USB LUN: %s (数据传输模式, 已应用)", enable ? "enabled" : "disabled");
+        } else {
+            XLOG_I(TAG, "USB LUN: %s (非数据传输模式, 仅保存设置)", enable ? "enabled" : "disabled");
+        }
     } else if (strcmp(service, "telnet") == 0) {
         if (enable) {
             system("busybox telnetd -p 23 -l /bin/sh 2>/dev/null");
