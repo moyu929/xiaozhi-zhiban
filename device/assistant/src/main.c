@@ -178,6 +178,23 @@ static void subtitle_clear(void)
 app_context_t g_app;
 app_info_t *g_this_app_info = NULL;
 
+static int read_precache_enabled(void)
+{
+    char buf[256];
+    int fd = open("/var/upgrade/.xwebd_persist", O_RDONLY);
+    if (fd < 0)
+        return 0;
+    int n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0)
+        return 0;
+    buf[n] = '\0';
+    char *p = strstr(buf, "precache=");
+    if (p)
+        return atoi(p + 9);
+    return 0;
+}
+
 /**
  * @brief 获取单调时钟的毫秒时间戳
  * @return 当前毫秒时间戳（基于CLOCK_MONOTONIC）
@@ -1808,7 +1825,7 @@ static void process_pending_wakeup(app_context_t *app)
             protocol_handler_clear_send_queue(&app->proto);
         }
         broadcast_sair_awake(app->pending_wakeup_type);
-        if (app->recorder_initialized)
+        if (app->recorder_initialized && app->precache_enabled)
         {
             audio_precache_start(&app->recorder_mod.precache);
         }
@@ -1850,7 +1867,7 @@ static void process_pending_wakeup(app_context_t *app)
     app->in_session = 1;
     app->session_start_ms = now;
 
-    if (app->recorder_initialized)
+    if (app->recorder_initialized && app->precache_enabled)
     {
         audio_precache_start(&app->recorder_mod.precache);
         PLOG_I("WAKEUP", "音频预缓存已启动, 唤醒后音频将被缓存");
@@ -2192,6 +2209,8 @@ int main(int argc, char *argv[])
     g_app.wakeup_cooldown_ms = WAKEUP_COOLDOWN_MS;
     g_app.ws_ping_interval_ms = WS_PING_INTERVAL_MS;
     g_app.listening_mode = LISTENING_MODE_AUTOSTOP;
+    app->precache_enabled = read_precache_enabled();
+    PLOG_I("INIT", "音频预缓存: %s", app->precache_enabled ? "已启用" : "已禁用");
 
     /* 创建self-pipe用于子线程通知主循环 */
     if (pipe(app->self_pipe) == 0)

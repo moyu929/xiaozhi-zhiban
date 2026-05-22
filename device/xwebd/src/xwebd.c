@@ -75,6 +75,7 @@ static volatile pid_t g_upload_pid = 0;
 static int g_persist_usb_lun = -1;
 static int g_persist_telnet = -1;
 static int g_persist_led = -1;
+static int g_persist_precache = 0;
 
 static int g_plog_fd = -1;
 static int g_plog_level = 3;
@@ -886,6 +887,7 @@ static int handle_get_services(int fd, const char *body, const char *query) {
         }
     }
     int led_enabled = (g_persist_led < 0) ? 1 : g_persist_led;
+    int precache_enabled = g_persist_precache;
     int key_backlight_enabled = -1;
     {
         char bl_buf[8] = {0};
@@ -902,6 +904,7 @@ static int handle_get_services(int fd, const char *body, const char *query) {
         "\"sair\":{\"installed\":%s,\"running\":%s},"
         "\"usb_lun\":{\"enabled\":%s},"
         "\"led\":{\"enabled\":%s},"
+        "\"audio_precache\":{\"enabled\":%s},"
         "\"key_backlight\":{\"enabled\":%s}}",
         telnet_running ? "true" : "false",
         watchdog_exists ? "true" : "false", watchdog_running ? "true" : "false",
@@ -909,6 +912,7 @@ static int handle_get_services(int fd, const char *body, const char *query) {
         sair_installed ? "true" : "false", sair_running ? "true" : "false",
         usb_lun_enabled ? "true" : "false",
         led_enabled ? "true" : "false",
+        precache_enabled ? "true" : "false",
         key_backlight_enabled == -1 ? "null" : (key_backlight_enabled ? "true" : "false"));
     return send_response(fd, 200, "application/json", buf, len);
 }
@@ -1122,10 +1126,11 @@ static int is_usb_data_mode(void) {
 
 static void save_persist_conf(void) {
     char buf[128];
-    int len = snprintf(buf, sizeof(buf), "usb_lun=%d\ntelnet=%d\nled=%d\n",
+    int len = snprintf(buf, sizeof(buf), "usb_lun=%d\ntelnet=%d\nled=%d\nprecache=%d\n",
                        g_persist_usb_lun >= 0 ? g_persist_usb_lun : 0,
                        g_persist_telnet >= 0 ? g_persist_telnet : 1,
-                       g_persist_led >= 0 ? g_persist_led : 1);
+                       g_persist_led >= 0 ? g_persist_led : 1,
+                       g_persist_precache);
     int fd = open(XWEBD_PERSIST_CONF, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) {
         write(fd, buf, len);
@@ -1145,7 +1150,9 @@ static void load_persist_conf(void) {
     if (p) g_persist_telnet = atoi(p + 7);
     p = strstr(buf, "led=");
     if (p) g_persist_led = atoi(p + 4);
-    XLOG_I(TAG, "持久化配置已加载: usb_lun=%d, telnet=%d, led=%d", g_persist_usb_lun, g_persist_telnet, g_persist_led);
+    p = strstr(buf, "precache=");
+    if (p) g_persist_precache = atoi(p + 9);
+    XLOG_I(TAG, "持久化配置已加载: usb_lun=%d, telnet=%d, led=%d, precache=%d", g_persist_usb_lun, g_persist_telnet, g_persist_led, g_persist_precache);
 }
 
 static void apply_persist_conf(void) {
@@ -1256,6 +1263,10 @@ static int handle_post_service_toggle(int fd, const char *body, const char *quer
             XLOG_W(TAG, "按键背光: 打开sysfs失败");
             return send_error(fd, 500, "Cannot control key backlight");
         }
+    } else if (strcmp(service, "audio_precache") == 0) {
+        g_persist_precache = enable;
+        save_persist_conf();
+        XLOG_I(TAG, "音频预缓存: %s", enable ? "enabled" : "disabled");
     } else {
         return send_error(fd, 400, "Unknown service");
     }

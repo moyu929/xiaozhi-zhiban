@@ -1073,7 +1073,9 @@ async function refreshServices() {
         { name: '呼吸灯', key: 'led', status: d.led && d.led.enabled, toggle: true, service: 'led',
           statusText: d.led && d.led.enabled ? '已开启' : '已关闭', hint: '重启保留' },
         { name: '按键背光', key: 'key_backlight', status: d.key_backlight && d.key_backlight.enabled === true, toggle: true, service: 'key_backlight',
-          statusText: d.key_backlight ? (d.key_backlight.enabled === true ? '已开启' : (d.key_backlight.enabled === false ? '已关闭' : '不支持')) : '未知', hint: '重启保留' }
+          statusText: d.key_backlight ? (d.key_backlight.enabled === true ? '已开启' : (d.key_backlight.enabled === false ? '已关闭' : '不支持')) : '未知', hint: '重启保留' },
+        { name: '音频预缓存', key: 'audio_precache', status: d.audio_precache && d.audio_precache.enabled, toggle: true, service: 'audio_precache',
+          statusText: d.audio_precache && d.audio_precache.enabled ? '已开启' : '已关闭', hint: '重启保留' }
     ];
 
     var html = '';

@@ -2,6 +2,7 @@
 #include "protocol_handler.h"
 #include "plog.h"
 #include <string.h>
+#include <unistd.h>
 
 void audio_precache_init(audio_precache_t *pc)
 {
@@ -125,20 +126,13 @@ int audio_precache_drain_to_proto(audio_precache_t *pc, void *proto_ptr)
                pc->overflow_count);
     }
 
-    PLOG_I("PRECACHE", "开始排空: %d帧 (跳过=%d, 溢出=%d, 约%dms)",
-           pc->count, skipped, pc->overflow_count, pc->count * 60);
+    int drain_count = pc->count;
 
-    int sent = 0;
-    for (int i = 0; i < pc->count; i++)
+    precache_frame_t drain_frames[PRECACHE_MAX_FRAMES];
+    for (int i = 0; i < drain_count; i++)
     {
         int idx = (pc->head + i) % PRECACHE_MAX_FRAMES;
-        int ret = protocol_handler_send_audio(proto,
-                                               pc->frames[idx].data,
-                                               pc->frames[idx].len);
-        if (ret == 0)
-            sent++;
-        else
-            PLOG_W("PRECACHE", "排空发送失败 (帧%d/%d)", i + 1, pc->count);
+        memcpy(&drain_frames[i], &pc->frames[idx], sizeof(precache_frame_t));
     }
 
     pc->active = false;
@@ -147,6 +141,24 @@ int audio_precache_drain_to_proto(audio_precache_t *pc, void *proto_ptr)
     pc->overflow_count = 0;
 
     pthread_mutex_unlock(&pc->mutex);
+
+    PLOG_I("PRECACHE", "开始排空: %d帧 (跳过=%d, 约%dms), 按帧间隔发送",
+           drain_count, skipped, drain_count * 60);
+
+    int sent = 0;
+    for (int i = 0; i < drain_count; i++)
+    {
+        int ret = protocol_handler_send_audio(proto,
+                                               drain_frames[i].data,
+                                               drain_frames[i].len);
+        if (ret == 0)
+            sent++;
+        else
+            PLOG_W("PRECACHE", "排空发送失败 (帧%d/%d)", i + 1, drain_count);
+
+        if (i < drain_count - 1)
+            usleep(60000);
+    }
 
     PLOG_I("PRECACHE", "排空完成: 发送%d/%d帧 (跳过%d帧)", sent, total - skipped, skipped);
     return sent;
