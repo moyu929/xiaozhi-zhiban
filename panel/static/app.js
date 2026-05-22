@@ -1075,7 +1075,9 @@ async function refreshServices() {
         { name: '按键背光', key: 'key_backlight', status: d.key_backlight && d.key_backlight.enabled === true, toggle: true, service: 'key_backlight',
           statusText: d.key_backlight ? (d.key_backlight.enabled === true ? '已开启' : (d.key_backlight.enabled === false ? '已关闭' : '不支持')) : '未知', hint: '重启保留' },
         { name: '音频预缓存', key: 'audio_precache', status: d.audio_precache && d.audio_precache.enabled, toggle: true, service: 'audio_precache',
-          statusText: d.audio_precache && d.audio_precache.enabled ? '已开启' : '已关闭', hint: '重启保留' }
+          statusText: d.audio_precache && d.audio_precache.enabled ? '已开启' : '已关闭', hint: '重启保留' },
+        { name: '协议版本', key: 'protocol_version', status: null, toggle: false, service: 'protocol_version',
+          statusText: 'v' + (d.protocol_version || 1), hint: '重启保留', isProtocolVersion: true }
     ];
 
     var html = '';
@@ -1083,7 +1085,15 @@ async function refreshServices() {
         var statusCls = item.status ? 'svc-on' : 'svc-off';
         html += '<div class="svc-item">';
         html += '<span class="svc-name">' + item.name + '</span>';
-        if (item.toggle) {
+        if (item.isProtocolVersion) {
+            var curVer = d.protocol_version || 1;
+            html += '<select class="select svc-select" onchange="setProtocolVersion(parseInt(this.value))">';
+            [1,2,3].forEach(function(v) {
+                html += '<option value="' + v + '"' + (v === curVer ? ' selected' : '') + '>v' + v + '</option>';
+            });
+            html += '</select>';
+            if (item.hint) html += '<span class="svc-hint">' + item.hint + '</span>';
+        } else if (item.toggle) {
             html += '<label class="svc-toggle">';
             html += '<input type="checkbox"' + (item.status ? ' checked' : '') + ' onchange="toggleService(\'' + item.service + '\', this.checked)">';
             html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
@@ -1111,6 +1121,23 @@ async function toggleService(service, enable) {
         await refreshServices();
     } else {
         toast('操作失败: ' + (r.error || ''), 'error');
+        await refreshServices();
+    }
+}
+
+async function setProtocolVersion(ver) {
+    if (!S.wl.connected) return;
+    var r = await api('/api/services/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: 'protocol_version', action: 'enable', value: ver }),
+    });
+    if (r.ok) {
+        toast('协议版本已设置为 v' + ver, 'success');
+        await new Promise(function(resolve) { setTimeout(resolve, 500); });
+        await refreshServices();
+    } else {
+        toast('设置失败: ' + (r.error || ''), 'error');
         await refreshServices();
     }
 }
