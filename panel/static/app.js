@@ -837,6 +837,7 @@ function resetWirelessUI() {
     $('cfgMcpEndpoint').value = '';
     $('cfgSairLogLevel').value = '';
     $('cfgListeningMode').value = 'autostop';
+    $('cfgProtocolVersion').value = '1';
     $('cfgListenTimeout').value = '';
     $('cfgSessionTimeout').value = '';
     $('cfgWakeupCooldown').value = '';
@@ -1075,9 +1076,7 @@ async function refreshServices() {
         { name: '按键背光', key: 'key_backlight', status: d.key_backlight && d.key_backlight.enabled === true, toggle: true, service: 'key_backlight',
           statusText: d.key_backlight ? (d.key_backlight.enabled === true ? '已开启' : (d.key_backlight.enabled === false ? '已关闭' : '不支持')) : '未知', hint: '重启保留' },
         { name: '音频预缓存', key: 'audio_precache', status: d.audio_precache && d.audio_precache.enabled, toggle: true, service: 'audio_precache',
-          statusText: d.audio_precache && d.audio_precache.enabled ? '已开启' : '已关闭', hint: '重启保留' },
-        { name: '协议版本', key: 'protocol_version', status: null, toggle: false, service: 'protocol_version',
-          statusText: 'v' + (d.protocol_version || 1), hint: '重启保留', isProtocolVersion: true }
+          statusText: d.audio_precache && d.audio_precache.enabled ? '已开启' : '已关闭', hint: '重启保留' }
     ];
 
     var html = '';
@@ -1085,15 +1084,7 @@ async function refreshServices() {
         var statusCls = item.status ? 'svc-on' : 'svc-off';
         html += '<div class="svc-item">';
         html += '<span class="svc-name">' + item.name + '</span>';
-        if (item.isProtocolVersion) {
-            var curVer = d.protocol_version || 1;
-            html += '<select class="select svc-select" onchange="setProtocolVersion(parseInt(this.value))">';
-            [1,2,3].forEach(function(v) {
-                html += '<option value="' + v + '"' + (v === curVer ? ' selected' : '') + '>v' + v + '</option>';
-            });
-            html += '</select>';
-            if (item.hint) html += '<span class="svc-hint">' + item.hint + '</span>';
-        } else if (item.toggle) {
+        if (item.toggle) {
             html += '<label class="svc-toggle">';
             html += '<input type="checkbox"' + (item.status ? ' checked' : '') + ' onchange="toggleService(\'' + item.service + '\', this.checked)">';
             html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
@@ -1316,6 +1307,11 @@ async function refreshConfig() {
         if (r2.log_level) $('cfgLogLevel').value = r2.log_level;
         $('cfgUploadMax').value = r2.upload_max_mb != null ? r2.upload_max_mb : 10;
     }
+    var r3 = await api('/api/services');
+    if (!r3.error) {
+        var sd = r3.data || r3;
+        if (sd.protocol_version) $('cfgProtocolVersion').value = sd.protocol_version;
+    }
 }
 
 async function doWakeup() {
@@ -1423,6 +1419,10 @@ async function saveAssistantConfig() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
     });
+    var protocolVersion = parseInt($('cfgProtocolVersion').value);
+    if (protocolVersion >= 1 && protocolVersion <= 3) {
+        await setProtocolVersion(protocolVersion);
+    }
     if (r.ok || !r.error) toast('助手配置已保存', 'success');
     else toast('保存失败', 'error');
 }
@@ -1449,6 +1449,7 @@ async function restoreAssistantDefaults() {
     $('cfgSessionTimeout').value = '300';
     $('cfgWakeupCooldown').value = '3';
     $('cfgWsPingInterval').value = '25';
+    $('cfgProtocolVersion').value = '1';
     var r = await api('/api/assistant/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -1462,6 +1463,7 @@ async function restoreAssistantDefaults() {
             ws_ping_interval: 25000
         }),
     });
+    await setProtocolVersion(1);
     if (r.ok || !r.error) toast('助手配置已恢复默认值', 'success');
     else toast('恢复默认值失败', 'error');
 }
