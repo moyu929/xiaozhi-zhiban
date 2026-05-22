@@ -399,7 +399,7 @@ int protocol_handler_init(protocol_handler_t *proto, protocol_config_t *config)
         proto->ws.ping_interval_ms = config->ping_interval_ms;
     websocket_set_callbacks(&proto->ws, on_ws_data, on_ws_connected, on_ws_disconnected, on_ws_error, proto);
 
-    proto->protocol_version = 2;
+    proto->protocol_version = 1;
     proto->server_sample_rate = 24000;
     proto->server_frame_duration = 60;
 
@@ -500,7 +500,7 @@ int protocol_handler_connect(protocol_handler_t *proto)
     /* 设置WebSocket连接参数 */
     websocket_set_url(&proto->ws, proto->config.url);
     websocket_set_header(&proto->ws, "Authorization", proto->config.token[0] ? proto->config.token : "Bearer ");
-    websocket_set_header(&proto->ws, "Protocol-Version", "2");
+    websocket_set_header(&proto->ws, "Protocol-Version", "1");
     websocket_set_header(&proto->ws, "Device-Id", proto->config.device_id);
     websocket_set_header(&proto->ws, "Client-Id", proto->config.client_id);
 
@@ -538,7 +538,7 @@ int protocol_handler_connect(protocol_handler_t *proto)
     /* 构造并发送hello消息 */
     char hello_json[1024];
     snprintf(hello_json, sizeof(hello_json),
-             "{\"type\":\"hello\",\"version\":2,\"transport\":\"websocket\","
+             "{\"type\":\"hello\",\"version\":1,\"transport\":\"websocket\","
              "\"features\":{\"mcp\":true,\"aec\":true},"
              "\"audio_params\":{\"format\":\"opus\",\"sample_rate\":%d,\"channels\":%d,\"frame_duration\":%d}}",
              proto->config.sample_rate,
@@ -637,22 +637,9 @@ int protocol_handler_send_audio(protocol_handler_t *proto, const uint8_t *opus_d
     if (!proto->connected || !proto->hello_received)
         return -1;
 
-    /* 获取AEC时间戳 */
-    uint32_t aec_timestamp = timestamp_queue_pop(&proto->ts_queue);
-
-    /* 构造v2二进制协议头部 */
-    binary_header_v2_t header;
-    memset(&header, 0, sizeof(header));
-    header.version = htons(2);
-    header.type = htons(0);
-    header.reserved = 0;
-    header.timestamp = htonl(aec_timestamp);
-    header.payload_size = htonl((uint32_t)opus_len);
-
-    size_t frame_len = sizeof(binary_header_v2_t) + opus_len;
-    if (frame_len > sizeof(proto->send_queue[0]))
+    if (opus_len > sizeof(proto->send_queue[0]))
     {
-        PLOG_W("PROTO", "音频帧过大: %zu", frame_len);
+        PLOG_W("PROTO", "音频帧过大: %zu", opus_len);
         return -1;
     }
 
@@ -660,7 +647,6 @@ int protocol_handler_send_audio(protocol_handler_t *proto, const uint8_t *opus_d
 
     proto->send_total_frames++;
 
-    /* 队列满时丢弃最旧的帧 */
     if (proto->send_queue_count >= PROTO_SEND_QUEUE_SIZE)
     {
         proto->send_queue_head = (proto->send_queue_head + 1) % PROTO_SEND_QUEUE_SIZE;
@@ -671,7 +657,6 @@ int protocol_handler_send_audio(protocol_handler_t *proto, const uint8_t *opus_d
                (unsigned long long)proto->send_dropped_frames);
     }
 
-    /* 队列使用率超过3/4时输出警告 */
     if (proto->send_queue_count >= PROTO_SEND_QUEUE_SIZE * 3 / 4)
     {
         PLOG_D("PROTO", "发送队列高水位: %d/%d (总计=%llu 丢弃=%llu)",
@@ -680,11 +665,9 @@ int protocol_handler_send_audio(protocol_handler_t *proto, const uint8_t *opus_d
                (unsigned long long)proto->send_dropped_frames);
     }
 
-    /* 将帧数据（头部+音频）放入队列尾部 */
     int idx = proto->send_queue_tail;
-    memcpy(proto->send_queue[idx], &header, sizeof(header));
-    memcpy(proto->send_queue[idx] + sizeof(header), opus_data, opus_len);
-    proto->send_queue_len[idx] = frame_len;
+    memcpy(proto->send_queue[idx], opus_data, opus_len);
+    proto->send_queue_len[idx] = opus_len;
 
     proto->send_queue_tail = (proto->send_queue_tail + 1) % PROTO_SEND_QUEUE_SIZE;
     proto->send_queue_count++;
