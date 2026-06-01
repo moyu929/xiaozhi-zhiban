@@ -28,6 +28,7 @@ import subprocess
 import shutil
 import uuid
 import io
+import queue
 
 logger = logging.getLogger("panel.server")
 
@@ -41,7 +42,7 @@ from adb_manager import (is_adb_available, detect_devices, is_xwebd_installed,
                           check_sair_status, deploy_sair, hot_update_sair, reboot_device,
                           poweroff_device, get_device_logs, _find_adb,
                           init_device, is_device_initialized, factory_reset_device,
-                          check_xwebd_env)
+                          check_xwebd_env, uninstall_sair)
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -407,13 +408,15 @@ def _api_device_logs_stream(handler, xwebd, body, query):
     handler.send_header("Access-Control-Allow-Origin", "*")
     handler.end_headers()
     last_line_count = 0
+    fail_count = 0
     try:
         while True:
             url = "/api/logs?lines=100"
             if source and source != "0":
                 url += f"&source={source}"
-            result = xwebd._request("GET", url)
+            result = xwebd._request("GET", url, timeout=3)
             if result and "error" not in result:
+                fail_count = 0
                 logs = result.get("logs", [])
                 current_count = len(logs)
                 if current_count > last_line_count and last_line_count > 0:
@@ -427,9 +430,10 @@ def _api_device_logs_stream(handler, xwebd, body, query):
                     handler.wfile.flush()
                 last_line_count = current_count
             else:
+                fail_count += 1
                 handler.wfile.write(b": ping\n\n")
                 handler.wfile.flush()
-            time.sleep(5)
+            time.sleep(5 if fail_count < 3 else 15)
     except (BrokenPipeError, ConnectionResetError, OSError):
         pass
     except Exception as e:
@@ -471,6 +475,31 @@ def _api_xwebd_diag(handler, xwebd, body, query):
 @_requires_xwebd
 def _api_xwebd_version(handler, xwebd, body, query):
     return xwebd._request("GET", "/api/version")
+
+
+@_api_route("GET", "/api/local-versions")
+def _api_local_versions(handler, xwebd, body, query):
+    import re
+    result = {}
+    base = os.path.dirname(os.path.abspath(__file__))
+    device_dir = os.path.join(base, "..", "device")
+    xwebd_vh = os.path.join(device_dir, "xwebd", "build", "version.h")
+    if not os.path.exists(xwebd_vh):
+        xwebd_vh = os.path.join(device_dir, "xwebd", "prebuilt", "version.h")
+    if os.path.exists(xwebd_vh):
+        with open(xwebd_vh, "r") as f:
+            m = re.search(r'XWEBD_VERSION\s+"([^"]+)"', f.read())
+            if m:
+                result["xwebd"] = m.group(1)
+    sair_vh = os.path.join(device_dir, "assistant", "build", "version.h")
+    if not os.path.exists(sair_vh):
+        sair_vh = os.path.join(device_dir, "assistant", "prebuilt", "version.h")
+    if os.path.exists(sair_vh):
+        with open(sair_vh, "r") as f:
+            m = re.search(r'XIAOZHI_VERSION\s+"([^"]+)"', f.read())
+            if m:
+                result["assistant"] = m.group(1)
+    return result
 
 
 @_api_route("GET", "/api/assistant/diag")
@@ -571,7 +600,10 @@ def _api_assistant_upgrade(handler, xwebd, body, query):
     binary_path = _find_sair_binary()
     if not binary_path:
         return {"error": "sair 二进制文件不存在，请先编译"}, 404
-    logger.info("热更新助手: binary=%s", binary_path)
+    method = "hot"
+    if body and body.get("method") == "cold":
+        method = "cold"
+    logger.info("更新助手: binary=%s, method=%s", binary_path, method)
     with open(binary_path, "rb") as f:
         binary_data = f.read()
     upload_r = xwebd._request("POST", "/api/upload",
@@ -582,9 +614,12 @@ def _api_assistant_upgrade(handler, xwebd, body, query):
     if not upload_r or upload_r.get("error"):
         return {"error": "上传sair文件失败: " + (upload_r.get("error", "") if upload_r else "连接失败")}, 500
     time.sleep(1)
-    r = xwebd.upgrade_assistant()
+    r = xwebd.upgrade_assistant(method)
     if r and r.get("ok"):
-        return {"ok": True, "method": r.get("method", "hot_update")}
+        resp_method = r.get("method", "hot_update")
+        if resp_method == "cold_update":
+            return {"ok": True, "method": "cold_update", "rebooting": True}
+        return {"ok": True, "method": "hot_update"}
     if not r:
         return {"ok": True, "method": "hot_update"}
     return r
@@ -614,13 +649,6 @@ def _api_assistant_activate(handler, xwebd, body, query):
     if not r:
         return {"error": "连接失败"}, 502
     return {"error": r.get("msg", r.get("error", "激活失败"))}, 500
-
-
-@_api_route("POST", "/api/upgrade")
-@_requires_xwebd
-def _api_upgrade(handler, xwebd, body, query):
-    logger.info("升级助手")
-    return xwebd.upgrade_assistant()
 
 
 @_api_route("POST", "/api/wakeup")
@@ -782,6 +810,9 @@ def _api_assistant_update(handler, xwebd, body, query):
 @_requires_xwebd
 def _api_assistant_uninstall(handler, xwebd, body, query):
     logger.info("卸载助手")
+    status = xwebd.get_assistant_status()
+    if status and not status.get("installed"):
+        return {"ok": True, "message": "助手未安装,无需卸载"}
     r = xwebd.uninstall_assistant()
     if r and r.get("ok"):
         return {"ok": True}
@@ -927,11 +958,12 @@ def _api_xwebd_upload_update(handler, xwebd, body, query):
 @_api_route("POST", "/api/xwebd/wireless-update")
 @_requires_xwebd
 def _api_xwebd_wireless_update(handler, xwebd, body, query):
-    logger.info("无线模式更新xwebd")
-    local_binary = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "device", "xwebd", "build", "xwebd")
-    if not os.path.exists(local_binary):
+    logger.info("无线模式更新xwebd(冷更新)")
+    from adb_manager import _find_xwebd_binary
+    binary_path = _find_xwebd_binary()
+    if not binary_path:
         return {"error": "xwebd二进制文件不存在，请先编译"}, 404
-    with open(local_binary, "rb") as f:
+    with open(binary_path, "rb") as f:
         binary_data = f.read()
     r = xwebd._request("POST", "/api/upload", body=binary_data,
                         headers={"Content-Type": "application/octet-stream",
@@ -939,7 +971,10 @@ def _api_xwebd_wireless_update(handler, xwebd, body, query):
     if not r or r.get("error"):
         return {"error": "上传xwebd_new失败: " + (r.get("error", "") if r else "连接失败")}, 500
     time.sleep(1)
-    r2 = xwebd._request("POST", "/api/self-update")
+    update_body = json.dumps({"method": "cold"}).encode()
+    r2 = xwebd._request("POST", "/api/self-update",
+                         body=update_body,
+                         headers={"Content-Type": "application/json"})
     if not r2:
         return {"ok": True, "rebooting": True}
     if r2.get("error"):
@@ -1054,6 +1089,131 @@ def _api_adb_xwebd_env(handler, xwebd, body, query):
     if not is_adb_available():
         return {"error": "ADB not installed", "adb_available": False}, 503
     return check_xwebd_env(serial)
+
+
+@_api_route("POST", "/api/emergency-nuke")
+def _api_emergency_nuke(handler, xwebd, body, query):
+    mode = body.get("mode", "adb") if body else "adb"
+    serial = body.get("serial") if body else None
+    host = body.get("host") if body else None
+
+    progress_queue = queue.Queue()
+
+    def adb_nuke_thread():
+        from adb_manager import _find_adb, _adb
+        adb_path = _find_adb()
+        start_time = time.time()
+        attempt = 0
+        while time.time() - start_time < 600:
+            attempt += 1
+            progress_queue.put({"status": "polling", "attempt": attempt, "elapsed": round(time.time() - start_time, 1)})
+            try:
+                result = subprocess.run([adb_path, "devices"], capture_output=True, text=True, timeout=5)
+                lines = result.stdout.strip().split('\n')
+                for line in lines[1:]:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    parts = line.split('\t')
+                    if len(parts) >= 2 and parts[1] == "device":
+                        dev_serial = parts[0]
+                        if serial and dev_serial != serial:
+                            continue
+                        progress_queue.put({"status": "detected", "serial": dev_serial, "attempt": attempt})
+                        nuke_cmd = (
+                            "killall sair 2>/dev/null; killall xwebd 2>/dev/null; "
+                            "rm -f /var/upgrade/sair /var/upgrade/sair_new /var/upgrade/sair_old; "
+                            "rm -f /var/upgrade/xwebd /var/upgrade/xwebd_new /var/upgrade/xwebd_old; "
+                            "rm -f /var/upgrade/sair_boot.log /var/upgrade/xiaozhi.log; "
+                            "rm -f /var/upgrade/boot_watchdog.sh /var/upgrade/xwebd_persist.conf; "
+                            "rm -f /var/upgrade/test.sh /var/upgrade/subtitle_trace.sh /var/upgrade/subtitle_trace.log; "
+                            "rm -rf /var/upgrade/sair_backup /var/upgrade/download; "
+                            "rm -f /tmp/sair_status.json /tmp/sair_config.json /tmp/sair_cmd.json; "
+                            "rm -f /tmp/sair_diag.json /tmp/sair_diag_request; "
+                            "rm -rf /dev/shm/sair* /dev/shm/xwebd*; "
+                            "echo NUKE_DONE"
+                        )
+                        r = _adb(["shell", nuke_cmd], serial=serial or dev_serial, timeout=10)
+                        if r["ok"] and "NUKE_DONE" in (r["stdout"] or ""):
+                            progress_queue.put({"status": "success", "method": "adb"})
+                        else:
+                            progress_queue.put({"status": "partial", "method": "adb", "detail": r.get("stderr", "")[:200]})
+                        return
+            except Exception:
+                pass
+            time.sleep(0.3)
+        progress_queue.put({"status": "timeout"})
+
+    def http_nuke_thread():
+        start_time = time.time()
+        attempt = 0
+        port = 8080
+        while time.time() - start_time < 600:
+            attempt += 1
+            progress_queue.put({"status": "polling", "attempt": attempt, "elapsed": round(time.time() - start_time, 1)})
+            try:
+                url = f"http://{host}:{port}/api/services"
+                req = Request(url, method='GET')
+                urlopen(req, timeout=2)
+                progress_queue.put({"status": "detected", "host": host, "attempt": attempt})
+                try:
+                    uninstall_url = f"http://{host}:{port}/api/assistant/uninstall"
+                    req = Request(uninstall_url, data=b'', method='POST')
+                    req.add_header('Content-Type', 'application/json')
+                    urlopen(req, timeout=5)
+                except Exception:
+                    pass
+                try:
+                    remove_url = f"http://{host}:{port}/api/xwebd/remove"
+                    req = Request(remove_url, data=b'', method='POST')
+                    req.add_header('Content-Type', 'application/json')
+                    urlopen(req, timeout=5)
+                except Exception:
+                    pass
+                try:
+                    reboot_url = f"http://{host}:{port}/api/reboot"
+                    req = Request(reboot_url, data=b'', method='POST')
+                    req.add_header('Content-Type', 'application/json')
+                    urlopen(req, timeout=5)
+                except Exception:
+                    pass
+                progress_queue.put({"status": "success", "method": "http"})
+                return
+            except Exception:
+                pass
+            time.sleep(0.5)
+        progress_queue.put({"status": "timeout"})
+
+    if mode == "adb":
+        t = threading.Thread(target=adb_nuke_thread, daemon=True)
+    else:
+        if not host:
+            return {"error": "host required for HTTP mode"}, 400
+        t = threading.Thread(target=http_nuke_thread, daemon=True)
+    t.start()
+
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/event-stream")
+    handler.send_header("Cache-Control", "no-cache")
+    handler.send_header("Connection", "keep-alive")
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.end_headers()
+
+    try:
+        while True:
+            try:
+                event = progress_queue.get(timeout=1)
+                data = json.dumps(event, ensure_ascii=False)
+                handler.wfile.write(("data: " + data + "\n\n").encode("utf-8"))
+                handler.wfile.flush()
+                if event.get("status") in ("success", "partial", "timeout"):
+                    break
+            except queue.Empty:
+                handler.wfile.write(b": ping\n\n")
+                handler.wfile.flush()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    return _STREAM_SENTINEL
 
 
 class ControlPanelHandler(BaseHTTPRequestHandler):

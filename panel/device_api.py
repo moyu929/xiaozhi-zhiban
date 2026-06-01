@@ -146,22 +146,6 @@ class XwebdAPI:
         """
         return self._request("PUT", "/api/config", config)
 
-    def set_volume(self, volume):
-        """设置设备音量
-
-        Args:
-            volume: 音量值（0-80）
-
-        Returns:
-            dict: {"ok": True} 成功，{"error": "..."} 失败
-        """
-        logger.info("设置音量: %d", volume)
-        return self._request("POST", "/api/volume", {"volume": volume})
-
-    def set_mute(self, muted):
-        logger.info("设置静音: %s", muted)
-        return self._request("POST", "/api/mute", {"muted": 1 if muted else 0})
-
     def reboot(self):
         """重启设备
 
@@ -195,8 +179,8 @@ class XwebdAPI:
         return self._request("POST", "/api/assistant/deploy", {"path": path}, timeout=15)
 
     def update_assistant(self, path="/var/upgrade/sair_new"):
-        logger.info("更新助手: path=%s", path)
-        return self._request("POST", "/api/assistant/update", {"path": path}, timeout=15)
+        logger.info("冷更新助手: path=%s", path)
+        return self._request("POST", "/api/assistant/upgrade", {"path": path, "method": "cold"}, timeout=15)
 
     def uninstall_assistant(self):
         """卸载设备上的助手
@@ -206,14 +190,6 @@ class XwebdAPI:
         """
         logger.info("卸载助手")
         return self._request("POST", "/api/assistant/uninstall", {})
-
-    def assistant_status(self):
-        """获取助手安装和运行状态
-
-        Returns:
-            dict: {"installed": True/False, "version": "...", "running": True/False}
-        """
-        return self._request("GET", "/api/assistant/status")
 
     def wakeup_assistant(self):
         logger.info("唤醒助手")
@@ -227,9 +203,9 @@ class XwebdAPI:
         logger.info("激活助手")
         return self._request("POST", "/api/assistant/activate")
 
-    def upgrade_assistant(self):
-        logger.info("升级助手")
-        return self._request("POST", "/api/assistant/upgrade")
+    def upgrade_assistant(self, method="hot"):
+        logger.info("升级助手: method=%s", method)
+        return self._request("POST", "/api/assistant/upgrade", {"method": method})
 
     def get_assistant_status(self):
         return self._request("GET", "/api/assistant/status")

@@ -105,6 +105,13 @@
               <button class="btn btn-danger btn-outline" onclick="adbPoweroff()">关机</button>
               <button class="btn btn-danger btn-outline" onclick="adbFactoryReset()">恢复出厂</button>
             </div>
+            <div class="btn-row" style="margin-top:10px">
+              <button class="btn btn-danger" onclick="emergencyNuke('adb')" style="background:linear-gradient(135deg,#dc2626,#991b1b);font-weight:700;letter-spacing:1px">🚨 紧急修复</button>
+            </div>
+            <div class="wired-hint" style="margin-top:6px">
+              <span class="hint-icon">⚠️</span>
+              <span>设备频繁重启时使用：高频轮询设备连接，一旦上线立即恢复出厂设置</span>
+            </div>
             <div class="wired-hint" style="margin-top:14px">
               <span class="hint-icon">💡</span>
               <span>部署面板内核后，可切换至<strong>无线模式</strong>获得完整控制功能</span>
@@ -166,6 +173,13 @@
               <button class="btn btn-danger btn-outline" onclick="doPoweroff()">关机</button>
               <button class="btn btn-danger btn-outline" onclick="doCleanup()">清理垃圾</button>
               <button class="btn btn-ghost" onclick="reselectUsbMode()">重选USB模式</button>
+            </div>
+            <div style="margin-top:10px">
+              <button class="btn btn-danger" onclick="emergencyNuke('http')" style="width:100%;background:linear-gradient(135deg,#dc2626,#991b1b);font-weight:700;letter-spacing:1px">🚨 紧急修复</button>
+            </div>
+            <div class="wired-hint" style="margin-top:4px">
+              <span class="hint-icon">⚠️</span>
+              <span>设备频繁重启时使用：高频轮询设备连接，一旦上线立即恢复出厂设置</span>
             </div>
             <div class="section-overlay" id="deviceOverlay" style="display:none"><div class="spinner"></div></div>
           </section>
@@ -263,12 +277,15 @@
                 </select>
               </div>
               <div class="form-group">
-                <label class="form-label">协议版本 <span class="form-hint">（v1：裸Opus；v2：BinaryProtocol2；v3：BinaryProtocol3；修改后重启生效）</span></label>
-                <select id="cfgProtocolVersion" class="select">
-                  <option value="1">v1（默认）</option>
-                  <option value="2">v2</option>
-                  <option value="3">v3</option>
+                <label class="form-label">传输模式 <span class="form-hint">（WebSocket：当前可用；MQTT+UDP：暂不可用；修改后重启生效）</span></label>
+                <select id="cfgTransportMode" class="select" onchange="updateTransportModeUI()">
+                  <option value="0">WebSocket（默认）</option>
+                  <option value="1">MQTT+UDP</option>
                 </select>
+              </div>
+              <div class="form-group" id="customWsUrlGroup" style="display:none">
+                <label class="form-label">自定义 WS URL <span class="form-hint">（WebSocket模式下使用自定义服务端地址，留空则使用官方地址）</span></label>
+                <input type="text" id="cfgCustomWsUrl" class="input-text" value="" placeholder="wss://your-server.com/xiaozhi/v1/">
               </div>
               <div style="display:flex;gap:8px;margin-bottom:12px">
                 <button class="btn btn-accent" onclick="saveAssistantConfig()" style="flex:1">保存配置</button>

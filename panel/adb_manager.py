@@ -24,7 +24,7 @@ import sys
 
 logger = logging.getLogger("panel.adb_manager")
 
-ADB_TIMEOUT = 5
+ADB_TIMEOUT = 10
 
 SAIR_REMOTE_PATH = "/var/upgrade/sair"
 SAIR_LOG_PATH = "/var/upgrade/xiaozhi.log"
@@ -35,6 +35,20 @@ BOOT_WATCHDOG_PATH = "/var/upgrade/boot_watchdog.sh"
 WATCHDOG_GUARD_PATH = "/var/upgrade/watchdog_guard.sh"
 
 _ADB_PATH = None
+_ADB_WARMED_UP = False
+
+
+def _warmup_adb():
+    global _ADB_WARMED_UP
+    if _ADB_WARMED_UP:
+        return
+    _ADB_WARMED_UP = True
+    try:
+        adb = _find_adb()
+        subprocess.run([adb, "start-server"], capture_output=True, timeout=15)
+        logger.info("ADB daemon 已预热")
+    except Exception as e:
+        logger.warning("ADB daemon 预热失败: %s", e)
 
 
 def _find_adb():
@@ -67,21 +81,7 @@ def _find_adb():
 
 
 def _adb(args, serial=None, timeout=ADB_TIMEOUT):
-    """执行 ADB 命令的底层封装
-
-    Args:
-        args: ADB 命令参数列表（如 ["devices", "-l"]）
-        serial: 设备序列号，为 None 时不指定设备（适用于仅连接一台设备的情况）
-        timeout: 命令超时时间（秒），默认 5 秒
-
-    Returns:
-        dict: {
-            "ok": bool,          # 命令是否成功（returncode == 0）
-            "stdout": str,       # 标准输出
-            "stderr": str,       # 标准错误
-            "returncode": int    # 退出码
-        }
-    """
+    _warmup_adb()
     cmd = [_find_adb()]
     if serial:
         cmd += ["-s", serial]
@@ -104,7 +104,7 @@ def _adb(args, serial=None, timeout=ADB_TIMEOUT):
 def _find_file(candidates):
     for path in candidates:
         norm = os.path.normpath(path)
-        if os.path.isfile(norm):
+        if os.path.isfile(norm) and os.path.getsize(norm) > 0:
             return norm
     return None
 
@@ -319,6 +319,11 @@ def init_device(serial=None):
             '\n'
             '# Telnet服务（远程调试）\n'
             'busybox telnetd -p 23 -l /bin/sh\n'
+            '\n'
+            '# xwebd面板内核服务\n'
+            'if [ -x /var/upgrade/xwebd ]; then\n'
+            '    cd /var/upgrade && ./xwebd -d\n'
+            'fi\n'
             '\n'
             '# 开机频率检测与自动回退\n'
             '/var/upgrade/boot_watchdog.sh\n'
@@ -613,19 +618,6 @@ def _remove_xwebd_autostart(serial=None):
     _adb(["shell", f"sed -i '/xwebd/d' {TEST_SH_PATH}"], serial=serial)
     return {"ok": True, "error": ""}
 
-
-def _ensure_sair_autostart(serial=None):
-    _remove_sair_autostart(serial)
-    return {"ok": True, "error": ""}
-
-
-def _remove_sair_autostart(serial=None):
-    logger.info("清理test.sh中的sair自启动行")
-    _adb(["shell", f"sed -i '/{SAIR_REMOTE_PATH}/d' {TEST_SH_PATH}"], serial=serial)
-    _adb(["shell", f"sed -i '/killall sair/d' {TEST_SH_PATH}"], serial=serial)
-    return {"ok": True, "error": ""}
-
-
 _INFO_SECTION_DELIMITER = "---SECTION---"
 
 _INFO_SECTIONS = [
@@ -794,6 +786,24 @@ def check_sair_status(serial=None):
         "pid": pid,
         "version": version,
     }
+
+
+def uninstall_sair(serial=None):
+    logger.info("卸载sair: serial=%s", serial)
+    _adb(["shell", "killall sair 2>/dev/null"], serial=serial)
+    time.sleep(0.5)
+    _adb(["shell", f"rm -f {SAIR_REMOTE_PATH}"], serial=serial)
+    _adb(["shell", f"rm -f {SAIR_REMOTE_PATH}_new"], serial=serial)
+    _adb(["shell", f"rm -f {SAIR_REMOTE_PATH}_old"], serial=serial)
+    _adb(["shell", "rm -f /var/upgrade/sair_boot.log"], serial=serial)
+    _adb(["shell", "rm -f /var/upgrade/xiaozhi.log"], serial=serial)
+    _adb(["shell", "rm -f /var/upgrade/boot_watchdog.sh"], serial=serial)
+    _adb(["shell", "rm -rf /var/upgrade/sair_backup"], serial=serial)
+    _adb(["shell", "rm -f /tmp/sair_status.json /tmp/sair_config.json /tmp/sair_cmd.json /tmp/sair_diag.json /tmp/sair_diag_request"], serial=serial)
+    _adb(["shell", "rm -f /var/upgrade/.mcp_endpoint /var/upgrade/.ws_config /var/upgrade/.client_id /var/upgrade/.xiaozhi_sair"], serial=serial)
+    _adb(["shell", "rm -rf /dev/shm/sair*"], serial=serial)
+    logger.info("sair已卸载: serial=%s", serial)
+    return {"ok": True, "error": ""}
 
 
 def deploy_sair(serial=None, binary_path=None):

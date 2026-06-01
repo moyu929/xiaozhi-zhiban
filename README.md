@@ -18,7 +18,7 @@
 
 - 🎙️ **语音唤醒与对话** — 唤醒词检测、ASR 语音识别、WebSocket 实时对话，可连接豆包、DeepSeek 等 LLM 模型进行智能对话与意图识别
 - 🌐 **Web 控制面板** — 通过浏览器管理设备，支持 WiFi 和 USB 两种连接方式
-- 🔄 **热更新** — 无需重启设备即可更新语音助手，秒级完成（通过版本号变化检测更新成功）
+- 🔄 **热更新** — 无需重启设备即可更新语音助手，秒级完成（通过 cmd.json + SIGUSR1 + execvp 机制，PID 不变）
 - 🛡️ **安全回退** — 内置开机看门狗，连续启动失败自动回退到原版固件
 - 📊 **实时监控** — 设备状态、日志、配置一览无余
 - ⚙️ **运行时配置** — WebSocket 地址、超时参数、日志级别等均可在线调整
@@ -48,6 +48,7 @@
 │  浏览器界面  │     JSON     │  HTTP API   │  sair_cmd.json │  语音助手    │
 └─────────────┘              └─────────────┘  sair_status.json└──────────────┘
                                               sair_config.json
+                                              (cmd含upgrade命令)
 ```
 
 ---
@@ -157,10 +158,12 @@ xiaozhi-zhiban/
 ├── device/
 │   ├── assistant/
 │   │   └── prebuilt/
-│   │       └── sair                  # 语音助手二进制（替换设备原版sair）
+│   │       ├── sair                  # 语音助手二进制（替换设备原版sair）
+│   │       └── version.h             # 版本号头文件
 │   └── xwebd/
 │       ├── prebuilt/
-│       │   └── xwebd                 # Web控制守护进程二进制
+│       │   ├── xwebd                 # Web控制守护进程二进制
+│       │   └── version.h             # 版本号头文件
 │       └── scripts/
 │           └── boot_watchdog.sh      # 开机看门狗脚本（自动部署）
 ├── panel/
@@ -170,7 +173,6 @@ xiaozhi-zhiban/
 │   ├── adb_manager.py                # ADB 设备管理
 │   ├── config.py                     # 配置（环境变量读取）
 │   ├── log_config.py                 # 日志配置
-│   ├── _adb_check.py                 # ADB 连接诊断工具
 │   └── static/
 │       ├── index.html                # 前端页面
 │       ├── app.js                    # 前端逻辑

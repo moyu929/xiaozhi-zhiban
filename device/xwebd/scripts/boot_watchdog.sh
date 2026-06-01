@@ -23,6 +23,7 @@ BOOT_HAPPENED="/var/upgrade/.boot_happened"
 RECOVERY_LOG="/var/upgrade/.boot_recovery_log"
 SAIR_WRAPPER="/var/upgrade/sair"
 SAIR_BACKUP="/var/upgrade/sair_backup"
+XWEBD_BIN="/var/upgrade/xwebd"
 MARKER="/var/upgrade/.watchdog_triggered"
 MAX_CRASHES=3
 ALIVE_SECONDS=120
@@ -77,6 +78,24 @@ if [ "$count" -ge "$MAX_CRASHES" ]; then
         rm -f "$SAIR_BACKUP"
     fi
 
+    if [ -f "$XWEBD_BIN" ]; then
+        log_msg "Removing $XWEBD_BIN"
+        rm -f "$XWEBD_BIN"
+    fi
+
+    rm -f /var/upgrade/sair 2>/dev/null
+    log_msg "Removed custom sair, Manager will fall back to /usr/bin/sair via PATH"
+
+    rm -f /var/upgrade/xwebd_old /var/upgrade/xwebd_new 2>/dev/null
+    rm -f /var/upgrade/sair_old /var/upgrade/sair_new 2>/dev/null
+    rm -f /var/upgrade/xwebd_persist.conf 2>/dev/null
+    rm -f /var/upgrade/sair_boot.log /var/upgrade/xiaozhi.log 2>/dev/null
+    rm -rf /dev/shm/sair* /dev/shm/xwebd* 2>/dev/null
+
+    printf '#!/bin/sh\nbusybox telnetd -p 23 -l /bin/sh\nif [ -x /var/upgrade/xwebd ]; then cd /var/upgrade && ./xwebd -d; fi\n/var/upgrade/boot_watchdog.sh\n' > /var/upgrade/test.sh
+    chmod 755 /var/upgrade/test.sh
+    log_msg "test.sh reset to safe minimal version"
+
     echo "triggered" > "$MARKER"
 
     uptime_str=$(cat /proc/uptime 2>/dev/null | awk '{print $1}')
@@ -85,7 +104,7 @@ if [ "$count" -ge "$MAX_CRASHES" ]; then
     count=0
     echo "$count" > "$CRASH_COUNT_FILE"
 
-    log_msg "Recovery complete, will boot with original sair"
+    log_msg "Recovery complete, will boot with original firmware"
 fi
 
 # --- 第3步：设置延迟存活标记 ---
