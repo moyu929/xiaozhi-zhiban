@@ -1046,6 +1046,16 @@ async function refreshAssistantStatus() {
         updateSairLocks();
         if (S.wl.sair) refreshConfig();
     }
+    var notInstalledEl = $('assistantNotInstalledOverlay');
+    if (notInstalledEl) {
+        var showOverlay = !d.installed || d.native_running;
+        notInstalledEl.style.display = showOverlay ? 'flex' : 'none';
+        var textEl = $('notInstalledText');
+        if (textEl) {
+            if (d.native_running) textEl.textContent = '原生语音助手运行中';
+            else textEl.textContent = '未安装语音助手';
+        }
+    }
 }
 
 async function refreshXwebdStatus() {
@@ -1352,8 +1362,13 @@ async function refreshConfig() {
     if (!S.wl.connected) return;
     var r = await api('/api/assistant/config');
     if (!r.error) {
-        if (r.mcp_endpoint) $('cfgMcpEndpoint').value = r.mcp_endpoint;
+        if (r.mcp_endpoint !== undefined) $('cfgMcpEndpoint').value = r.mcp_endpoint;
         if (r.listening_mode) $('cfgListeningMode').value = r.listening_mode;
+        if (r.log_level) $('cfgSairLogLevel').value = r.log_level;
+        if (r.listen_timeout) $('cfgListenTimeout').value = Math.round(r.listen_timeout / 1000);
+        if (r.session_timeout) $('cfgSessionTimeout').value = Math.round(r.session_timeout / 1000);
+        if (r.wakeup_cooldown) $('cfgWakeupCooldown').value = Math.round(r.wakeup_cooldown / 1000);
+        if (r.ws_ping_interval) $('cfgWsPingInterval').value = Math.round(r.ws_ping_interval / 1000);
     }
     var r2 = await api('/api/xwebd/config');
     if (!r2.error) {
@@ -1364,15 +1379,9 @@ async function refreshConfig() {
     if (!r3.error) {
         var sd = r3.data || r3;
         if (sd.transport_mode != null) {
-            if (sd.transport_mode === 1) {
-                $('cfgTransportMode').value = '0';
-                setTransportMode(0);
-                toast('传输模式已自动纠正为WebSocket（MQTT+UDP暂不可用）', 'info');
-            } else {
-                $('cfgTransportMode').value = sd.transport_mode;
-            }
+            $('cfgTransportMode').value = sd.transport_mode;
         }
-        if (sd.custom_ws_url) $('cfgCustomWsUrl').value = sd.custom_ws_url;
+        if (sd.custom_ws_url !== undefined) $('cfgCustomWsUrl').value = sd.custom_ws_url;
         updateTransportModeUI();
     }
 }
@@ -1477,23 +1486,22 @@ async function saveAssistantConfig() {
     if (sessionTimeout > 0) config.session_timeout = sessionTimeout * 1000;
     if (wakeupCooldown > 0) config.wakeup_cooldown = wakeupCooldown * 1000;
     if (wsPingInterval > 0) config.ws_ping_interval = wsPingInterval * 1000;
-    var errors = [];
+    var transportMode = parseInt($('cfgTransportMode').value);
+    if (transportMode >= 0 && transportMode <= 1) config.transport_mode = transportMode;
+    var customWsUrl = $('cfgCustomWsUrl').value.trim();
+    config.custom_ws_url = customWsUrl;
     var r = await api('/api/assistant/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
     });
-    if (r.error) errors.push('助手配置');
-    var transportMode = parseInt($('cfgTransportMode').value);
-    if (transportMode >= 0 && transportMode <= 1) {
-        var tr = await setTransportMode(transportMode);
-        if (tr && tr.error) errors.push('传输模式');
+    if (r.ok || !r.error) {
+        toast('助手配置已保存', 'success');
+        await new Promise(function(resolve) { setTimeout(resolve, 1500); });
+        await refreshConfig();
+    } else {
+        toast('保存失败: ' + (r.error || ''), 'error');
     }
-    var customWsUrl = $('cfgCustomWsUrl').value.trim();
-    var ur = await setCustomWsUrl(customWsUrl);
-    if (ur && ur.error) errors.push('自定义WS URL');
-    if (errors.length === 0) toast('助手配置已保存', 'success');
-    else toast('部分保存失败: ' + errors.join(', '), 'error');
 }
 
 async function saveXwebdConfig() {
@@ -1518,6 +1526,8 @@ async function restoreAssistantDefaults() {
     $('cfgSessionTimeout').value = '300';
     $('cfgWakeupCooldown').value = '3';
     $('cfgWsPingInterval').value = '25';
+    $('cfgTransportMode').value = '0';
+    $('cfgCustomWsUrl').value = '';
     var r = await api('/api/assistant/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -1528,13 +1538,18 @@ async function restoreAssistantDefaults() {
             listen_timeout: 120000,
             session_timeout: 300000,
             wakeup_cooldown: 3000,
-            ws_ping_interval: 25000
+            ws_ping_interval: 25000,
+            transport_mode: 0,
+            custom_ws_url: ''
         }),
     });
-    await setTransportMode(0);
-    await setCustomWsUrl('');
-    if (r.ok || !r.error) toast('助手配置已恢复默认值', 'success');
-    else toast('恢复默认值失败', 'error');
+    if (r.ok || !r.error) {
+        toast('助手配置已恢复默认值', 'success');
+        await new Promise(function(resolve) { setTimeout(resolve, 1500); });
+        await refreshConfig();
+    } else {
+        toast('恢复默认值失败', 'error');
+    }
 }
 
 async function restoreXwebdDefaults() {

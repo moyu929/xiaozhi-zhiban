@@ -1507,7 +1507,8 @@ def create_server(host="0.0.0.0", port=DEFAULT_PANEL_PORT, device_host=DEFAULT_D
         ThreadingHTTPServer: 已配置好的 HTTP 服务器实例
     """
     xwebd_api = XwebdAPI(device_host, XWEBD_PORT)
-    xwebd_api.check_connection()
+    if device_host:
+        xwebd_api.check_connection()
     set_apis(xwebd_api)
 
     logger.info("创建服务器: %s:%d, device=%s", host, port, device_host)
