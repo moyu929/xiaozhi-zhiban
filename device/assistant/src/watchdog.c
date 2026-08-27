@@ -66,10 +66,10 @@ static int find_sair_app_info(watchdog_t *wd)
     int my_pid = getpid();
     char *data = (char *)wd->shm_ptr;
 
-    for (int base = 0x20; base + 0x188 <= APP_RUNNING_LIST_SIZE; base += 0x188)
+    for (int base = 0x28; base + 0x188 <= APP_RUNNING_LIST_SIZE; base += 0x188)
     {
         char *entry = data + base;
-        int entry_pid = *(int *)(entry + 0x08);
+        int entry_pid = *(int *)(entry + 0x00);          /* pid@+0x00 (R1 §3) */
         if (entry_pid == my_pid)
         {
             wd->sair_app_info = entry;
@@ -86,14 +86,14 @@ static int find_sair_app_info(watchdog_t *wd)
     }
 
     /* 第二轮：按名称查找sair（助手二进制文件名） */
-    for (int base = 0x20; base + 0x188 <= APP_RUNNING_LIST_SIZE; base += 0x188)
+    for (int base = 0x28; base + 0x188 <= APP_RUNNING_LIST_SIZE; base += 0x188)
     {
         char *entry = data + base;
-        char *name_ptr = entry + 0x0c;
+        char *name_ptr = entry + 0x04;                   /* name@+0x04 (R1 §3) */
         if (name_ptr[0] != '\0' && strstr(name_ptr, "sair") != NULL)
         {
             wd->sair_app_info = entry;
-            PLOG_I("WD", "通过名称找到 sair, 偏移 0x%x pid=%d", base, *(int *)(entry + 0x08));
+            PLOG_I("WD", "通过名称找到 sair, 偏移 0x%x pid=%d", base, *(int *)(entry + 0x00));
             char *mq_ptr = entry + 0x24;
             if (mq_ptr[0] == '/')
             {

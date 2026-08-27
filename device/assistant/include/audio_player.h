@@ -22,6 +22,7 @@ typedef struct {
     int16_t *decode_buf;
     int32_t *s32_buf;
 
+    pthread_cond_t track_closed_cond;   /* 轨道关闭通知(R-13) */
     timestamp_queue_t *ts_queue;
 } audio_player_t;
 

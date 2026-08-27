@@ -491,7 +491,9 @@ int protocol_handler_init(protocol_handler_t *proto, protocol_config_t *config)
             proto->ws.ping_interval_ms = config->ping_interval_ms;
         websocket_set_callbacks(&proto->ws, on_ws_data, on_ws_connected, on_ws_disconnected, on_ws_error, proto);
 
-        proto->protocol_version = 2;
+        /* 2026-08-27 定论(交叉矩阵实验): hello 不响应的真凶是 features."aec":true,
+         * 与 version 无关(v1/v2 均通). 此处取 1 = xiaozhi-esp32 官方客户端主流形态. */
+        proto->protocol_version = 2; /* v2: 带时间戳二进制协议, 云端AEC 依赖(官方同款) */
     }
 
     proto->server_sample_rate = 24000;
@@ -608,11 +610,22 @@ static int connect_websocket(protocol_handler_t *proto)
     }
 
     char hello_json[1024];
+    /* 2026-08-27 深夜实测终论: 设备侧(真实客户端指纹)发 features.aec:true + v2
+     * 同样被服务器 10s 无响应拒绝(23:34 实录, 连接超时进 Cleaning). 云端 AEC
+     * 在官方代码为编译期选项(CONFIG_USE_SERVER_AEC), 说明服务端具备该能力但
+     * 当前网关不开放. features 不声明 aec 即为本服务器唯一可行形态;
+     * 上行仍保留 BinaryProtocol2 + timestamp_queue 配对链路(官方云端 AEC 同款
+     * 机制, 若未来服务器开放只需在 features 加回 "aec":true 即可启用). */
+    /* 云端AEC(aec_mode=cloud): 官方 CONFIG_USE_SERVER_AEC 同款声明, 服务器以
+     * BinaryProtocol2 上行时间戳配对做源信号对消(设备端 timestamp_queue 已就位).
+     * 2026-08-27 实测当前网关拒绝 aec:true(10s 无响应), 故默认 local 不声明;
+     * 面板可切 cloud, 待服务器开放即用. */
+    const char *feat = proto->cloud_aec ? "\"mcp\":true,\"aec\":true" : "\"mcp\":true";
     snprintf(hello_json, sizeof(hello_json),
              "{\"type\":\"hello\",\"version\":%d,\"transport\":\"websocket\","
-             "\"features\":{\"mcp\":true,\"aec\":true},"
+             "\"features\":{%s},"
              "\"audio_params\":{\"format\":\"opus\",\"sample_rate\":%d,\"channels\":%d,\"frame_duration\":%d}}",
-             proto->protocol_version,
+             proto->protocol_version, feat,
              proto->config.sample_rate,
              proto->config.channels,
              proto->config.frame_duration);

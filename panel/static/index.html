@@ -277,6 +277,13 @@
                 </select>
               </div>
               <div class="form-group">
+                <label class="form-label">AEC 回声消除方案 <span class="form-hint">（本地：设备端NLMS，当前可用；云端：服务器端消除，需服务器支持，当前网关未开放，留作备用；下次会话生效）</span></label>
+                <select id="cfgAecMode" class="select">
+                  <option value="local">本地 AEC（默认）</option>
+                  <option value="cloud">云端 AEC</option>
+                </select>
+              </div>
+              <div class="form-group">
                 <label class="form-label">传输模式 <span class="form-hint">（WebSocket：当前可用；MQTT+UDP：暂不可用；修改后重启生效）</span></label>
                 <select id="cfgTransportMode" class="select" onchange="updateTransportModeUI()">
                   <option value="0">WebSocket（默认）</option>

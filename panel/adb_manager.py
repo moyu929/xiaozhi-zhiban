@@ -57,6 +57,10 @@ def _find_adb():
         return _ADB_PATH
     candidates = []
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    # 目录重组后 platform-tools 位于工作区根目录(d:\小智ai)的 工具链/ 下
+    workspace_root = os.path.dirname(project_root)
+    candidates.append(os.path.join(workspace_root, "工具链", "platform-tools", "adb.exe"))
+    candidates.append(os.path.join(workspace_root, "工具链", "platform-tools", "adb"))
     candidates.append(os.path.join(project_root, "platform-tools", "adb.exe"))
     candidates.append(os.path.join(project_root, "platform-tools", "adb"))
     panel_dir = os.path.dirname(os.path.abspath(__file__))

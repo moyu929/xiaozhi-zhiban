@@ -2,8 +2,50 @@
 #include "plog.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <time.h>
 
 #include "opus.h"
+#include "audioproc.h"
+
+/* ---- 上行链诊断 dump (Q5/Q7 联调专用, 定位后移除):
+ * 触摸 /var/upgrade/.rec_dump 存在即启用; 会话(sending)期间把
+ * [ch0 ch1 ref post-NLMS] 四路 int16 交错写入 /tmp/rec_dump.raw,
+ * 4MB 自动停. post 为最终送入 Opus 的数据, ch0/ch1/ref 为原始三路. */
+#define REC_DUMP_FLAG   "/var/upgrade/.rec_dump"
+#define REC_DUMP_PATH   "/tmp/rec_dump.raw"
+#define REC_DUMP_MAX    (4 * 1024 * 1024)
+static FILE   *s_dump_fp;
+static long    s_dump_bytes;
+static int16_t s_dump_buf[4096];
+static int     s_dump_n;
+
+static void rec_dump_close(void)
+{
+    if (s_dump_fp)
+    {
+        if (s_dump_n > 0)
+            fwrite(s_dump_buf, sizeof(int16_t), (size_t)s_dump_n, s_dump_fp);
+        fclose(s_dump_fp);
+        s_dump_fp = NULL;
+        PLOG_I("REC", "dump 关闭: 共 %ld 字节", s_dump_bytes);
+    }
+}
+
+static void rec_dump_sample(int16_t ch0, int16_t ch1, int16_t ref, int16_t post)
+{
+    if (s_dump_n + 4 > (int)(sizeof(s_dump_buf) / sizeof(s_dump_buf[0])))
+    {
+        fwrite(s_dump_buf, sizeof(int16_t), (size_t)s_dump_n, s_dump_fp);
+        s_dump_n = 0;
+    }
+    s_dump_buf[s_dump_n++] = ch0;
+    s_dump_buf[s_dump_n++] = ch1;
+    s_dump_buf[s_dump_n++] = ref;
+    s_dump_buf[s_dump_n++] = post;
+    s_dump_bytes += 8;
+}
 
 static void do_encode_send(audio_recorder_module_t *rec)
 {
@@ -38,16 +80,69 @@ static void on_audio_data(const int16_t *data, int len, void *user_data)
     if (!rec)
         return;
 
+    /* Q7 诊断: 分发层到达统计(每5秒汇总, 定位后移除) */
+    {
+        static long s_calls, s_early, s_samples;
+        static time_t s_t0;
+        s_calls++;
+        if (!rec->sending && !audio_precache_is_active(&rec->precache))
+            s_early++;
+        s_samples += len / 3;
+        time_t now = time(NULL);
+        if (now - s_t0 >= 5)
+        {
+            PLOG_I("REC", "[诊断] cb到达%ld次(早退%ld) 样本%ld len=%d sending=%d",
+                   s_calls, s_early, s_samples, len, rec->sending);
+            s_calls = s_early = s_samples = 0;
+            s_t0 = now;
+        }
+    }
+
     if (!rec->sending && !audio_precache_is_active(&rec->precache))
         return;
 
     pthread_mutex_lock(&rec->mutex);
 
+    /* dump 开关检测 (每批一次, 不逐样本) */
+    if (rec->sending)
+    {
+        if (!s_dump_fp && access(REC_DUMP_FLAG, F_OK) == 0)
+        {
+            s_dump_fp = fopen(REC_DUMP_PATH, "wb");
+            s_dump_bytes = 0;
+            s_dump_n = 0;
+            if (s_dump_fp)
+                PLOG_I("REC", "dump 开启 -> %s (4MB 上限)", REC_DUMP_PATH);
+        }
+        else if (s_dump_fp && s_dump_bytes > REC_DUMP_MAX)
+        {
+            rec_dump_close();
+            PLOG_I("REC", "dump 达 4MB 上限自动关闭");
+        }
+    }
+    else if (s_dump_fp)
+    {
+        rec_dump_close();   /* 会话结束(停止发送)即收尾 */
+    }
+
     int total_samples = len / 3;
 
     for (int i = 0; i < total_samples; i++)
     {
-        rec->mic_sample_buf[rec->frame_count] = data[i * 3 + 1];
+        /* 本地 AEC 兜底(Q2/Q3, 《08 方案》R-06):
+         * mix = (mic0>>1)+(mic1>>1) 双麦等权混入, ref = ch2(V2 定论),
+         * 输出干净 mono 供 Opus 上行. 原 data[i*3+1] 单通道直取路线废弃. */
+        int16_t mic_mix = (int16_t)(((int32_t)data[i * 3 + 0] + data[i * 3 + 1]) >> 1);
+        int16_t ref     = data[i * 3 + 2];
+        /* cloud AEC 模式: 本地 NLMS 旁路(官方语义: 云端/本地互斥), 直通上行,
+         * 由服务器按 timestamp 配对做源信号对消 */
+        int16_t out = (rec->proto && rec->proto->cloud_aec)
+                          ? mic_mix
+                          : audioproc_process_sample(mic_mix, ref);
+        rec->mic_sample_buf[rec->frame_count] = out;
+        if (s_dump_fp)
+            rec_dump_sample(data[i * 3 + 0], data[i * 3 + 1], ref,
+                            rec->mic_sample_buf[rec->frame_count]);
         rec->frame_count++;
 
         if (rec->frame_count >= RECORDER_FRAME_SIZE)
@@ -90,6 +185,8 @@ static int recorder_init_common(audio_recorder_module_t *rec, protocol_handler_t
 
     if (create_opus_encoder(rec) != 0)
         return -1;
+
+    audioproc_init(16000);   /* 本地AEC(NLMS兜底层)状态就绪 */
 
     pthread_mutex_init(&rec->mutex, NULL);
     audio_precache_init(&rec->precache);

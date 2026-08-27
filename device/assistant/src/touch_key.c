@@ -8,6 +8,9 @@
  */
 
 #include "touch_key.h"
+#include <stdio.h>
+
+
 #include "xiaozhi_config.h"
 #include "plog.h"
 #include <fcntl.h>
@@ -17,6 +20,49 @@
 #include <errno.h>
 #include <sys/prctl.h>
 #include <linux/input.h>
+
+/* 动态定位触摸节点(I1 §3)：扫描 /proc/bus/input/devices 中 N: Name="goodix-ts"
+ * 对应 H: Handlers=eventN —— msg_server 的 eventN 序号按枚举序解析, 不可硬编码 */
+static int probe_goodix_dev(char *devpath, int len)
+{
+    FILE *f = fopen("/proc/bus/input/devices", "r");
+    if (!f)
+        return -1;
+    char line[512], name[160] = {0};
+    int hit = 0;
+    while (fgets(line, sizeof(line), f))
+    {
+        char *p = strstr(line, "N: Name=\"");
+        if (p)
+        {
+            char *e = strchr(p + 10, '"');
+            if (e && e - (p + 10) < (int)sizeof(name))
+            {
+                int n = (int)(e - (p + 10));
+                memcpy(name, p + 10, n);
+                name[n] = '\0';
+                hit = (strncmp(name, "goodix-ts", 9) == 0);
+            }
+            continue;
+        }
+        if (hit && (p = strstr(line, "H: Handlers=")))
+        {
+            char *save = NULL;
+            for (char *tok = strtok_r(p + 12, " \t\n", &save); tok;
+                 tok = strtok_r(NULL, " \t\n", &save))
+                if (!strncmp(tok, "event", 5))
+                {
+                    snprintf(devpath, len, "/dev/input/%s", tok);
+                    fclose(f);
+                    return 0;
+                }
+        }
+        if (line[0] == '\n')
+            hit = 0;
+    }
+    fclose(f);
+    return -1;
+}
 
 #ifndef PR_SET_NAME
 #define PR_SET_NAME 15
@@ -44,7 +90,16 @@ static void *touchkey_thread_func(void *arg)
     /* 尝试打开触摸屏设备节点，失败时重试 */
     while (tk->running && tk->fd < 0)
     {
-        tk->fd = open("/dev/input/event2", O_RDONLY | O_NONBLOCK);
+{
+            char devpath[64] = "/dev/input/event2";   /* 兜底（实机恰为 2） */
+            char probed[64];
+            if (probe_goodix_dev(probed, sizeof(probed)) == 0)
+            {
+                strncpy(devpath, probed, sizeof(devpath) - 1);
+                devpath[sizeof(devpath) - 1] = '\0';
+            }
+            tk->fd = open(devpath, O_RDONLY | O_NONBLOCK);
+        }
         if (tk->fd >= 0)
         {
             PLOG_I("KEY", "触摸按键设备已打开 (event2=goodix-ts)");

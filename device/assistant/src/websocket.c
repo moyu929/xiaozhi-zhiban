@@ -13,6 +13,7 @@
 #include "websocket.h"
 #include "plog.h"
 #include <string.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -463,8 +464,23 @@ static int ws_send_frame(websocket_t *ws, int opcode, const uint8_t *payload, si
  * @param payload 帧负载数据
  * @param len 负载长度
  */
+/* Q7 诊断: 帧到达统计(定位后移除) */
+static long s_ws_txt, s_ws_bin;
+static long s_ws_bytes;
+static time_t s_ws_t0;
+
 static void ws_handle_frame(websocket_t *ws, int opcode, const uint8_t *payload, size_t len)
 {
+    s_ws_bytes += (long)len;
+    if (opcode == WS_OPCODE_BINARY) s_ws_bin++;
+    else if (opcode == WS_OPCODE_TEXT) s_ws_txt++;
+    if (time(NULL) - s_ws_t0 >= 5)
+    {
+        PLOG_I("WS", "[诊断] 5s帧统计: 文本%ld 二进制%ld %ld字节",
+               s_ws_txt, s_ws_bin, s_ws_bytes);
+        s_ws_txt = s_ws_bin = s_ws_bytes = 0;
+        s_ws_t0 = time(NULL);
+    }
     switch (opcode)
     {
     case WS_OPCODE_TEXT:

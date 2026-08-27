@@ -261,7 +261,13 @@ void plog_vwrite(int level, const char *tag, const char *fmt, va_list ap)
             g_plog_size += w;
             g_plog_write_count++;
         }
-        if (g_plog_write_count >= PLOG_SYNC_WRITE_COUNT)
+        if (level >= PLOG_LEVEL_WARN)
+        {
+            fsync(g_plog_fd);              /* R-08: WARN/ERROR 关键级立即持久化 */
+            g_plog_write_count = 0;
+            g_plog_last_sync = time(NULL);
+        }
+        else if (g_plog_write_count >= PLOG_SYNC_WRITE_COUNT)
         {
             fsync(g_plog_fd);
             g_plog_write_count = 0;

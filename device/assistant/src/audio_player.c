@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <time.h>
 #include <dlfcn.h>
 
 #include "opus.h"
@@ -100,6 +101,7 @@ static void do_deferred_close(audio_player_t *player)
 
     audio_track_flush(player->track_handle);
     player->track_open = false;
+    pthread_cond_broadcast(&player->track_closed_cond);
     player->pending_close = true;
 
     PLOG_I("PLAYER", "轨道延迟关闭（仅flush）");
@@ -127,6 +129,7 @@ int audio_player_init(audio_player_t *player, int sample_rate, int channels)
     player->pending_close = false;
 
     pthread_mutex_init(&player->mutex, NULL);
+    pthread_cond_init(&player->track_closed_cond, NULL);
 
     /* 创建Opus解码器 */
     int error;
@@ -134,7 +137,8 @@ int audio_player_init(audio_player_t *player, int sample_rate, int channels)
     if (!player->opus_decoder || error != OPUS_OK)
     {
         PLOG_E("PLAYER", "opus_decoder_create 创建失败: %d (%s)", error, opus_strerror(error));
-        pthread_mutex_destroy(&player->mutex);
+        pthread_cond_destroy(&player->track_closed_cond);
+    pthread_mutex_destroy(&player->mutex);
         return -1;
     }
 
@@ -148,7 +152,8 @@ int audio_player_init(audio_player_t *player, int sample_rate, int channels)
             opus_decoder_destroy((OpusDecoder *)player->opus_decoder);
         free(player->decode_buf);
         free(player->s32_buf);
-        pthread_mutex_destroy(&player->mutex);
+        pthread_cond_destroy(&player->track_closed_cond);
+    pthread_mutex_destroy(&player->mutex);
         return -1;
     }
 
@@ -193,6 +198,7 @@ void audio_player_destroy(audio_player_t *player)
     player->decode_buf = NULL;
     player->s32_buf = NULL;
 
+    pthread_cond_destroy(&player->track_closed_cond);
     pthread_mutex_destroy(&player->mutex);
 }
 
@@ -330,10 +336,27 @@ void audio_player_release_track(audio_player_t *player)
  *
  * 流程：Opus解码 → int16转int32 → 写入AudioTrack
  */
+/* Q7 诊断: 播放链统计(定位后移除) */
+static long s_diag_pkts, s_diag_samples, s_diag_fail;
+static time_t s_diag_t0;
+
 int audio_player_write_opus(audio_player_t *player, const uint8_t *opus_data, size_t opus_len, uint32_t timestamp)
 {
     if (!player || !opus_data)
         return -1;
+
+    /* Q7 诊断: 播放链统计(每5秒汇总, 定位后移除) */
+    {
+        s_diag_pkts++;
+        time_t now = time(NULL);
+        if (now - s_diag_t0 >= 5)
+        {
+            PLOG_I("PLAYER", "[诊断] 收包%ld 写样本%ld 失败%ld",
+                   s_diag_pkts, s_diag_samples, s_diag_fail);
+            s_diag_pkts = s_diag_samples = s_diag_fail = 0;
+            s_diag_t0 = now;
+        }
+    }
 
     pthread_mutex_lock(&player->mutex);
 
@@ -396,10 +419,12 @@ int audio_player_write_opus(audio_player_t *player, const uint8_t *opus_data, si
         int ret = audio_track_write_data(player->track_handle, &params);
         if (ret != 0)
         {
+            s_diag_fail++;
             PLOG_W("PLAYER", "audio_track_write_data 写入失败: %d", ret);
             pthread_mutex_unlock(&player->mutex);
             return ret;
         }
+        s_diag_samples += chunk;
 
         offset += chunk;
     }

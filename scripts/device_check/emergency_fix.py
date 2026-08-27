@@ -26,11 +26,14 @@ import sys
 import os
 import argparse
 
-ADB = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                   "platform-tools", "adb.exe")
-
-if not os.path.exists(ADB):
-    ADB = "adb"
+_develop_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+# 目录重组后 platform-tools 位于工作区根目录(d:\小智ai)的 工具链/ 下
+_workspace_root = os.path.dirname(os.path.dirname(_develop_root))
+_ADB_CANDIDATES = [
+    os.path.join(_workspace_root, "工具链", "platform-tools", "adb.exe"),
+    os.path.join(_develop_root, "platform-tools", "adb.exe"),
+]
+ADB = next((p for p in _ADB_CANDIDATES if os.path.exists(p)), "adb")
 
 FAST_INTERVAL = 0.2
 SLOW_INTERVAL = 2.0

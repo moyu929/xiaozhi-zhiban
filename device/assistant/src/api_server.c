@@ -135,7 +135,7 @@ void api_server_write_config(void)
         "{\"ws_url\":\"%s\",\"ws_token\":\"%s\",\"log_level\":\"%s\","
         "\"listen_timeout\":%llu,\"session_timeout\":%llu,"
         "\"wakeup_cooldown\":%llu,\"ws_ping_interval\":%llu,"
-        "\"mcp_endpoint\":\"%s\",\"listening_mode\":\"%s\","
+        "\"mcp_endpoint\":\"%s\",\"listening_mode\":\"%s\",\"aec_mode\":\"%s\","
         "\"transport_mode\":%d}\n",
         esc_ws_url,
         esc_ws_token,
@@ -148,6 +148,7 @@ void api_server_write_config(void)
         (unsigned long long)g_app.ws_ping_interval_ms,
         esc_mcp,
         g_app.listening_mode == LISTENING_MODE_REALTIME ? "realtime" : "autostop",
+        g_app.aec_mode ? "cloud" : "local",
         g_app.transport_mode);
     write_file_atomic("/tmp/sair_config.json", buf, len);
 }
@@ -353,6 +354,25 @@ void api_server_check_commands(void)
                     {
                         fprintf(mfp, "%s\n", mode_str);
                         fclose(mfp);
+                    }
+                }
+            }
+        }
+        {
+            char aec_str[32] = {0};
+            if (parse_json_str(buf, "aec_mode", aec_str, sizeof(aec_str)) == 0 && aec_str[0])
+            {
+                int new_aec = (strcmp(aec_str, "cloud") == 0) ? 1 : 0;
+                if (new_aec != g_app.aec_mode)
+                {
+                    g_app.aec_mode = new_aec;
+                    PLOG_I(TAG, "aec_mode updated: %s (下次会话生效)", aec_str);
+                    api_server_write_config();
+                    FILE *afp = fopen("/var/upgrade/.aec_mode", "w");
+                    if (afp)
+                    {
+                        fprintf(afp, "%s\n", new_aec ? "cloud" : "local");
+                        fclose(afp);
                     }
                 }
             }

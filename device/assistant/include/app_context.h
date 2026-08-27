@@ -78,6 +78,7 @@ typedef struct app_context_t {
     int msg_thread_running;
 
     volatile int pending_api_wakeup;
+    volatile int pending_stop_request;   /* smart_player仲裁/AI_STOP(1004): 请求停当前会话 */
     volatile int pending_api_abort;
     volatile int pending_api_activate;
     volatile int pending_api_config;
@@ -91,6 +92,7 @@ typedef struct app_context_t {
     uint64_t last_button_wakeup_ms;
     uint64_t last_tts_audio_ms;
     int listening_mode;
+    int aec_mode;          /* AEC方案: 0=本地NLMS(默认) 1=云端(timestamp配对) */
     int precache_enabled;
     int transport_mode;
     char custom_ws_url[512];

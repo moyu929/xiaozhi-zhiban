@@ -77,6 +77,7 @@ typedef struct {
     int server_frame_duration;
     int protocol_version;
     int transport_mode;
+    int cloud_aec;       /* 云端AEC: 1=hello声明aec:true(需服务器支持), 0=本地NLMS */
 
     bool connected;
     bool hello_received;

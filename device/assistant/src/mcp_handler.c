@@ -24,6 +24,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <linux/input.h>
+#include "platform_power.h"
+#include "use_limit.h"
+#include <stdlib.h>
 
 /* 动态加载符号的宏，加载失败时输出警告日志 */
 #define LOAD_SYM(h, name, type)                     \
@@ -391,20 +394,51 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
     {
         snprintf(result, result_size, "rebooting");
         PLOG_I("MCP", "收到重启请求");
-        if (mcp->sound_tts_play)
-            mcp->sound_tts_play(10);
-        system("reboot");
+        platform_tts_play(10);
+        platform_power_reboot();
         return 0;
     }
 
     /* 关机 */
     if (strcmp(name, "self.poweroff") == 0)
     {
+        /* Q4/R-03: 走原生 MSG_SHORTCUT_POWER 动画关机链(P3/M1 §8), 弃 system("poweroff") */
         snprintf(result, result_size, "powering off");
         PLOG_I("MCP", "收到关机请求");
-        if (mcp->sound_tts_play)
-            mcp->sound_tts_play(10);
-        system("poweroff");
+        platform_tts_play(10);
+        platform_power_shutdown_elegant();
+        return 0;
+    }
+
+    /* 每日使用时长状态（§四, 只读; 配置键真库接口为 get_config(C1 §5)） */
+    if (strcmp(name, "self.limit_info") == 0)
+    {
+        long spent = use_limit_spent_sec();
+        int locked = use_limit_is_locked();
+        char _b[32];
+        int enable = 0, minutes = 60;
+        if (get_config("USE_LIMIT_ENABLE", _b, sizeof(_b)) > 0 && _b[0]) enable = atoi(_b);
+        if (get_config("USE_LIMIT_MINUTES", _b, sizeof(_b)) > 0 && _b[0]) minutes = atoi(_b);
+        snprintf(result, result_size,
+                 "daily limit: enable=%d minutes=%d used=%ldsec locked=%s",
+                 enable, minutes, spent, locked ? "yes" : "no");
+        return 0;
+    }
+
+    /* 会话域息屏秒数设置（§八③, 形如 "self.screen_off_set 30"） */
+    if (strncmp(name, "self.screen_off_set ", 20) == 0)
+    {
+        extern void display_ctrl_reload_config(void);
+        int sec = atoi(name + 20);
+        if (sec < 0) sec = 0;
+        char _v[16];
+        snprintf(_v, sizeof(_v), "%d", sec);
+        set_config("SCREEN_OFF_IDLE_SEC", _v, strlen(_v));
+        sync_config();
+        display_ctrl_reload_config();
+        snprintf(result, result_size, "screen-off idle seconds = %d%s",
+                 sec, sec > 0 ? "" : " (disabled)");
+        PLOG_I("MCP", "screen_off_set(%d)", sec);
         return 0;
     }
 
@@ -483,7 +517,9 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
                  "5.self.clean_junk - Clean temp files and drop caches; "
                  "6.self.get_mcp_tools - List all MCP tools; "
                  "7.self.reboot - Reboot device (user only); "
-                 "8.self.poweroff - Power off device (user only)");
+                 "8.self.poweroff - Power off device (user only, native animation chain); "
+                 "9.self.limit_info - Daily usage limit status; "
+                 "10.self.screen_off_set N - Set screen-off idle seconds (0=off)");
         return 0;
     }
 

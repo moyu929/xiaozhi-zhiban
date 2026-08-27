@@ -15,7 +15,7 @@
 /* 共享内存大小 */
 #define APPLIB_SHM_SIZE         0x458   /* 1112 bytes - applib_sync_shm_t 大小 */
 #define APPLIB_DIR_CFG_SIZE     0x234c  /* 9036 bytes - 目录配置大小 */
-#define APP_RUNNING_LIST_SIZE   0x1420  /* 5136 bytes - 含16字节头部 */
+#define APP_RUNNING_LIST_SIZE   0x1410  /* 5136 bytes = 0x28 头部 + 13×392B 条目 (R1 §3 实测定论) */
 
 /* 结构体大小 */
 #define APP_INFO_SIZE           0x188   /* 392 bytes - app_info_t 大小 */
@@ -57,37 +57,23 @@
 /**
  * @brief 应用信息结构体 (392 bytes)
  * 
- * 已确认的字段 (从反汇编和实测验证):
- * - offset 0x00: field_0 (int)
- * - offset 0x04: _pad0 (int) - 填充
- * - offset 0x08: pid (int) - 实测确认
- * - offset 0x0C: name[128] (char数组) - 实测确认
- * - offset 0x8C: mq_name[128] (char数组)
- * - offset 0x10C: sync_shm_name[128] (char数组)
- * - offset 0x70: watchdog_expire (uint64_t, 相对于条目起始)
- * - offset 0x78: soft_watchdog_forbid (1字节, 相对于条目起始)
- * - offset 0x188之后: socket_fd等字段 (偏移待验证)
+ * R1 §3 实测定论布局（2026-08-25 原生快照 bin 校准）：
+ * 条目基址自列表头 0x28 起；下列偏移均相对条目起始。
+ * 注：本结构曾按早期反汇编误标 name[128]@0x0C / pid@0x08 —— 已纠正。
  */
 typedef struct {
-    int field_0;                           /* +0x00 */
-    int _pad0;                             /* +0x04: 填充 */
-    int pid;                               /* +0x08 (实测确认) */
-    
-    char name[MAX_APP_NAME_LEN];           /* +0x0C (实测确认, 128 bytes) */
-    char mq_name[MAX_MQ_NAME_LEN];         /* +0x8C (128 bytes) */
-    char sync_shm_name[MAX_SHM_NAME_LEN];  /* +0x10C (128 bytes) */
-    
-    /* ⚠️ 以下字段偏移未验证，仅按逻辑排列 */
-    int socket_fd;                         /* 偏移待验证 */
-    int service_ref_count;                 /* 偏移待验证 */
-    pthread_mutex_t service_mutex;         /* 偏移待验证 */
-    int service_list_head;                 /* 偏移待验证 */
-    int mq_flags;                          /* 偏移待验证 */
-    int mq_ref_count;                      /* 偏移待验证 */
-    int app_type;                          /* 偏移待验证 */
-    int msg_filters[MAX_MSG_FILTERS];      /* 偏移待验证 */
-    int filter_msg_id;                     /* 偏移待验证 */
-    int flags;                             /* 偏移待验证 */
+    int      pid;                  /* +0x00  进程号   【R1 实测】 */
+    char     name[32];             /* +0x04  应用名(basename) 【R1 实测】 */
+    char     mq_name[64];          /* +0x24  POSIX mqueue 名 【R1 实测】 */
+    uint8_t  _rsv68[4];            /* +0x64..0x67 */
+    int      fg_state;             /* +0x68  前台/后台态(find_foregound_app==0 判前台,M1 §4) */
+    uint8_t  _rsv6c[4];            /* +0x6C..0x6F */
+    uint64_t watchdog_expire;      /* +0x70  软狗到期时刻 ms(CLOCK_MONOTONIC) */
+    uint8_t  soft_watchdog_forbid; /* +0x78  非0跳过软狗检查(M1 §5) */
+    uint8_t  _rsv79;               /* +0x79 */
+    uint8_t  forbid_auto_standby;  /* +0x7A  自动待机禁令(P3 双通道之一) */
+    uint8_t  forbid_standby_b;     /* +0x7B  备用禁令位 */
+    uint8_t  _rsv7c[260];          /* 补齐至 392B (0x188)，服务侧扩展区 */
 } app_info_t;
 
 /**
@@ -309,7 +295,7 @@ int send_service_cmd(const char* service_name, void* request, void* response);
  * @param msg_size 消息大小
  * @return 0 成功, -1 失败
  */
-int send_async_msg(const char* service_name, void* msg, int msg_size);
+int send_async_msg(const char* service_name, void* msg); /* M1定论: 两参(name,msg), 非0=送达成功 */
 
 /**
  * @brief 广播消息
@@ -569,6 +555,7 @@ int get_config(const char* key, char* value, int value_size);
  * @return 0 成功, -1 失败
  */
 int set_config(const char* key, const char* value, int value_size);
+void sync_config(void);   /* libapconfig 导出(C1 §5): set 后必须调用才落盘 */
 
 /**
  * @brief 重置配置到默认值

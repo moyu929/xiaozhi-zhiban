@@ -114,6 +114,14 @@ $CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/api_server.c" -o "$BUILD_DIR/api_server.
 
 echo "[19/20] Compiling diag_module.o"
 $CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/diag_module.c" -o "$BUILD_DIR/diag_module.o"
+echo "[19a] Compiling audioproc.o"
+$CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/audioproc.c" -o "$BUILD_DIR/audioproc.o"
+echo "[19b] Compiling platform_power.o"
+$CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/platform_power.c" -o "$BUILD_DIR/platform_power.o"
+echo "[19c] Compiling use_limit.o"
+$CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/use_limit.c" -o "$BUILD_DIR/use_limit.o"
+echo "[19d] Compiling display_ctrl.o"
+$CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/display_ctrl.c" -o "$BUILD_DIR/display_ctrl.o"
 
 echo "Linking sair"
 $CC --sysroot=$SYSROOT \
@@ -142,6 +150,10 @@ $CC --sysroot=$SYSROOT \
     $BUILD_DIR/mcp_handler.o \
     $BUILD_DIR/api_server.o \
     $BUILD_DIR/diag_module.o \
+    $BUILD_DIR/audioproc.o \
+    $BUILD_DIR/platform_power.o \
+    $BUILD_DIR/use_limit.o \
+    $BUILD_DIR/display_ctrl.o \
     -L$STUB_DIR \
     -L$LIB_DIR \
     -L$SYSROOT/usr/lib \

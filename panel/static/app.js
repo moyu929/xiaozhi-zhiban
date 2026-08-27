@@ -1364,6 +1364,7 @@ async function refreshConfig() {
     if (!r.error) {
         if (r.mcp_endpoint !== undefined) $('cfgMcpEndpoint').value = r.mcp_endpoint;
         if (r.listening_mode) $('cfgListeningMode').value = r.listening_mode;
+        if (r.aec_mode) $('cfgAecMode').value = r.aec_mode;
         if (r.log_level) $('cfgSairLogLevel').value = r.log_level;
         if (r.listen_timeout) $('cfgListenTimeout').value = Math.round(r.listen_timeout / 1000);
         if (r.session_timeout) $('cfgSessionTimeout').value = Math.round(r.session_timeout / 1000);
@@ -1478,6 +1479,8 @@ async function saveAssistantConfig() {
     if (logLevel) config.log_level = logLevel;
     var listeningMode = $('cfgListeningMode').value;
     if (listeningMode) config.listening_mode = listeningMode;
+    var aecMode = $('cfgAecMode').value;
+    if (aecMode) config.aec_mode = aecMode;
     var listenTimeout = parseInt($('cfgListenTimeout').value);
     var sessionTimeout = parseInt($('cfgSessionTimeout').value);
     var wakeupCooldown = parseInt($('cfgWakeupCooldown').value);
@@ -1535,6 +1538,7 @@ async function restoreAssistantDefaults() {
             mcp_endpoint: '',
             log_level: 'INFO',
             listening_mode: 'realtime',
+            aec_mode: 'local',
             listen_timeout: 120000,
             session_timeout: 300000,
             wakeup_cooldown: 3000,

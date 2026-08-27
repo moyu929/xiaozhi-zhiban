@@ -60,6 +60,12 @@ typedef struct {
     route_handler_t handler;
 } route_t;
 
+#define BL_SYSFS_BASE        "/sys/class/backlight/owl_backlight/"
+#define BL_BRIGHTNESS_DEFVAL 200
+
+static int g_persist_bl_enable = 0;      /* 需求①: 亮度持久化开关, 默认关闭 */
+static int g_persist_bl_value  = -1;
+
 /* ===== 全局变量 ===== */
 
 #define TAG "XWD"
@@ -1188,15 +1194,80 @@ static int is_usb_data_mode(void) {
     return (enable[0] == '1' && strstr(functions, "adb") != NULL);
 }
 
+
+static void save_persist_conf(void);   /* 前向声明(亮度handler在其定义前使用) */
+
+/* ========== 需求①: 亮度调节持久化（《08 方案》§八①） ==================== */
+
+static int sysfs_write(const char *path, const char *val) {
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) { XLOG_E(TAG, "sysfs 打开失败 %s", path); return -1; }
+    ssize_t n = write(fd, val, strlen(val));
+    close(fd);
+    return n > 0 ? 0 : -1;
+}
+
+/* 开机应用：enable 且 value 合法才动 sysfs */
+static void apply_backlight_from_persist(void) {
+    if (!g_persist_bl_enable) { XLOG_I(TAG, "背光持久化未启用, 不干预"); return; }
+    int v = g_persist_bl_value;
+    if (v < 10 || v > 255) v = BL_BRIGHTNESS_DEFVAL;
+    char vb[16];
+    snprintf(vb, sizeof(vb), "%d", v);
+    if (sysfs_write(BL_SYSFS_BASE "brightness", vb) == 0)
+        sysfs_write(BL_SYSFS_BASE "bl_power", "0");
+    XLOG_I(TAG, "开机背光已应用: %d", v);
+}
+
+static int handle_get_backlight(int fd, const char *body, const char *query) {
+    (void)body; (void)query;
+    char resp[160];
+    int cur = BL_BRIGHTNESS_DEFVAL;
+    FILE *fp = fopen(BL_SYSFS_BASE "brightness", "r");
+    if (fp) { if (fscanf(fp, "%d", &cur) != 1) cur = BL_BRIGHTNESS_DEFVAL; fclose(fp); }
+    snprintf(resp, sizeof(resp),
+             "{\"enable\":%d,\"brightness\":%d}", g_persist_bl_enable, cur);
+    return send_json(fd, 200, resp);
+}
+
+static int handle_put_backlight(int fd, const char *body, const char *query) {
+    (void)query;
+    char en_s[16] = "", val_s[16] = "";
+    if (parse_json_str(body, "enable", en_s, sizeof(en_s)) < 0 &&
+        parse_json_str(body, "brightness", val_s, sizeof(val_s)) < 0)
+        return send_error(fd, 400, "Missing 'enable'/'brightness' field");
+
+    if (en_s[0])
+        g_persist_bl_enable = atoi(en_s);
+
+    if (val_s[0]) {
+        int v = atoi(val_s);
+        if (v < 10 || v > 255)
+            return send_error(fd, 400, "brightness must be 10..255");
+        g_persist_bl_value = v;
+        char vb[16];
+        snprintf(vb, sizeof(vb), "%d", v);
+        sysfs_write(BL_SYSFS_BASE "brightness", vb);
+        sysfs_write(BL_SYSFS_BASE "bl_power", "0");
+    } else {
+        g_persist_bl_value = -1;
+    }
+    save_persist_conf();
+    XLOG_I(TAG, "背光设置: enable=%d value=%d", g_persist_bl_enable, g_persist_bl_value);
+    return handle_get_backlight(fd, NULL, NULL);
+}
+
 static void save_persist_conf(void) {
     char buf[1024];
-    int len = snprintf(buf, sizeof(buf), "usb_lun=%d\ntelnet=%d\nled=%d\nprecache=%d\ntransport_mode=%d\ncustom_ws_url=%s\n",
+    int len = snprintf(buf, sizeof(buf), "usb_lun=%d\ntelnet=%d\nled=%d\nprecache=%d\ntransport_mode=%d\ncustom_ws_url=%s\nbl_enable=%d\nbl_value=%d\n",
                        g_persist_usb_lun >= 0 ? g_persist_usb_lun : 0,
                        g_persist_telnet >= 0 ? g_persist_telnet : 1,
                        g_persist_led >= 0 ? g_persist_led : 1,
                        g_persist_precache,
                        g_persist_transport_mode,
-                       g_persist_custom_ws_url);
+                       g_persist_custom_ws_url,
+                       g_persist_bl_enable,
+                       g_persist_bl_value);
     char tmp_path[256];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", XWEBD_PERSIST_CONF);
     int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -1232,6 +1303,11 @@ static void load_persist_conf(void) {
     if (p) g_persist_precache = atoi(p + 9);
     p = strstr(buf, "transport_mode=");
     if (p) { int v = atoi(p + 15); if (v >= 0 && v <= 1) g_persist_transport_mode = v; }
+    p = strstr(buf, "bl_enable=");
+    if (p && p[11] != '\0') { g_persist_bl_enable = atoi(p + 11); }
+    p = strstr(buf, "bl_value=");
+    if (p && p[9] != '\0')  { g_persist_bl_value  = atoi(p + 9); }
+
     p = strstr(buf, "custom_ws_url=");
     if (p) {
         p += 14;
@@ -2448,6 +2524,8 @@ static const route_t g_routes[] = {
     {"POST",   "/api/assistant/uninstall",   handle_post_assistant_uninstall},
     {"POST",   "/api/assistant/logs/clear",  handle_post_assistant_logs_clear},
     {"POST",   "/api/self-update",           handle_post_self_update},
+    {"GET",    "/api/backlight",             handle_get_backlight},
+    {"PUT",    "/api/backlight",             handle_put_backlight},
     {NULL, NULL, NULL}
 };
 
@@ -2867,6 +2945,7 @@ static void worker_loop(void) {
     cpu_sample_update();
     cleanup_startup_residuals();
     load_persist_conf();
+    apply_backlight_from_persist();
     apply_persist_conf();
 
     g_server_fd = socket(AF_INET, SOCK_STREAM, 0);

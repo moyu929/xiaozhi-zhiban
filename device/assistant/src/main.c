@@ -46,6 +46,9 @@
 #include "xiaozhi_config.h"
 #include "state_machine.h"
 #include "watchdog.h"
+#include "use_limit.h"
+#include "display_ctrl.h"
+#include "audioproc.h"
 #include "config_manager.h"
 #include "plog.h"
 #include "wakeup_module.h"
@@ -148,6 +151,52 @@ static int mic_set_enable(int enable)
     return 0;
 }
 
+/* ---- Q7 回环防护: 字幕/表情/唤醒广播会触发 msg_server 回发 AI_START(0x3EB)
+ * (实测 0x23A 广播后 3-5ms 回 0x3EB, 21:31:29 实录: 回环在 Speaking 态被当
+ * 用户打断 -> 播放停止 + ignore_tts_audio -> TTS 音频帧全被静默丢弃).
+ * 统一经本包装广播并记录时间, AI_START 短窗内到达即判回环忽略. ---- */
+static uint64_t g_last_bcast_ms = 0;
+static uint64_t get_time_ms(void); /* 前向声明: 定义在下方, 本包装需先用 */
+
+static int sair_broadcast(void *msg)
+{
+    int ret = broadcast_msg(msg);
+    g_last_bcast_ms = get_time_ms();
+    return ret;
+}
+
+/**
+ * 原生字幕通道（2026-08-27 四次修正, 依 wiki.so _play_flash 内 0x233 分支
+ * a6fc 反汇编定论 -- 实测 launcher 仅加载 wiki.so, 唤醒动画即 wiki 场景）：
+ *   0x233 + buf[4]=5(事件) + buf[8..]=文本  → strcpy(ctx+56)+显示+gui_screen_update
+ *   0x233 + buf[4]=7(事件) + buf[8..]=动画名 → swf 播放(表情通道)
+ * 前置: wiki 运行态 [ctx+1140]!=1 且 [ctx+1260]<0。
+ * evaluation.so 的 0x23A 协议(文本@+4)仅在 evaluation 场景加载时有效, 当前不适用。
+ * 经 send_async_msg("launcher") 定向推送。
+ */
+static void sair_subtitle_push(const char *text)
+{
+    char buf[300];
+    memset(buf, 0, sizeof(buf));
+    *(int *)buf = 0x233;
+    *(int *)(buf + 4) = 5; /* 事件 5 = 字幕文本 */
+    if (text && text[0])
+        strncpy(buf + 8, text, sizeof(buf) - 9);
+    send_async_msg("launcher", buf);
+    g_last_bcast_ms = get_time_ms(); /* 触发回环, 纳入防护窗 */
+}
+
+/** 清除屏幕残留字幕（空文本覆盖显示; 会话结束调用） */
+static void sair_subtitle_clear(void)
+{
+    char buf[16];
+    memset(buf, 0, sizeof(buf));
+    *(int *)buf = 0x233;
+    *(int *)(buf + 4) = 5;
+    send_async_msg("launcher", buf);
+    g_last_bcast_ms = get_time_ms();
+}
+
 static void subtitle_set(int type, const char *text)
 {
     pthread_mutex_lock(&g_subtitle_mutex);
@@ -163,6 +212,10 @@ static void subtitle_set(int type, const char *text)
     }
     pthread_mutex_unlock(&g_subtitle_mutex);
 
+    /* 需求②: 屏幕底部字幕仅显示回复(TTS)内容, 渲染由原生 wiki 场景完成 */
+    if (type == SUBTITLE_TYPE_TTS)
+        sair_subtitle_push(text);
+
     PLOG_I("SUB", "字幕更新: type=%d text='%.64s'", type, text ? text : "");
 }
 
@@ -172,6 +225,7 @@ static void subtitle_clear(void)
     g_subtitle.type = SUBTITLE_TYPE_NONE;
     g_subtitle.content[0] = '\0';
     pthread_mutex_unlock(&g_subtitle_mutex);
+    sair_subtitle_clear();
 }
 
 /* 全局应用上下文 */
@@ -615,7 +669,7 @@ static void broadcast_sair_awake(int wakeup_result)
         msg[0] = MSG_SAIR_AWAKE_CMD; /* MSG_SAIR_AWAKE_CMD: 平台SDK定义的IPC消息ID - 命令式唤醒通知 */
         msg[1] = wakeup_result + 256;
     }
-    int ret = broadcast_msg(msg);
+    int ret = sair_broadcast(msg);
     PLOG_I("IPC", "广播 MSG_SAIR_AWAKE msg[0]=0x%x msg[1]=%d ret=%d", msg[0], msg[1], ret);
 }
 
@@ -625,7 +679,7 @@ static void broadcast_sair_awake(int wakeup_result)
 static void broadcast_sair_end(void)
 {
     int msg[4] = {MSG_SAIR_END, 0, 0, 0}; /* MSG_SAIR_END: 平台SDK定义的IPC消息ID - 助手会话结束 */
-    int ret = broadcast_msg(msg);
+    int ret = sair_broadcast(msg);
     PLOG_I("IPC", "广播 MSG_SAIR_END (0x%X) ret=%d", MSG_SAIR_END, ret);
 }
 
@@ -746,16 +800,33 @@ static void *recorder_thread_func(void *arg)
 
     char buf[6144];
 
+    /* Q7 诊断: 采集层统计(每5秒汇总, 定位后移除) */
+    long r_batches = 0, r_bytes = 0, r_zero = 0;
+    time_t r_t0 = time(NULL);
+
     /* 持续读取录音数据并分发 */
     while (app->recorder_running && g_running)
     {
         int n = audio_recorder_read(handle, buf, sizeof(buf));
         if (n <= 0)
         {
+            r_zero++;
             usleep(10000);
-            continue;
         }
-        audio_dispatcher_dispatch(&app->audio_disp, (const int16_t *)buf, n / 2);
+        else
+        {
+            r_batches++;
+            r_bytes += n;
+            audio_dispatcher_dispatch(&app->audio_disp, (const int16_t *)buf, n / 2);
+        }
+        time_t r_now = time(NULL);
+        if (r_now - r_t0 >= 5)
+        {
+            PLOG_I("REC", "[诊断] read: %ld批/%ldB/零返回%ld次",
+                   r_batches, r_bytes, r_zero);
+            r_batches = r_bytes = r_zero = 0;
+            r_t0 = r_now;
+        }
     }
 
     audio_recorder_stop(handle);
@@ -1006,7 +1077,7 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
                 PLOG_D("PROTO", "未知表情 '%s', 使用默认值", emotion_str);
             }
             int msg[4] = {MSG_SAIR_EMOTION, emotion_id, 0, 0};
-            int ret = broadcast_msg(msg);
+            int ret = sair_broadcast(msg);
             PLOG_I("IPC", "广播 MSG_SAIR_EMOTION id=%d ret=%d", emotion_id, ret);
         }
     }
@@ -1352,6 +1423,7 @@ static void *connect_thread_func(void *arg)
            app->proto.protocol_version, proto_config.channels,
            app->listening_mode == LISTENING_MODE_REALTIME ? "realtime" : "autostop");
     app->proto_initialized = 1;
+    app->proto.cloud_aec = app->aec_mode; /* AEC方案传入, hello 按此声明 */
 
     protocol_handler_set_callbacks(&app->proto, NULL, on_proto_disconnected,
                                    on_proto_audio, on_proto_json, on_proto_error, app);
@@ -1429,6 +1501,10 @@ static void proc_sys_msg(void *msg_ptr)
     case MSG_SAIR_DISABLE:
         PLOG_I("IPC", "MSG_SAIR_DISABLE");
         wakeup_pause_feed(&g_app.wakeup);
+        /* R-12: 禁用语义 = 静默 -- 丢弃过期唤醒事件; 进行中的会话由 STOP/QUIT 或自然路径收束 */
+        g_app.pending_wakeup = 0;
+        g_app.pending_wakeup_type = 0;
+        display_ctrl_note_activity();
         break;
     case 0x39:
     {
@@ -1494,6 +1570,33 @@ static void proc_srv_msg(void *req_header_ptr, int *resp_result)
     case MSG_SAIR_AI_START:
     {
         uint64_t now = get_time_ms();
+        /* 入口即消费挂起的外部停止: 原生序列 0x3EC(AI_STOP)→0x3EB(AI_START)
+         * 是"重启会话"原子操作, AI_STOP 的挂起停止若不被 AI_START 清除,
+         * 新会话 Listening 建立后即被主循环收敛块误杀(唤醒秒退, 22:32:39 实录).
+         * 此清除必须在所有忽略分支之前执行. */
+        g_app.pending_stop_request = 0;
+        /* 会话进行中忽略(原生语义: 对话中按键无效果; 打断只走唤醒词引擎).
+         * 字幕推送(0x23A)会触发 msg_server 1ms 内回发本命令, 若在
+         * Connecting/Listening/Speaking 态处理将误打断 TTS 播放. */
+        {
+            xiaozhi_state_t _cur = state_machine_get_state(&g_app.sm);
+            if (_cur == kStateConnecting || _cur == kStateListening || _cur == kStateSpeaking)
+            {
+                PLOG_I("IPC", "MSG_SAIR_AI_START: 会话进行中(%s), 忽略",
+                       state_machine_get_state_name(_cur));
+                if (resp_result)
+                    *resp_result = 1;
+                break;
+            }
+        }
+        if (g_last_bcast_ms && now - g_last_bcast_ms < 300)
+        {
+            PLOG_I("IPC", "MSG_SAIR_AI_START: 广播后%llums回环, 忽略",
+                   (unsigned long long)(now - g_last_bcast_ms));
+            if (resp_result)
+                *resp_result = 1;
+            break;
+        }
         if (now - g_app.last_button_wakeup_ms < 2000)
         {
             PLOG_I("IPC", "MSG_SAIR_AI_START: 唤醒按钮冷却中 (%llums < 2000ms), 忽略",
@@ -1505,6 +1608,10 @@ static void proc_srv_msg(void *req_header_ptr, int *resp_result)
             g_app.last_button_wakeup_ms = now;
             g_app.pending_wakeup = 1;
             g_app.pending_wakeup_type = 1;
+            /* msg_server 唤醒转发的原生序列是 0x3EC(AI_STOP) 先行抢占、0x3EB(AI_START)
+             * 紧随(2026-08-27 实测日志). 若不清挂起停止, 新会话在 Listening 建立
+             * 0.5s 内即被主循环收敛块掐死(唤醒回环自噬). 新唤醒=旧停止已失去意义. */
+            g_app.pending_stop_request = 0;
             if (g_app.self_pipe[1] >= 0)
             {
                 char c = 'W';
@@ -1516,15 +1623,29 @@ static void proc_srv_msg(void *req_header_ptr, int *resp_result)
             *resp_result = 1;
         break;
     }
-    case MSG_SAIR_AI_STOP:
+    case MSG_SAIR_AI_STOP:      /* smart_player 播放态(status==4)抢占入口 -- M2 §3/R1 §17.6 */
+    {
+        g_app.pending_stop_request = 1;   /* 主循环统一收敛(复用 pending_api_abort 模式) */
+        if (resp_result)
+            *resp_result = 1;
+        break;
+    }
+    case MSG_SAIR_STATUS_UPDATE:
+    case MSG_SAIR_GET_INFO:     /* M2 §11/R1 §17: get_info 空闲全零即合法, 必须回满 2836B */
+    {
+        int zlen = hdr->payload_size > 2836 ? hdr->payload_size : 2836;
+        memset(hdr->payload, 0, zlen);
+        hdr->payload_size = 2836;
+        if (resp_result)
+            *resp_result = 1;
+        break;
+    }
     case MSG_SAIR_ASR_START:      /* 平台SDK IPC消息ID - 语音识别开始 */
     case MSG_SAIR_ASR_STOP:       /* 平台SDK IPC消息ID - 语音识别停止 */
     case MSG_SAIR_AEC_START:      /* 平台SDK IPC消息ID - 回声消除开始 */
     case MSG_SAIR_AEC_STOP:       /* 平台SDK IPC消息ID - 回声消除停止 */
     case MSG_SAIR_CHOOSE_AI:      /* 平台SDK IPC消息ID - 选择AI */
     case MSG_SAIR_REGISTER_CB:    /* 平台SDK IPC消息ID - 注册回调 */
-    case MSG_SAIR_STATUS_UPDATE:
-    case MSG_SAIR_GET_INFO:
     case MSG_SAIR_POST_EVENT:
     case MSG_SAIR_RECORD_REQUEST:
         if (resp_result)
@@ -1623,6 +1744,23 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
 
     api_server_write_status();
 
+    /* 使用时长打点: 只累计 Speaking(助手TTS播放)真实时长(§四口径) */
+    {
+        static uint64_t speak_started_ms;
+        if (from == kStateSpeaking && to != kStateSpeaking)
+            use_limit_on_speaking(get_time_ms() - speak_started_ms);
+        else if (to == kStateSpeaking && from != kStateSpeaking)
+            speak_started_ms = now;
+
+        /* 会话中触限 -> 与 ai_stop 同一收敛路径 */
+        if (use_limit_take_session_break_flag() &&
+            (from == kStateSpeaking || from == kStateListening))
+        {
+            PLOG_I("UL", "会话中达到每日上限, 断开并清理");
+            app->pending_stop_request = 1;
+        }
+    }
+
     switch (to)
     {
     case kStateStarting:
@@ -1636,6 +1774,7 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
     case kStateIdle:
         PLOG_I("STATE", "Idle: 等待唤醒");
         watchdog_set_timeout(&app->watchdog, WD_TIMEOUT_IDLE);
+        display_ctrl_set_session(0);          /* 会话域息屏: 会话结束恢复亮屏 */
         if (from == kStateCleaning)
         {
             do_session_cleanup(app, now, prev_state_enter_time_ms);
@@ -1683,6 +1822,7 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
         PLOG_I("STATE", "Listening: 等待用户语音 (唤醒后+%llums)",
                (unsigned long long)(get_time_ms() - app->session_start_ms));
         watchdog_set_timeout(&app->watchdog, WD_TIMEOUT_ACTIVE);
+        display_ctrl_set_session(1);          /* 会话域息屏管理开始计时 */
         if (protocol_handler_is_connected(&app->proto))
         {
             if (app->listening_mode == LISTENING_MODE_REALTIME && from == kStateSpeaking)
@@ -1930,6 +2070,12 @@ static void check_timeouts(app_context_t *app)
  */
 static void process_pending_wakeup(app_context_t *app)
 {
+    /* 每日使用时限闸门: 达限后不连接服务器/不播回复, 仅提醒音一次(§四) */
+    if (use_limit_should_block_wakeup())
+    {
+        return;
+    }
+
     if (!app->pending_wakeup)
         return;
     app->pending_wakeup = 0;
@@ -1947,10 +2093,17 @@ static void process_pending_wakeup(app_context_t *app)
         if (protocol_handler_is_connected(&app->proto))
         {
             protocol_handler_send_abort(&app->proto, "wake_word_detected");
+            /* 2026-08-27 实测回滚: 打断清队列会丢用户说话开头帧, 且与云端
+             * abort-新TTS 竞态误伤新回复(用户实录). 回声残留交给 NLMS 消除. */
             if (app->listening_mode != LISTENING_MODE_REALTIME)
             {
                 protocol_handler_clear_send_queue(&app->proto);
             }
+            /* abort 网络在途期间云端可能已开新 TTS 流(用户实录: 字幕有新回复
+             * 但音频被 abort 掐断). abort 后重发 listen start 令服务器明确回到
+             * 监听态, 新语音/新回复链路即刻重建, 避免竞态误伤. */
+            protocol_handler_send_start_listening(&app->proto,
+                app->listening_mode == LISTENING_MODE_REALTIME ? "realtime" : "auto");
         }
         broadcast_sair_awake(app->pending_wakeup_type);
         if (app->recorder_initialized && app->precache_enabled
@@ -2560,6 +2713,27 @@ int main(int argc, char *argv[])
         }
     }
 
+    {
+        /* AEC方案持久化(.aec_mode): cloud=云端声明+本地旁路, local=本地NLMS */
+        FILE *afp = fopen("/var/upgrade/.aec_mode", "r");
+        if (afp)
+        {
+            char aline[32] = {0};
+            if (fgets(aline, sizeof(aline), afp))
+            {
+                int alen = strlen(aline);
+                while (alen > 0 && (aline[alen-1] == 0x0A || aline[alen-1] == 0x0D))
+                    aline[--alen] = 0;
+                if (strcmp(aline, "cloud") == 0)
+                {
+                    app->aec_mode = 1;
+                    PLOG_I("INIT", "AEC方案: cloud(云端)");
+                }
+            }
+            fclose(afp);
+        }
+    }
+
     api_server_write_config();
 
     /* 初始化音频分发器 */
@@ -2605,6 +2779,17 @@ int main(int argc, char *argv[])
     }
 
     /* 注册IPC消息分发器 */
+    use_limit_init();          /* 每日使用时长(§四) */
+    display_ctrl_start();      /* 会话域息屏管理器(§八需求③) */
+
+    /* 拉起 xwebd 面板守护(rootfs squashfs 只读无法挂 rcS, 借助手进程宿主化, 幂等) */
+    if (access("/var/upgrade/xwebd", X_OK) == 0 &&
+        system("pidof xwebd >/dev/null 2>&1") != 0)
+    {
+        system("/var/upgrade/xwebd -d >/dev/null 2>&1 &");
+        PLOG_I("INIT", "xwebd 已由助手拉起 (-d)");
+    }
+
     ret = register_srv_dispatcher(proc_srv_msg);
     PLOG_I("INIT", "register_srv_dispatcher 返回值=%d", ret);
     heap_check("post-register");
@@ -2730,6 +2915,18 @@ int main(int argc, char *argv[])
         {
             app->pending_api_abort = 0;
             PLOG_I("API", "处理挂起的中止请求");
+            xiaozhi_state_t cur = state_machine_get_state(&app->sm);
+            if (cur == kStateListening || cur == kStateSpeaking)
+            {
+                state_machine_transition(&app->sm, kStateCleaning);
+            }
+        }
+
+        /* smart_player 音源仲裁 / 每日限时中断: 停止当前会话(§五 #3) */
+        if (app->pending_stop_request)
+        {
+            app->pending_stop_request = 0;
+            PLOG_I("IPC", "处理挂起的外部停止请求");
             xiaozhi_state_t cur = state_machine_get_state(&app->sm);
             if (cur == kStateListening || cur == kStateSpeaking)
             {

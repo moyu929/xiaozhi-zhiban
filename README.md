@@ -26,12 +26,18 @@
 - 🔌 **双协议栈** — 支持 WebSocket 和 MQTT+UDP 双协议栈，MQTT 用于控制信令，UDP 用于 AES-128-CTR 加密音频传输；当前仅 WebSocket 模式可用（MQTT+UDP 因官方网关兼容性暂不可用）；assistant 与 xwebd 通过文件 IPC 通信
 - ⚡ **低功耗优化** — 动态 poll 超时（空闲200ms/活跃50ms）、发送线程低频唤醒、WebSocket 帧掩码零文件I/O、MQTT 栈缓冲区、线程栈精简，最大化 CPU 深睡眠时间
 - 🔗 **MCP 接入点** — 支持配置 xiaozhi.me 智能体专属 MCP 端点，实现工具调用能力扩展
+- 🔇 **本地回声消除** — 定点 NLMS AEC（纯整数运算），mic0+mic1 混合消参考后单通道上行，Realtime 模式不再依赖云端 AEC
+- 💬 **屏幕字幕** — TTS 回复文本经原生 0x23A 消息推送，屏幕底部显示回复内容
+- ⏱️ **每日使用时长** — 按 TTS 播放时长累计，触限后唤醒仅播提醒音、不连服务器（默认关闭）
+- 🌙 **会话息屏** — 唤醒期间可配置 N 秒后息屏省电，触摸/按键点亮，语音对话不受影响（默认关闭）
+- 🎬 **原生关机链** — MCP 关机走设备原生 MSG_SHORTCUT_POWER 动画链（带关机动画与提示音）
+- 💡 **亮度持久化** — xwebd 可选记忆亮度设置，开机自动应用（默认关闭）
 - 🧪 **自检诊断** — 分层自检架构，部署前验证环境兼容性
 
 ### ⚠️ 已知限制
 
 - **唤醒词不可自定义** — 本项目使用设备原生唤醒词模型（libduilite_fespl.so），暂不支持更改唤醒词
-- **无实时对话模式** — 设备原生 AEC（回声消除）模型为闭源，无法在自定义程序中调用，因此仅支持 AutoStop 模式（详见下方说明）
+- **Realtime 模式 AEC 为软件兜底** — 设备原生 AEC 闭源无法调用，采用自研定点 NLMS 兜底（详见下方说明），消回声效果依赖实机声学环境，不理想时可切回 AutoStop 模式
 
 ---
 
@@ -328,7 +334,7 @@ assistant 主循环检测到 g_hot_update_pending:
 
 **为什么不用 kill + restart**：kill 后 PID 变化 → Manager 检测 WIFSIGNALED → reboot；SCHED_RR 调度丢失；kill 到新进程启动有间隙 → 看门狗超时。
 
-> ⚠️ **版本号自动递增**：build.sh 编译时自动生成 `version.h`，通过 `.version` 文件管理版本号，采用进位逻辑（每位到10进位，如 2.1.9 → 2.2.0）。当前 assistant 版本 2.2.x，xwebd 版本 1.1.x。
+> ⚠️ **版本号自动递增**：build.sh 编译时自动生成 `version.h`，通过 `.version` 文件管理版本号，采用进位逻辑（每位到10进位，如 2.1.9 → 2.2.0）。当前 assistant 版本 2.4.x，xwebd 版本 1.2.x。
 >
 > `.version` 文件需提交到仓库，确保不同环境编译时版本号一致。
 
@@ -340,14 +346,14 @@ assistant 主循环检测到 g_hot_update_pending:
 xiaozhi-zhiban-develop/
 ├── device/
 │   ├── assistant/                    # 语音助手模块
-│   │   ├── src/                      # C 源码（20个.c文件）
+│   │   ├── src/                      # C 源码（24个.c文件）
 │   │   ├── include/                  # 头文件
 │   │   │   ├── reverse/             # 逆向还原的设备原生 API 头文件
 │   │   │   │   ├── applib_api.h
 │   │   │   │   ├── audio_recorder_api.h
 │   │   │   │   ├── audio_service_api.h
 │   │   │   │   └── sair_asr_api.h
-│   │   │   └── (其他20个.h文件)
+│   │   │   └── (其他25个.h文件)
 │   │   ├── lib/                      # 第三方库头文件
 │   │   │   ├── cJSON/
 │   │   │   ├── mbedtls/
@@ -442,6 +448,9 @@ assistant 通过 applib 框架与设备其他进程通信：
 | 0x23F | MSG_SAIR_DISABLE | 系统 → sair | 禁用唤醒 |
 | 0x040 | MSG_KEY_HOME | 按键 → sair | HOME 键 (code=102) |
 | 0x041 | MSG_KEY_BACK | 按键 → sair | BACK 键 (code=30) |
+| 0x23A | (字幕推送) | sair → wiki场景 | TTS 回复字幕（buf[0]=序号, +4=文本） |
+| 0x232 | (字幕清屏) | sair → wiki场景 | 清除屏幕字幕 |
+| 63 | MSG_SHORTCUT_POWER | 系统 → 全体 | 原生关机链（子码 200，经 set_timed_shutdown_time 触发，播放关机动画） |
 
 > ⚠️ `broadcast_msg` 消息格式是 `int msg[N]`，不是 `applib_msg_t` 结构体！`msg[0]` 就是消息 ID。
 
@@ -483,7 +492,18 @@ cp project_config.example.json project_config.json
 | ws_ping_interval | 25000 | 5000-120000 ms | WebSocket 心跳间隔 |
 | mcp_endpoint | (空) | 任意 URL | MCP 接入点地址（从 xiaozhi.me 控制台获取的智能体专属端点） |
 | transport_mode | 0 | 0=WebSocket, 1=MQTT+UDP | 传输模式（当前仅 WebSocket 可用） |
+| listening_mode | realtime | realtime/autostop | 监听模式（持久化于 /var/upgrade/.listening_mode） |
 | custom_ws_url | (空) | 任意 URL | 自定义 WebSocket 地址 |
+
+#### 设备侧配置（config.bin，经 MCP 工具修改或直改后重启）
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| USE_LIMIT_ENABLE | 0 | 每日使用时长限制开关 |
+| USE_LIMIT_MINUTES | 60 | 每日可用分钟数（按 TTS 播放时长累计） |
+| USE_LIMIT_PROMPT_ID | 14 | 触限提醒音 id（暂用设备已有音频占位） |
+| USE_LIMIT_SPENT_SEC / USE_LIMIT_DAY | 0 / 当日 | 内部累计状态（勿手改） |
+| SCREEN_OFF_IDLE_SEC | 0 | 唤醒期间息屏秒数（0=不息屏，触摸/按键点亮） |
 
 ### 编译时配置
 
@@ -601,8 +621,8 @@ adb shell "rm -f /var/upgrade/sair; reboot"
 | shift_bits=0 表示不位移 | audio_track 直接将收到的 S32 值送往 DAC，左移 16 位会放大 65536 倍导致噪音 ❌ |
 | audio_track_set_volume 范围 0-80 | 不是 0-100，超过 80 返回错误 |
 | audio_get_volume 会导致崩溃 | 不能调用，audio_service 内部已根据系统设置控制音量 |
-| 录音格式 | S32_LE / 16kHz / 2ch，audio_service 内部做 32→16bit 转换 |
-| feed_data 传 3 通道原始数据 | 不做单声道提取，duilite 引擎内部做 AEC 和波束成形 |
+| 录音格式 | S32_LE / 16kHz / 3ch 交织（ch0/ch1=双麦，ch2=扬声器参考），audio_service 内部做 32→16bit 转换 |
+| feed_data 传 3 通道原始数据 | 唤醒检测路径保持原生（duilite 内部波束成形）；ASR 上行链另行处理：mic0+mic1 混合 → 本地 NLMS 消参考（audioproc.c）→ 干净单声道供 Opus 编码 |
 
 ### ASR / 唤醒词
 
@@ -636,7 +656,7 @@ adb shell "rm -f /var/upgrade/sair; reboot"
 | g_this_app_info 必须在 sair 中定义 | stub libapplib.so 是空的，不提供该符号，运行时写入会 SIGSEGV |
 | 看门狗函数用弱定义 | `set_soft_watchdog_timeout`/`sys_forbid_soft_watchdog` 等用 `__attribute__((weak))` 提供回退实现 |
 | LED 名称是 led-power | /sys/class/leds/led-power/，最大亮度 1000（不是 255） |
-| 亮度控制范围 0-900 | 通过 /sys/class/backlight/owl_backlight/brightness |
+| 亮度控制经 owl_backlight sysfs | /sys/class/backlight/owl_backlight/brightness，实测面板值域 >255（读到过 400）；xwebd /api/backlight PUT 暂 clamp 10-255 |
 | 预设 WAV 文件为 32bit PCM | S32 数据直接传 audio_track_write_data，无需 S16→S32 转换 |
 | plog() 持久化日志 | 写入 /var/upgrade/xiaozhi.log，每次 fsync，崩溃不丢日志 |
 | 手动测试前需清理 /dev/shm/ | 否则 applib_init 报 errno=17 (EEXIST) |
@@ -655,22 +675,34 @@ assistant 通过 WebSocket 连接云端 API 完成设备激活和语音对话。
 
 如需对接自建服务端，修改上述宏定义即可。
 
+### MCP 设备工具
+
+智能体经 MCP 接入点可调用以下设备工具（mcp_handler.c）：
+
+| 工具 | 说明 |
+|------|------|
+| self.reboot | 重启设备（带提示音） |
+| self.poweroff | 关机（走原生动画链，8s 兜底硬关机） |
+| self.limit_info | 查询每日使用时长状态（只读） |
+| self.screen_off_set N | 设置唤醒期间息屏秒数（0=关闭） |
+
 ---
 
 ## 🔄 关于实时对话模式（Realtime Mode）
 
-本项目使用 **AutoStop（自动停止）模式**：TTS 播放时停止向云端上传音频，TTS 播放结束后恢复上传。用户可以通过唤醒词打断当前播放。
+支持两种监听模式（`listening_mode`，持久化于 `/var/upgrade/.listening_mode`，默认 realtime）：
 
-在开发过程中，我们曾参考 [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 实现了 Realtime（实时对话）模式，但最终移除了该功能。
+- **AutoStop（自动停止）模式** — TTS 播放时停止向云端上传音频，TTS 播放结束后恢复上传；用户可通过唤醒词打断当前播放
+- **Realtime（实时对话）模式** — 播放期间持续上传音频，配合本地 AEC 实现边播边听、随时插话打断
 
-### GS705B 设备的 AEC 困境
+### GS705B 设备的 AEC 方案演进
 
 1. **设备原生有 AEC**：设备固件中包含 AEC 回声消除模型（`AEC_ch3-2-ch2_1ref_common_20181226_v0.9.4.bin`），原版 sair 通过闭源的 `libduilite_fespl.so` 内部调用
 2. **闭源无法调用**：AEC 功能封装在闭源引擎内部，无公开 API，无法在自定义程序中直接使用
 3. **云端 AEC 不可行**：参考信号时间同步精度不足，实测效果极差
-4. **soft-float ABI 限制**：即使自行实现 AEC，浮点运算性能极差，无法实时处理
+4. **soft-float ABI 限制**：浮点运算在软浮点工具链下性能极差 → 自研 **定点 NLMS 实现**（Q13 权重、纯整数运算，audioproc.c）规避
 
-对于 GS705B 这类设备，AutoStop 模式是当前唯一可行的方案。若未来能逆向还原 AEC 接口，则可支持实时对话模式。
+自 v2.4 起，Realtime 模式采用**本地定点 NLMS AEC**：上行链取 mic0+mic1 混合、以扬声器参考通道（ch2）为参考做自适应滤波，输出干净单声道供 Opus 编码上行。效果属软件兜底级别，若实机回声残留明显，可切换回 AutoStop 模式。
 
 ---
 
@@ -706,6 +738,8 @@ xwebd 监听设备 8080 端口，提供以下 API：
 | GET | /api/config | 获取 xwebd 配置（upload_max_mb, log_level） |
 | PUT | /api/config | 修改 xwebd 配置 |
 | GET | /api/system | 系统信息（CPU、内存、内核） |
+| GET | /api/backlight | 获取背光持久化配置（enable, brightness） |
+| PUT | /api/backlight | 设置背光持久化（enable 默认 0，开启后开机自动应用亮度） |
 
 ### 设备管理
 
@@ -792,6 +826,24 @@ XIAOZHI_DEVICE_HOST=192.168.1.96 python control_panel.py
 # 或通过命令行参数指定
 python control_panel.py --device-host 192.168.1.96
 ```
+
+---
+
+## 📝 变更记录
+
+### v2.4.7 / xwebd v1.2.5（2026-08-27 · 第一批深度重构 + 实机联调修复）
+
+依据对原生固件的深度逆向（消息链、音频链、看门狗布局、关机链），完成 16 项改造：
+
+- **AutoStop 唤醒打断改善** — AI_STOP(1004) 抢占收敛、播放器 stop_with_wait 由 2s 忙轮询改为 300ms 条件等待、播放期唤醒检测保持运行
+- **Realtime 本地 AEC** — 上行链 mic0+mic1 混合 + 定点 NLMS 消参考（audioproc.c），替代云端 AEC
+- **原生关机链** — MCP `self.poweroff` 走 MSG_SHORTCUT_POWER 动画关机（8s 兜底硬关机）
+- **每日使用时长** — 按 TTS 播放时长累计，触限后唤醒仅播提醒音不连服务器（默认关闭）
+- **屏幕字幕** — TTS 回复文本经 0x23A 广播推送原生 wiki 场景插件（0x232 清屏）
+- **会话息屏** — 唤醒期间可配置 N 秒息屏省电，触摸/按键点亮（默认关闭）
+- **xwebd 增强** — 亮度持久化（/api/backlight，默认关闭）+ 由 assistant 宿主化守护自启
+- **服务端联调修复（实机定位）** — hello 的 `features."aec":true` 被 tenclass 服务器静默丢弃导致无法进入对话（PC 复刻交叉矩阵定位），已移除该声明；唤醒回环自噬（msg_server 先发 AI_STOP 再发 AI_START，挂起停止误杀新会话）已修复
+- **稳定性** — 看门狗 app_running_list 布局校准（0x28 头 + pid@+0x00）、plog WARN 即时 fsync/INFO 节流、触摸按键动态探测 goodix eventN、sair 服务端 RPC 最小集（1000/1001/1004/1006/1008/1012）
 
 ---
 
