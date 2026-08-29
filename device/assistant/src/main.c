@@ -2694,6 +2694,9 @@ static void process_pending_wakeup(app_context_t *app)
         app->ignore_tts_audio = 1;
         app->player.aborted = true;
         audio_player_stop(&app->player);
+        /* 被打断回复的字幕立即清屏(与 Realtime 抢话路径 1680 行同款):
+         * 打字机作废 + 0x233/0x231 两连发清容器 */
+        subtitle_interrupt();
         if (protocol_handler_is_connected(&app->proto))
         {
             protocol_handler_send_abort(&app->proto, "wake_word_detected");
