@@ -435,6 +435,61 @@ static int batt_read_node_int(const char *path)
     return atoi(buf);
 }
 
+static int batt_read_node_str(const char *path, char *buf, int size)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return -1;
+    int n = read(fd, buf, size - 1);
+    close(fd);
+    if (n <= 0)
+        return -1;
+    buf[n] = '\0';
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r'))
+        buf[--n] = '\0';
+    return 0;
+}
+
+/* ---- 充放电数据记录器 (2026-08-30 · 电池容量实测推算) ----
+ * 设备无库仑计, 容量只能由电流积分实测: 每 60s 采一点
+ * (电压/电流/查表容量/状态) 追加 /var/upgrade/charge_log.csv,
+ * 充放电循环攒够后由 PC 端积分 ∫I·dt 得实际容量(±10-15%).
+ * 文件 >2MB 自动轮转 .old(约35天). */
+#define CHARGE_LOG_PATH "/var/upgrade/charge_log.csv"
+#define CHARGE_LOG_MAX (2 * 1024 * 1024)
+
+static void charge_log_tick(void)
+{
+    static uint64_t last_log_ms = 0;
+    uint64_t now = get_time_ms();
+    if (now - last_log_ms < 60000)
+        return;
+    last_log_ms = now;
+
+    int volt = batt_read_node_int("/sys/class/power_supply/battery/voltage_now");
+    int cur = batt_read_node_int("/sys/class/power_supply/battery/current_now");
+    int cap = batt_read_node_int("/sys/class/power_supply/battery/capacity");
+    char status[32] = {0};
+    batt_read_node_str("/sys/class/power_supply/battery/status", status, sizeof(status));
+    if (volt < 0 && cur < 0)
+        return; /* 节点全缺失则不记 */
+
+    /* 轮转 */
+    struct stat st;
+    if (stat(CHARGE_LOG_PATH, &st) == 0 && st.st_size > CHARGE_LOG_MAX)
+        rename(CHARGE_LOG_PATH, CHARGE_LOG_PATH ".old");
+
+    int fd = open(CHARGE_LOG_PATH, O_WRONLY | O_APPEND | O_CREAT, 0644);
+    if (fd < 0)
+        return;
+    char line[96];
+    int len = snprintf(line, sizeof(line), "%ld,%d,%d,%d,%s\n",
+                       (long)time(NULL), volt, cur, cap, status);
+    if (len > 0)
+        write(fd, line, len);
+    close(fd);
+}
+
 /** 电池伪低电监控 tick (主循环 30s 节流) */
 static void battery_guard_tick(void)
 {
@@ -3256,6 +3311,9 @@ int main(int argc, char *argv[])
 
         /* 电池伪低电监控(30s 节流) */
         battery_guard_tick();
+
+        /* 充放电数据记录(60s 节流, 容量实测推算用) */
+        charge_log_tick();
 
         /* 处理API中止请求 */
         if (app->pending_api_abort)
