@@ -394,7 +394,6 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
     {
         snprintf(result, result_size, "rebooting");
         PLOG_I("MCP", "收到重启请求");
-        platform_tts_play(10);
         platform_power_reboot();
         return 0;
     }
@@ -402,10 +401,13 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
     /* 关机 */
     if (strcmp(name, "self.poweroff") == 0)
     {
-        /* Q4/R-03: 走原生 MSG_SHORTCUT_POWER 动画关机链(P3/M1 §8), 弃 system("poweroff") */
+        /* Q4/R-03: 走原生 MSG_SHORTCUT_POWER 动画关机链(P3/M1 §8), 弃 system("poweroff")
+         * 注: 不播任何预置语音——原生关机动画链零播报(launcher 反汇编实证),
+         * 旧代码误调 sound_tts_play(10), 而 id=10 实为低电提醒语音
+         * "小主人我快没电了"(Package.dat/tts_10.mp3, 5.8s), 关机时会
+         * 误播低电提醒(2026-08-30 实机实测) */
         snprintf(result, result_size, "powering off");
         PLOG_I("MCP", "收到关机请求");
-        platform_tts_play(10);
         platform_power_shutdown_elegant();
         return 0;
     }
