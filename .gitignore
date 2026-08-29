@@ -16,3 +16,7 @@ Thumbs.db
 .vscode/
 project_config.json
 version.h
+
+# 测试桩二进制(x86调试用, 源码保留)
+device/assistant/tools/*.so*
+device/assistant/tools/test_*
