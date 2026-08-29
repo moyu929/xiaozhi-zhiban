@@ -593,6 +593,69 @@ static void install_poweroff_guard(void)
     PLOG_I("BATT", "poweroff 守卫已安装: %s (PATH 优先级拦截)", guard_path);
 }
 
+/* ---- 每日推送动画 (bot_push) 开关 (2026-08-30) ----
+ * 开机联网后 olmedia_service 向原厂云端请求 pushBot 每日动画,
+ * 下载到 /tmp/bot_push.swf, 下载完成事件触发广播 MSG_POWER_ON_PUSH(372),
+ * manager 随即 exec /usr/lib/boot_push.so 播放. 原厂已停止内容运营,
+ * 云端只返回固定的最后一期, 每次开机重复播放同一动画, 无意义.
+ * 抑制方式(零侵入, 可逆): 把 /tmp/bot_push.swf 占位成目录 —
+ * 下载器 open(O_CREAT) / rename() 落到目录上均失败, 下载完成事件
+ * 不触发 → 不广播 → 不播放. 恢复只需 rmdir 占位, 下次下载成功
+ * 即回到原生行为.
+ * 配置: /var/upgrade/.boot_push_disable 内容 "1" 启用抑制(默认不抑制). */
+#define BOT_PUSH_PATH "/tmp/bot_push.swf"
+#define BOT_PUSH_DISABLE_CFG "/var/upgrade/.boot_push_disable"
+
+int boot_push_disable_enabled(void)
+{
+    int fd = open(BOT_PUSH_DISABLE_CFG, O_RDONLY);
+    if (fd < 0)
+        return 0;
+    char buf[16] = {0};
+    int n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    return (n > 0 && buf[0] == '1');
+}
+
+/* 幂等: enabled=1 → 普通文件删除后 mkdir 占位; enabled=0 → 空占位目录移除 */
+static void boot_push_apply(int enabled)
+{
+    struct stat st;
+    int is_dir = (lstat(BOT_PUSH_PATH, &st) == 0 && S_ISDIR(st.st_mode));
+
+    if (enabled)
+    {
+        if (!is_dir)
+        {
+            if (lstat(BOT_PUSH_PATH, &st) == 0)
+                unlink(BOT_PUSH_PATH); /* 旧 swf 残留, 清掉省 tmpfs */
+            if (mkdir(BOT_PUSH_PATH, 0755) == 0)
+                PLOG_I("PUSH", "每日动画已抑制: %s 占位为目录(下载写入将失败)", BOT_PUSH_PATH);
+            else
+                PLOG_W("PUSH", "每日动画占位失败: errno=%d", errno);
+        }
+    }
+    else
+    {
+        if (is_dir)
+        {
+            if (rmdir(BOT_PUSH_PATH) == 0)
+                PLOG_I("PUSH", "每日动画已恢复: 占位目录移除, 下次联网重新下载");
+        }
+    }
+}
+
+static void boot_push_tick(void)
+{
+    static uint64_t last_ms = 0;
+    uint64_t now = get_time_ms();
+    if (now - last_ms < 60000)
+        return;
+    last_ms = now;
+    boot_push_apply(boot_push_disable_enabled());
+}
+
+
 /* 全局应用上下文 */
 app_context_t g_app;
 app_info_t *g_this_app_info = NULL;
@@ -3186,6 +3249,9 @@ int main(int argc, char *argv[])
     /* 电池伪低电守卫: 安装 poweroff 拦截脚本(幂等, 详见 battery_guard 注释) */
     install_poweroff_guard();
 
+    /* 每日动画开关: 按配置立即占位/恢复(联网下载前生效) */
+    boot_push_apply(boot_push_disable_enabled());
+
     ret = register_srv_dispatcher(proc_srv_msg);
     PLOG_I("INIT", "register_srv_dispatcher 返回值=%d", ret);
     heap_check("post-register");
@@ -3314,6 +3380,9 @@ int main(int argc, char *argv[])
 
         /* 充放电数据记录(60s 节流, 容量实测推算用) */
         charge_log_tick();
+
+        /* 每日动画占位维护(60s 节流, 配置变化时生效) */
+        boot_push_tick();
 
         /* 处理API中止请求 */
         if (app->pending_api_abort)

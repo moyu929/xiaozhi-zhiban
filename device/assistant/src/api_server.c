@@ -136,7 +136,7 @@ void api_server_write_config(void)
         "\"listen_timeout\":%llu,\"session_timeout\":%llu,"
         "\"wakeup_cooldown\":%llu,\"ws_ping_interval\":%llu,"
         "\"mcp_endpoint\":\"%s\",\"listening_mode\":\"%s\",\"aec_mode\":\"%s\","
-        "\"transport_mode\":%d}\n",
+        "\"boot_push_disable\":%d,\"transport_mode\":%d}\n",
         esc_ws_url,
         esc_ws_token,
         plog_lvl == PLOG_LEVEL_DEBUG ? "DEBUG" :
@@ -149,6 +149,7 @@ void api_server_write_config(void)
         esc_mcp,
         g_app.listening_mode == LISTENING_MODE_REALTIME ? "realtime" : "autostop",
         g_app.aec_mode ? "cloud" : "local",
+        boot_push_disable_enabled(),
         g_app.transport_mode);
     write_file_atomic("/tmp/sair_config.json", buf, len);
 }
@@ -375,6 +376,21 @@ void api_server_check_commands(void)
                         fclose(afp);
                     }
                 }
+            }
+        }
+        {
+            int val = 0;
+            if (parse_json_int(buf, "boot_push_disable", &val) == 0 && val >= 0 && val <= 1)
+            {
+                extern int boot_push_disable_enabled(void);
+                FILE *bfp = fopen("/var/upgrade/.boot_push_disable", "w");
+                if (bfp)
+                {
+                    fprintf(bfp, "%d\n", val);
+                    fclose(bfp);
+                }
+                PLOG_I(TAG, "boot_push_disable=%d 已持久化 (60s内或重启后生效)", val);
+                api_server_write_config();
             }
         }
         {

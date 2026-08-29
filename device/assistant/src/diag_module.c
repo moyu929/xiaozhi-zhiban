@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -168,6 +169,8 @@ static void check_battery(diag_result_t *r)
         {"/sys/class/power_supply/battery/cycle_count", "循环次数"},
         {"/sys/class/power_supply/battery/voltage_max_design", "设计电压uV"},
         {"/sys/class/power_supply/battery/current_now", "电流uA"},
+        {"/sys/class/power_supply/battery/constant_charge_current_max", "最大充电电流uA"},
+        {"/sys/class/power_supply/battery/charge_type", "充电类型"},
         {"/sys/class/power_supply/atc260x-usb/online", "USB在线"},
         {"/sys/class/power_supply/atc260x-wall/online", "DC在线"},
         {"/proc/bootmode", "启动模式"},
@@ -506,6 +509,71 @@ static void check_msg_server_maps(diag_result_t *r)
         diag_add(r, "msg_server so", 0, "无 so 映射");
 }
 
+/* ---- 开机每日推送动画 (bot_push) 取证: 播放链为
+ * olmedia_service 请求 cloud.zhibankeji.com/push/v1/push/pushBot
+ *   -> 下载 swf 到 /tmp/bot_push.swf (download_service 完成事件 msg 440)
+ *   -> olmedia 广播 MSG_POWER_ON_PUSH(372) 载荷为 swf 路径
+ *   -> manager set_config(APPLIB_NEXT_APP,"boot_push /tmp/bot_push.swf") 并 exec /usr/lib/boot_push.so 播放
+ * 此处 stat 该文件 + 扫描相关进程, 确认开关方案的拦截点 ---- */
+static void check_boot_push(diag_result_t *r)
+{
+    static char f_msg[160];
+    struct stat st;
+
+    if (stat("/tmp/bot_push.swf", &st) == 0)
+    {
+        long age_s = (long)time(NULL) - (long)st.st_mtime;
+        snprintf(f_msg, sizeof(f_msg), "存在 size=%ldB mtime距今=%lds",
+                 (long)st.st_size, age_s);
+    }
+    else
+    {
+        snprintf(f_msg, sizeof(f_msg), "不存在(errno=%d)", errno);
+    }
+    diag_add(r, "bot_push.swf", 1, f_msg);
+
+    /* 相关进程存活扫描 */
+    {
+        static const char *names[] = {"boot_push", "olmedia_service", "launcher"};
+        static char p_msg[96];
+        p_msg[0] = '\0';
+        for (unsigned int i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        {
+            int pid = diag_find_pid_by_comm(names[i]);
+            int n = strlen(p_msg);
+            snprintf(p_msg + n, sizeof(p_msg) - n, "%s=%d ", names[i], pid);
+        }
+        diag_add(r, "push进程", 1, p_msg);
+    }
+
+    /* /tmp 根目录文件速览(找 swf/推送残留) */
+    {
+        static char t_msg[512];
+        t_msg[0] = '\0';
+        DIR *td = opendir("/tmp");
+        if (td)
+        {
+            struct dirent *te;
+            int shown = 0;
+            while ((te = readdir(td)) != NULL && shown < 20)
+            {
+                if (te->d_name[0] == '.')
+                    continue;
+                if (strstr(te->d_name, ".swf") || strstr(te->d_name, "push") ||
+                    strstr(te->d_name, ".cfg") || strstr(te->d_name, "wpa"))
+                {
+                    int n = strlen(t_msg);
+                    snprintf(t_msg + n, sizeof(t_msg) - n, "%s ", te->d_name);
+                    shown++;
+                }
+            }
+            closedir(td);
+        }
+        if (t_msg[0])
+            diag_add(r, "tmp关键文件", 1, t_msg);
+    }
+}
+
 diag_result_t diag_run_all(void)
 {
     diag_result_t result;
@@ -520,6 +588,7 @@ diag_result_t diag_run_all(void)
     check_battery(&result);
     check_power_plugin(&result);
     check_msg_server_maps(&result);
+    check_boot_push(&result);
 
     int ok_count = 0, fail_count = 0;
     for (int i = 0; i < result.count; i++)
