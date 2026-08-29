@@ -4,6 +4,7 @@
  */
 #include "platform_power.h"
 #include "plog.h"
+#include "reverse/applib_api.h" /* broadcast_msg */
 
 #include <dlfcn.h>
 #include <stdio.h>
@@ -48,12 +49,10 @@ void platform_tts_play(int id)
     }
 }
 
-/* ---- libsysime_api: set_timed_shutdown_time(sec) ------------------------- */
-
-typedef int (*std_time_fn_t)(int seconds);
+/* ---- 优雅关机 ---- */
 
 /**
- * 关机兜底线程：给原生动画链 12s 时窗(1s 定时 + 关机动画 + manager 杀应用)。
+ * 关机兜底线程：给原生动画链 12s 时窗(关机动画 + manager 杀应用)。
  * 正常关机会经由 manager 杀死本进程，该线程根本活不到执行 system()；
  * 一旦活着执行到说明优雅链路失效，硬关兜底。时窗不宜过短，否则会
  * 在动画播放中途 poweroff -f 打断动画(实测教训)。
@@ -67,43 +66,31 @@ static void *shutdown_fallback_thread(void *arg)
     return NULL;
 }
 
+/* 广播 MSG_SHORTCUT_POWER(63) 子码 200(定时关机到期) —— 与 libsystime
+ * 定时关机到期时 __systime_broadcast_msg2(63,200) 完全同一条消息
+ * (P3 §5: launcher 订阅后进入关机场景播 shut_down.swf 动画)。
+ * 弃 systime_set_timed_shutdown_time 方案: 该 setter 会写 SLEEP_TIME
+ * 配置并落盘, 原生 App(mqtt_custom_server/setting) 设定时关机时伴随
+ * "定时关机"弹窗确认流程, 实测走此路径关机前会误弹定时关机 UI
+ * (2026-08-30 实机实测); 直发广播零配置副作用。 */
 int platform_power_shutdown_elegant(void)
 {
-    std_time_fn_t fn = NULL;
+    char msg[8];
+    memset(msg, 0, sizeof(msg));
+    *(int *)msg = 63;   /* MSG_SHORTCUT_POWER */
+    *(int *)(msg + 4) = 200; /* 子码: 定时关机到期(非 201 待机) */
+    int ret = broadcast_msg(msg);
+    PLOG_I("PW", "已广播 MSG_SHORTCUT_POWER(63,200), 待 launcher 关机场景 (ret=%d)", ret);
 
-    void *h = dlopen("libsystime_api.so", RTLD_NOW | RTLD_LAZY);
-    if (h)
-    {
-        dlerror();
-        /* 真实导出名带 systime_ 前缀(dynsym 实证: systime_set_timed_shutdown_time
-         * @0x11b8 → send_srv_msg(0x2c33, sec)); 旧名 set_timed_shutdown_time
-         * 曾致 dlsym 失败走 poweroff -f 黑屏硬关(2026-08-30 实机日志) */
-        fn = (std_time_fn_t)dlsym(h, "systime_set_timed_shutdown_time");
-        if (!fn)
-            PLOG_W("PW", "systime_set_timed_shutdown_time 符号缺失: %s", dlerror());
-    }
-    else
-    {
-        PLOG_W("PW", "libsystime_api.so 打不开: %s", dlerror());
-    }
-
-    if (fn && fn(1) == 0)
-    {
-        PLOG_I("PW", "定时关机已设 1s, 待 systime 广播 MSG_SHORTCUT_POWER(200)");
-                pthread_t tid;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        pthread_attr_setstacksize(&attr, 24 * 1024);
-        if (pthread_create(&tid, &attr, shutdown_fallback_thread, NULL) != 0)
-            PLOG_W("PW", "fallback 线程创建失败");
-        pthread_attr_destroy(&attr);
-        return 0;
-    }
-
-    PLOG_E("PW", "优雅关机入口不可用, 直接 fallback");
-    system("poweroff -f");
-    return -1;
+    pthread_t tid;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&attr, 24 * 1024);
+    if (pthread_create(&tid, &attr, shutdown_fallback_thread, NULL) != 0)
+        PLOG_W("PW", "fallback 线程创建失败");
+    pthread_attr_destroy(&attr);
+    return 0;
 }
 
 void platform_power_reboot(void)
