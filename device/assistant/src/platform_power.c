@@ -66,21 +66,24 @@ static void *shutdown_fallback_thread(void *arg)
     return NULL;
 }
 
-/* 广播 MSG_SHORTCUT_POWER(63) 子码 200(定时关机到期) —— 与 libsystime
- * 定时关机到期时 __systime_broadcast_msg2(63,200) 完全同一条消息
- * (P3 §5: launcher 订阅后进入关机场景播 shut_down.swf 动画)。
- * 弃 systime_set_timed_shutdown_time 方案: 该 setter 会写 SLEEP_TIME
- * 配置并落盘, 原生 App(mqtt_custom_server/setting) 设定时关机时伴随
- * "定时关机"弹窗确认流程, 实测走此路径关机前会误弹定时关机 UI
- * (2026-08-30 实机实测); 直发广播零配置副作用。 */
+/* 广播 MSG_SHORTCUT_POWER(63) 子码 200 —— 定时关机到期消息
+ * (libsystime __systime_broadcast_msg2(63,200) 同款, P3 §5).
+ * launcher 收到后: 先弹"定时关机"提示 msgbox(libcommonui
+ * msgbox_proc_sys 0x1aeb8: msg63/子码200 → msgbox(40,5,7), 弹窗为
+ * 定时关机链固有 UI, 无法从 sair 侧消除), 随后进关机场景播
+ * shut_down.swf 动画, manager 杀应用后断电.
+ * 已试路线对比(2026-08-30 实机):
+ *   systime_set_timed_shutdown_time(1): 同样弹窗+动画(殊途同归 63,200)
+ *   send_async_msg("launcher",[113]): 无弹窗但无动画(直接关)
+ * 用户决策: 接受弹窗换取原生动画, 观感代价记录在案. */
 int platform_power_shutdown_elegant(void)
 {
     char msg[8];
     memset(msg, 0, sizeof(msg));
-    *(int *)msg = 63;   /* MSG_SHORTCUT_POWER */
-    *(int *)(msg + 4) = 200; /* 子码: 定时关机到期(非 201 待机) */
+    *(int *)msg = 63;        /* MSG_SHORTCUT_POWER */
+    *(int *)(msg + 4) = 200; /* 子码: 定时关机到期 */
     int ret = broadcast_msg(msg);
-    PLOG_I("PW", "已广播 MSG_SHORTCUT_POWER(63,200), 待 launcher 关机场景 (ret=%d)", ret);
+    PLOG_I("PW", "已广播 MSG_SHORTCUT_POWER(63,200), 弹窗+动画+关机 (ret=%d)", ret);
 
     pthread_t tid;
     pthread_attr_t attr;
