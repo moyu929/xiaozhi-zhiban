@@ -43,6 +43,7 @@ typedef struct {
     long spent_sec;
     char day[9];            /* YYYYMMDD */
     int locked;
+    long delay_until;       /* 临时延迟到期 epoch 秒, 0=无 */
     int wake_block_prompted;
     int session_break_pending;
     uint64_t persist_last_ms;
@@ -70,6 +71,8 @@ static void load_day_spent(void)
         g_ul.spent_sec = 0;
         set_config(UL_KEY_DAY, g_ul.day, strlen(g_ul.day));
         cfg_set_int(UL_KEY_SPENT, 0);
+        cfg_set_int(UL_KEY_DELAY_UNTIL, 0); /* 昨日的延迟不跨天 */
+        g_ul.delay_until = 0;
         sync_config();
     }
     else
@@ -87,12 +90,14 @@ void use_limit_init(void)
     long minutes = cfg_get_int(UL_KEY_MINUTES, 60);
     g_ul.limit_sec = minutes > 0 ? minutes * 60 : 0;
     g_ul.prompt_id = cfg_get_int(UL_KEY_PROMPT_ID, 14);
+    g_ul.delay_until = cfg_get_int(UL_KEY_DELAY_UNTIL, 0);
 
     load_day_spent();
     g_ul.locked = (g_ul.enable && g_ul.limit_sec > 0 && g_ul.spent_sec >= g_ul.limit_sec);
 
-    PLOG_I("UL", "init: enable=%d minutes=%ld spent=%ld%s",
-           g_ul.enable, minutes, g_ul.spent_sec, g_ul.locked ? " [LOCKED]" : "");
+    PLOG_I("UL", "init: enable=%d minutes=%ld spent=%ld delay_until=%ld%s",
+           g_ul.enable, minutes, g_ul.spent_sec, g_ul.delay_until,
+           g_ul.locked ? " [LOCKED]" : "");
 }
 
 static void persist_if_needed(uint64_t now_ms)
@@ -107,7 +112,9 @@ static void persist_if_needed(uint64_t now_ms)
 
 void use_limit_on_speaking(uint64_t elapsed_ms)
 {
-    if (!g_ul.enable || g_ul.locked || elapsed_ms == 0)
+    /* 注意: 不以 locked 位短路——延迟窗口内 spent 继续计数(真实用量),
+     * 锁定与否由 use_limit_is_locked() 动态判定 */
+    if (!g_ul.enable || elapsed_ms == 0)
     {
         persist_if_needed(ul_now_ms());
         return;
@@ -126,6 +133,8 @@ void use_limit_on_speaking(uint64_t elapsed_ms)
         set_config(UL_KEY_DAY, g_ul.day, strlen(g_ul.day));
         g_ul.locked = 0;
         g_ul.wake_block_prompted = 0;
+        g_ul.delay_until = 0; /* 延迟随当日失效 */
+        cfg_set_int(UL_KEY_DELAY_UNTIL, 0);
     }
 
     g_ul.spent_sec += (long)(elapsed_ms / 1000);
@@ -148,7 +157,70 @@ long use_limit_spent_sec(void)
 
 int use_limit_is_locked(void)
 {
-    return g_ul.enable ? g_ul.locked : 0;
+    if (!g_ul.enable || g_ul.limit_sec <= 0)
+        return 0;
+    if (g_ul.spent_sec < g_ul.limit_sec)
+        return 0;
+    /* 达限但处于临时延迟窗口: 不锁(动态判定, 到期自动回锁) */
+    if (g_ul.delay_until > (long)time(NULL))
+        return 0;
+    return 1;
+}
+
+/* ---- 运行时设置(面板/语音, 2026-08-30 补全) ---- */
+
+void use_limit_set_enable(int on)
+{
+    g_ul.enable = on ? 1 : 0;
+    cfg_set_int(UL_KEY_ENABLE, g_ul.enable);
+    sync_config();
+    if (!g_ul.enable)
+        g_ul.wake_block_prompted = 0; /* 关闭后允许重新提示 */
+    PLOG_I("UL", "set_enable=%d (minutes=%ld spent=%ld)",
+           g_ul.enable, g_ul.limit_sec / 60, g_ul.spent_sec);
+}
+
+void use_limit_set_minutes(int minutes)
+{
+    if (minutes < 0)
+        minutes = 0;
+    if (minutes > 24 * 60)
+        minutes = 24 * 60;
+    g_ul.limit_sec = (long)minutes * 60;
+    cfg_set_int(UL_KEY_MINUTES, minutes);
+    sync_config();
+    if (g_ul.spent_sec < g_ul.limit_sec)
+        g_ul.wake_block_prompted = 0; /* 上限提高后未超限, 允许重新提示 */
+    PLOG_I("UL", "set_minutes=%d (spent=%lds)", minutes, g_ul.spent_sec);
+}
+
+long use_limit_request_delay(int minutes)
+{
+    if (minutes <= 0)
+        return g_ul.delay_until;
+    if (minutes > 12 * 60)
+        minutes = 12 * 60;
+    g_ul.delay_until = (long)time(NULL) + (long)minutes * 60;
+    cfg_set_int(UL_KEY_DELAY_UNTIL, (int)g_ul.delay_until);
+    sync_config();
+    g_ul.wake_block_prompted = 0; /* 延迟到期回锁时重新提示一次 */
+    PLOG_I("UL", "临时延迟 %d 分钟, 到期 epoch=%ld", minutes, g_ul.delay_until);
+    return g_ul.delay_until;
+}
+
+long use_limit_delay_until(void)
+{
+    return g_ul.delay_until;
+}
+
+int use_limit_get_minutes(void)
+{
+    return (int)(g_ul.limit_sec / 60);
+}
+
+int use_limit_get_enable(void)
+{
+    return g_ul.enable;
 }
 
 int use_limit_take_session_break_flag(void)

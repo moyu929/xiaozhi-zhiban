@@ -17,6 +17,7 @@
 #include "state_machine.h"
 #include "config_manager.h"
 #include "diag_module.h"
+#include "use_limit.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -136,7 +137,9 @@ void api_server_write_config(void)
         "\"listen_timeout\":%llu,\"session_timeout\":%llu,"
         "\"wakeup_cooldown\":%llu,\"ws_ping_interval\":%llu,"
         "\"mcp_endpoint\":\"%s\",\"listening_mode\":\"%s\",\"aec_mode\":\"%s\","
-        "\"boot_push_disable\":%d,\"transport_mode\":%d}\n",
+        "\"boot_push_disable\":%d,\"transport_mode\":%d,"
+        "\"use_limit\":{\"enable\":%d,\"minutes\":%d,\"spent_sec\":%ld,"
+        "\"remain_sec\":%ld,\"locked\":%d,\"delay_until\":%ld}}\n",
         esc_ws_url,
         esc_ws_token,
         plog_lvl == PLOG_LEVEL_DEBUG ? "DEBUG" :
@@ -150,7 +153,15 @@ void api_server_write_config(void)
         g_app.listening_mode == LISTENING_MODE_REALTIME ? "realtime" : "autostop",
         g_app.aec_mode ? "cloud" : "local",
         boot_push_disable_enabled(),
-        g_app.transport_mode);
+        g_app.transport_mode,
+        use_limit_get_enable(),
+        use_limit_get_minutes(),
+        use_limit_spent_sec(),
+        use_limit_get_enable() && use_limit_get_minutes() > 0
+            ? (long)use_limit_get_minutes() * 60 - use_limit_spent_sec()
+            : 0,
+        use_limit_is_locked(),
+        use_limit_delay_until());
     write_file_atomic("/tmp/sair_config.json", buf, len);
 }
 
@@ -390,6 +401,28 @@ void api_server_check_commands(void)
                     fclose(bfp);
                 }
                 PLOG_I(TAG, "boot_push_disable=%d 已持久化 (60s内或重启后生效)", val);
+                api_server_write_config();
+            }
+        }
+        {
+            /* 每日使用时长限制: 开关/上限分钟/临时延迟分钟 (§四) */
+            int val = 0;
+            if (parse_json_int(buf, "use_limit_enable", &val) == 0 && val >= 0 && val <= 1)
+            {
+                use_limit_set_enable(val);
+                PLOG_I(TAG, "use_limit_enable=%d 已设置", val);
+                api_server_write_config();
+            }
+            if (parse_json_int(buf, "use_limit_minutes", &val) == 0 && val >= 0 && val <= 1440)
+            {
+                use_limit_set_minutes(val);
+                PLOG_I(TAG, "use_limit_minutes=%d 已设置", val);
+                api_server_write_config();
+            }
+            if (parse_json_int(buf, "use_limit_delay_min", &val) == 0 && val > 0 && val <= 720)
+            {
+                long until = use_limit_request_delay(val);
+                PLOG_I(TAG, "use_limit 延迟%d分钟, 到期epoch=%ld", val, until);
                 api_server_write_config();
             }
         }

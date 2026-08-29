@@ -417,13 +417,57 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
     {
         long spent = use_limit_spent_sec();
         int locked = use_limit_is_locked();
-        char _b[32];
-        int enable = 0, minutes = 60;
-        if (get_config("USE_LIMIT_ENABLE", _b, sizeof(_b)) > 0 && _b[0]) enable = atoi(_b);
-        if (get_config("USE_LIMIT_MINUTES", _b, sizeof(_b)) > 0 && _b[0]) minutes = atoi(_b);
+        int enable = use_limit_get_enable();
+        int minutes = use_limit_get_minutes();
+        long delay = use_limit_delay_until();
+
+        if (!enable)
+        {
+            snprintf(result, result_size,
+                     "今日已使用%d分钟。每日使用时长限制当前未开启。",
+                     (int)(spent / 60));
+        }
+        else if (locked)
+        {
+            snprintf(result, result_size,
+                     "今日使用时长已用完，已使用%d分钟，上限%d分钟，现在是锁定状态。",
+                     (int)(spent / 60), minutes);
+        }
+        else if (minutes > 0)
+        {
+            long remain = (long)minutes * 60 - spent;
+            if (remain < 0)
+                remain = 0; /* 延迟窗口内: 已超限但豁免中 */
+            snprintf(result, result_size,
+                     "今日已使用%d分钟，上限%d分钟，还剩%d分钟%s。",
+                     (int)(spent / 60), minutes, (int)(remain / 60),
+                     delay > 0 ? "（临时延长中）" : "");
+        }
+        else
+        {
+            snprintf(result, result_size,
+                     "今日已使用%d分钟。每日使用时长限制未设置上限。",
+                     (int)(spent / 60));
+        }
+        PLOG_I("MCP", "limit_info: enable=%d min=%d spent=%lds locked=%d",
+               enable, minutes, spent, locked);
+        return 0;
+    }
+
+    /* 每日时长临时延迟: "再延长10分钟" (名字后缀带分钟数, 同 screen_off_set 模式) */
+    if (strncmp(name, "self.limit_delay ", 18) == 0)
+    {
+        int mins = atoi(name + 18);
+        if (mins <= 0 || mins > 720)
+        {
+            snprintf(result, result_size, "延长时间须为1到720分钟");
+            return 0;
+        }
+        long until = use_limit_request_delay(mins);
+        (void)until;
         snprintf(result, result_size,
-                 "daily limit: enable=%d minutes=%d used=%ldsec locked=%s",
-                 enable, minutes, spent, locked ? "yes" : "no");
+                 "好的，已延长使用时间%d分钟", mins);
+        PLOG_I("MCP", "limit_delay %d分钟, 到期epoch=%ld", mins, until);
         return 0;
     }
 
@@ -520,8 +564,9 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
                  "6.self.get_mcp_tools - List all MCP tools; "
                  "7.self.reboot - Restart device, ONLY for explicit 重启/重新启动 requests (user only); "
                  "8.self.poweroff - Power off / shut down, for 关机/关闭/不玩了 requests, native shutdown animation (user only); "
-                 "9.self.limit_info - Daily usage limit status; "
-                 "10.self.screen_off_set N - Set screen-off idle seconds (0=off)");
+                 "9.self.limit_info - Ask today's usage time (今日已用/上限/剩余); "
+                 "10.self.limit_delay N - Extend usage time N minutes when daily limit reached (再延长N分钟); "
+                 "11.self.screen_off_set N - Set screen-off idle seconds (0=off)");
         return 0;
     }
 
@@ -645,7 +690,7 @@ void mcp_handler_process_message(mcp_handler_t *mcp, const char *json, size_t le
             PLOG_I("MCP", "tools/list 请求, ID=%lld", (long long)id);
             if (mcp->send_json)
             {
-                char json[3072];
+                char json[5120];
                 int n = snprintf(json, sizeof(json),
                                  "{\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%lld,"
                                  "\"result\":{\"tools\":["
@@ -656,6 +701,8 @@ void mcp_handler_process_message(mcp_handler_t *mcp, const char *json, size_t le
                                  "{\"name\":\"self.clean_junk\",\"description\":\"Clean temporary files and drop system caches to free memory and improve performance\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.get_mcp_tools\",\"description\":\"List and describe all available MCP tools on this device\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.reboot\",\"description\":\"Restart the device (reboot). Use ONLY when the user explicitly asks to RESTART/REBOOT (重启/重新启动). NOT for shutting down.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}},"
+                                 "{\"name\":\"self.limit_info\",\"description\":\"Query today's device usage time. Use when user asks 今天用了多久/使用时长/还剩多少时间. Returns used minutes, daily limit and remaining minutes in Chinese.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.limit_delay\",\"description\":\"Temporarily extend today's usage time by N minutes when the daily limit is locked. Use when user says 延长时间/再玩10分钟/继续使用一会儿. Append minutes after the tool name, e.g. self.limit_delay 10.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.poweroff\",\"description\":\"Power off / shut down the device completely with native shutdown animation. Use when the user says 关机/关闭/断电/睡觉/不玩了 (shut down, turn off, power off). This is the correct tool for ending device usage.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}}"
                                  "]}}}",
                                  (long long)id);
