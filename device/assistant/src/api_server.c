@@ -174,26 +174,43 @@ void api_server_write_config(void)
 
 static int parse_json_str(const char *json, const char *key, char *out, int out_size)
 {
+    /* 精确键匹配(同 parse_json_int: 防前缀子串键误命中) */
     char search[128];
     snprintf(search, sizeof(search), "\"%s\"", key);
-    const char *p = strstr(json, search);
-    if (!p) return -1;
-    p += strlen(search);
-    while (*p && (*p == ' ' || *p == ':' || *p == '\t'))
-        p++;
-    if (*p != '"') return -1;
-    p++;
-    int i = 0;
-    while (*p && *p != '"' && i < out_size - 1)
+    int klen = strlen(search);
+    const char *p = json;
+    const char *found = NULL;
+    while ((p = strstr(p, search)) != NULL)
     {
-        if (*p == '\\' && *(p + 1))
+        if (p == json || p[-1] == '{' || p[-1] == ',')
         {
-            p++;
-            out[i++] = *p++;
+            const char *q = p + klen;
+            while (*q == ' ' || *q == '\t')
+                q++;
+            if (*q == ':')
+            {
+                found = q + 1;
+                break;
+            }
+        }
+        p += klen;
+    }
+    if (!found) return -1;
+    while (*found == ' ' || *found == '\t')
+        found++;
+    if (*found != '"') return -1;
+    const char *s = found + 1;
+    int i = 0;
+    while (*s && *s != '"' && i < out_size - 1)
+    {
+        if (*s == '\\' && *(s + 1))
+        {
+            s++;
+            out[i++] = *s++;
         }
         else
         {
-            out[i++] = *p++;
+            out[i++] = *s++;
         }
     }
     out[i] = '\0';
@@ -202,15 +219,34 @@ static int parse_json_str(const char *json, const char *key, char *out, int out_
 
 static int parse_json_int(const char *json, const char *key, int *out)
 {
-    char search[128];
+    /* 精确键匹配: 键名后必须是 ':'(跳过空白), 且键匹配从 JSON 起点或
+     * '{'/',' 之后开始——朴素 strstr 会命中前缀子串键(2026-08-30 事故:
+     * "delay_until" 的值被 "delay_tool"/"sched_enable" 解析重复命中,
+     * epoch 值串进所有后续字段, 时段锁误开导致全部唤醒被拦) */
+    char search[160];
     snprintf(search, sizeof(search), "\"%s\"", key);
-    const char *p = strstr(json, search);
-    if (!p) return -1;
-    p += strlen(search);
-    while (*p && (*p == ' ' || *p == ':' || *p == '\t'))
-        p++;
-    *out = atoi(p);
-    return 0;
+    int klen = strlen(search);
+    const char *p = json;
+    while ((p = strstr(p, search)) != NULL)
+    {
+        /* 前一字符必须是对象边界(起始/{/,), 排除 "xxxdelay_min" 类子串键 */
+        if (p == json || p[-1] == '{' || p[-1] == ',')
+        {
+            const char *q = p + klen;
+            while (*q == ' ' || *q == '\t')
+                q++;
+            if (*q == ':')
+            {
+                q++;
+                while (*q == ' ' || *q == '\t')
+                    q++;
+                *out = atoi(q);
+                return 0;
+            }
+        }
+        p += klen;
+    }
+    return -1;
 }
 
 void api_server_check_commands(void)

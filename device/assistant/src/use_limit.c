@@ -332,10 +332,18 @@ int use_limit_should_block_wakeup(void)
     if (!ul_any_locked())
         return 0;
 
-    /* 每次唤醒都播提示(2026-08-30 用户决策): 只播一次会让孩子以为设备坏了 */
-    PLOG_I("UL", "唤醒被限时拦截(达限锁=%d 时段锁=%d), 播提示(id=%d)",
-           use_limit_is_locked(), use_limit_out_of_span(), g_ul.prompt_id);
-    platform_tts_play(g_ul.prompt_id);
+    /* 每次唤醒都播提示(2026-08-30 用户决策): 只播一次会让孩子以为设备坏了.
+     * 加 5s 节流防轰炸: 唤醒引擎在提示音播放中会连续误触发(实测 200ms/次
+     * 提示风暴), 同窗口内静默拦截不重播; 窗口外下一次唤醒照常播 */
+    static uint64_t last_prompt_ms = 0;
+    uint64_t now = ul_now_ms();
+    if (last_prompt_ms == 0 || now - last_prompt_ms >= 5000)
+    {
+        last_prompt_ms = now;
+        PLOG_I("UL", "唤醒被限时拦截(达限锁=%d 时段锁=%d), 播提示(id=%d)",
+               use_limit_is_locked(), use_limit_out_of_span(), g_ul.prompt_id);
+        platform_tts_play(g_ul.prompt_id);
+    }
     return 1;
 }
 
