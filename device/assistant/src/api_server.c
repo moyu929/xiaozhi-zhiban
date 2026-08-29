@@ -28,21 +28,8 @@
 
 #define TAG "IPC"
 
-static int json_escape_len(const char *s, int max_out)
-{
-    int len = 0;
-    while (*s)
-    {
-        if (*s == '"' || *s == '\\') len += 2;
-        else if (*s == '\n') len += 2;
-        else if (*s == '\r') len += 2;
-        else if (*s == '\t') len += 2;
-        else len++;
-        s++;
-        if (max_out > 0 && len >= max_out - 1) break;
-    }
-    return len;
-}
+/* main.c 提供: bot_push 开关状态(点文件) */
+extern int boot_push_disable_enabled(void);
 
 static int json_escape(const char *s, char *out, int out_size)
 {

@@ -126,7 +126,7 @@ static void check_watchdog(diag_result_t *r)
 }
 
 /* ---- 电池诊断: 用户换大容量电池后续航异常调查 (2026-08-29).
- * atc260x PMU 驱动暴露 /sys/class/power_supply/*, 百分比/电压/容量
+ * atc260x PMU 驱动暴露 /sys/class/power_supply/ 各节点, 百分比/电压/容量
  * 的计算全在内核驱动; 此处全节点读取以定位容量计算方式与阈值. ---- */
 static int diag_read_node(const char *path, char *buf, int buf_size)
 {
@@ -221,7 +221,6 @@ static void check_battery(diag_result_t *r)
     {
         static char fs_msg[640];
         fs_msg[0] = '\0';
-        char line[256];
         /* /proc/mounts 关键行: root 与 upgrade 挂载 */
         int fd = open("/proc/mounts", O_RDONLY);
         if (fd >= 0)
@@ -340,7 +339,7 @@ static int diag_copy_file(const char *src, const char *dst)
 static void check_power_plugin(diag_result_t *r)
 {
     static char list_msg[640];
-    static char copy_msg[160];
+    static char copy_msg[320];
     list_msg[0] = '\0';
     copy_msg[0] = '\0';
 
@@ -357,7 +356,7 @@ static void check_power_plugin(diag_result_t *r)
         if (e->d_name[0] == '.')
             continue;
         char sub[192];
-        snprintf(sub, sizeof(sub), "/usr/bin/plugins/%s", e->d_name);
+        snprintf(sub, sizeof(sub), "/usr/bin/plugins/%.100s", e->d_name);
         DIR *ds = opendir(sub);
         if (ds)
         {
@@ -372,8 +371,8 @@ static void check_power_plugin(diag_result_t *r)
                 /* 复制 power 相关插件供逆向 */
                 if (strstr(es->d_name, "power") && !copy_msg[0])
                 {
-                    char src[256];
-                    snprintf(src, sizeof(src), "%s/%s", sub, es->d_name);
+                    char src[320];
+                    snprintf(src, sizeof(src), "%s/%.150s", sub, es->d_name);
                     if (diag_copy_file(src, "/var/upgrade/dump_power_plugin.so") == 0)
                     {
                         struct stat st;
@@ -413,7 +412,7 @@ static int diag_find_pid_by_comm(const char *comm)
             continue;
         char path[64];
         char name[64] = {0};
-        snprintf(path, sizeof(path), "/proc/%s/comm", e->d_name);
+        snprintf(path, sizeof(path), "/proc/%.12s/comm", e->d_name);
         int fd = open(path, O_RDONLY);
         if (fd < 0)
             continue;

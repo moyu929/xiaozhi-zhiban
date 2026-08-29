@@ -44,12 +44,6 @@ static int cfg_get_int(const char *key, int def)
         return atoi(b);
     return def;
 }
-static void cfg_set_int(const char *key, int v)
-{
-    char b[32];
-    snprintf(b, sizeof(b), "%d", v);
-    set_config(key, b, strlen(b));
-}
 static uint64_t now_ms(void)
 {
     struct timespec ts;

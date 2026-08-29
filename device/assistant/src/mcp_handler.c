@@ -27,7 +27,7 @@
 #include "platform_power.h"
 #include "use_limit.h"
 #include "display_ctrl.h"
-#include <stdlib.h>
+#include "reverse/applib_api.h"   /* get_config/set_config/sync_config (libapconfig) */
 
 /* 动态加载符号的宏，加载失败时输出警告日志 */
 #define LOAD_SYM(h, name, type)                     \
@@ -550,7 +550,7 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
         if (d)
         {
             struct dirent *ent;
-            char path[256];
+            char path[320];
             while ((ent = readdir(d)) != NULL)
             {
                 if (ent->d_name[0] == '.')

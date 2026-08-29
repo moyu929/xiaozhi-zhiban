@@ -151,45 +151,6 @@ static int utf8_char_count(const char *s)
     return chars;
 }
 
-static int mic_set_enable(int enable)
-{
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0)
-        return -1;
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, MIC_SERVICE_SOCKET, sizeof(addr.sun_path) - 1);
-
-    struct timeval tv = {.tv_sec = 2, .tv_usec = 0};
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
-    {
-        close(fd);
-        return -1;
-    }
-
-    int msg[4] = {MIC_CMD_SET_ENABLE, 1, 0, 0};
-    int payload = enable;
-    char buf[sizeof(int) * 4 + sizeof(int)];
-    memcpy(buf, msg, sizeof(msg));
-    memcpy(buf + sizeof(msg), &payload, sizeof(int));
-
-    if (send(fd, buf, sizeof(buf), 0) != sizeof(buf))
-    {
-        close(fd);
-        return -1;
-    }
-
-    char resp[64];
-    recv(fd, resp, sizeof(resp), 0);
-    close(fd);
-    return 0;
-}
-
 /* ---- Q7 回环防护: 字幕/表情/唤醒广播会触发 msg_server 回发 AI_START(0x3EB)
  * (实测 0x23A 广播后 3-5ms 回 0x3EB, 21:31:29 实录: 回环在 Speaking 态被当
  * 用户打断 -> 播放停止 + ignore_tts_audio -> TTS 音频帧全被静默丢弃).
@@ -635,7 +596,7 @@ static int find_pid_by_comm_simple(const char *name)
         if (e->d_name[0] < '0' || e->d_name[0] > '9')
             continue;
         char path[64];
-        snprintf(path, sizeof(path), "/proc/%s/comm", e->d_name);
+        snprintf(path, sizeof(path), "/proc/%.12s/comm", e->d_name);
         int fd = open(path, O_RDONLY);
         if (fd < 0)
             continue;
@@ -1889,7 +1850,7 @@ static void *connect_thread_func(void *arg)
         strncpy(proto_config.url, app->config.ws_url, sizeof(proto_config.url) - 1);
     if (app->config.ws_token[0])
     {
-        snprintf(proto_config.token, sizeof(proto_config.token), "Bearer %s", app->config.ws_token);
+        snprintf(proto_config.token, sizeof(proto_config.token), "Bearer %.495s", app->config.ws_token);
     }
     strncpy(proto_config.device_id, app->device_mac, sizeof(proto_config.device_id) - 1);
     strncpy(proto_config.client_id, app->client_id, sizeof(proto_config.client_id) - 1);
