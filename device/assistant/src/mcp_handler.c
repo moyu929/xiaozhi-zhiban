@@ -516,8 +516,8 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
                  "4.self.get_system_info - Get system info; "
                  "5.self.clean_junk - Clean temp files and drop caches; "
                  "6.self.get_mcp_tools - List all MCP tools; "
-                 "7.self.reboot - Reboot device (user only); "
-                 "8.self.poweroff - Power off device (user only, native animation chain); "
+                 "7.self.reboot - Restart device, ONLY for explicit 重启/重新启动 requests (user only); "
+                 "8.self.poweroff - Power off / shut down, for 关机/关闭/不玩了 requests, native shutdown animation (user only); "
                  "9.self.limit_info - Daily usage limit status; "
                  "10.self.screen_off_set N - Set screen-off idle seconds (0=off)");
         return 0;
@@ -653,8 +653,8 @@ void mcp_handler_process_message(mcp_handler_t *mcp, const char *json, size_t le
                                  "{\"name\":\"self.get_system_info\",\"description\":\"Get system information including version, volume and battery\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.clean_junk\",\"description\":\"Clean temporary files and drop system caches to free memory and improve performance\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.get_mcp_tools\",\"description\":\"List and describe all available MCP tools on this device\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
-                                 "{\"name\":\"self.reboot\",\"description\":\"Reboot the device\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}},"
-                                 "{\"name\":\"self.poweroff\",\"description\":\"Power off the device\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}}"
+                                 "{\"name\":\"self.reboot\",\"description\":\"Restart the device (reboot). Use ONLY when the user explicitly asks to RESTART/REBOOT (重启/重新启动). NOT for shutting down.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}},"
+                                 "{\"name\":\"self.poweroff\",\"description\":\"Power off / shut down the device completely with native shutdown animation. Use when the user says 关机/关闭/断电/睡觉/不玩了 (shut down, turn off, power off). This is the correct tool for ending device usage.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}}"
                                  "]}}}",
                                  (long long)id);
                 mcp->send_json(json, n, mcp->user_data);
