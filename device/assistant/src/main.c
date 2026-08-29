@@ -606,6 +606,9 @@ static void install_poweroff_guard(void)
 #define BOT_PUSH_PATH "/tmp/bot_push.swf"
 #define BOT_PUSH_DISABLE_CFG "/var/upgrade/.boot_push_disable"
 
+/* boot_push_tick 内用, main.c 前向引用(定义在下方) */
+extern app_context_t g_app;
+
 int boot_push_disable_enabled(void)
 {
     int fd = open(BOT_PUSH_DISABLE_CFG, O_RDONLY);
@@ -615,6 +618,41 @@ int boot_push_disable_enabled(void)
     int n = read(fd, buf, sizeof(buf) - 1);
     close(fd);
     return (n > 0 && buf[0] == '1');
+}
+
+static int find_pid_by_comm_simple(const char *name)
+{
+    DIR *d = opendir("/proc");
+    if (!d)
+        return -1;
+    struct dirent *e;
+    int found = -1;
+    while ((e = readdir(d)) != NULL)
+    {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9')
+            continue;
+        char path[64];
+        snprintf(path, sizeof(path), "/proc/%s/comm", e->d_name);
+        int fd = open(path, O_RDONLY);
+        if (fd < 0)
+            continue;
+        char buf[40] = {0};
+        int n = read(fd, buf, sizeof(buf) - 1);
+        close(fd);
+        if (n > 0)
+        {
+            char *nl = strchr(buf, '\n');
+            if (nl)
+                *nl = '\0';
+            if (strcmp(buf, name) == 0)
+            {
+                found = atoi(e->d_name);
+                break;
+            }
+        }
+    }
+    closedir(d);
+    return found;
 }
 
 /* 幂等: enabled=1 → 普通文件删除后 mkdir 占位; enabled=0 → 空占位目录移除 */
@@ -648,11 +686,48 @@ static void boot_push_apply(int enabled)
 static void boot_push_tick(void)
 {
     static uint64_t last_ms = 0;
+    static uint64_t last_send_ms = 0;
     uint64_t now = get_time_ms();
-    if (now - last_ms < 60000)
+    int enabled = boot_push_disable_enabled();
+
+    /* 抑制期 2s 粒度(抓 boot_push 启动窗口), 非抑制 60s 维护 */
+    if (now - last_ms < (enabled ? 2000 : 60000))
         return;
     last_ms = now;
-    boot_push_apply(boot_push_disable_enabled());
+
+    boot_push_apply(enabled);
+    if (!enabled)
+        return;
+
+    /* 抑制期残留处理: 372 广播不依赖下载成败(实测), boot_push.so 仍会被
+     * exec, swf 内容缺失时停在黑场景等按键. 此处自动替用户按一次
+     * "返回": 给 manager 发 MSG_RESUME_LAST(24), 走原生应用退出 +
+     * 调用链恢复路径(与物理返回键同路, 详见 manager_impl 逆向稿).
+     * 安全边界: 仅在进程年龄<30s(开机动画窗口)且助手非对话态时发送,
+     * 避免 boot_push 后台残留/用户交互中被误切回主页. */
+    int pid = find_pid_by_comm_simple("boot_push");
+    if (pid <= 0 || now - last_send_ms < 10000)
+        return;
+
+    char ppath[32];
+    struct stat pst;
+    snprintf(ppath, sizeof(ppath), "/proc/%d", pid);
+    if (stat(ppath, &pst) != 0)
+        return;
+    long age = (long)time(NULL) - (long)pst.st_mtime;
+    if (age > 30)
+        return;
+
+    xiaozhi_state_t st = state_machine_get_state(&g_app.sm);
+    if (st == kStateListening || st == kStateSpeaking)
+        return;
+
+    char msg[8];
+    memset(msg, 0, sizeof(msg));
+    *(int *)msg = 24; /* MSG_RESUME_LAST */
+    send_async_msg("manager", msg);
+    last_send_ms = now;
+    PLOG_I("PUSH", "boot_push(pid=%d, age=%lds) 黑屏残留, 已代按返回(MSG_RESUME_LAST)", pid, age);
 }
 
 
