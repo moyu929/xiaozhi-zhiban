@@ -449,14 +449,28 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
                      "今日已使用%d分钟。每日使用时长限制未设置上限。",
                      (int)(spent / 60));
         }
+        /* 时段限制状态附加 */
+        if (use_limit_out_of_span())
+        {
+            int nlen = strlen(result);
+            snprintf(result + nlen, result_size - nlen, "现在不在允许使用的时段哦。");
+        }
         PLOG_I("MCP", "limit_info: enable=%d min=%d spent=%lds locked=%d",
                enable, minutes, spent, locked);
         return 0;
     }
 
-    /* 每日时长临时延迟: "再延长10分钟" (名字后缀带分钟数, 同 screen_off_set 模式) */
+    /* 每日时长临时延迟: "再延长10分钟" (名字后缀带分钟数, 同 screen_off_set 模式)
+     * 家长开关 USE_LIMIT_DELAY_TOOL 控制, 默认关闭(防孩子语音绕过限制) */
     if (strncmp(name, "self.limit_delay ", 18) == 0)
     {
+        if (!use_limit_delay_tool_enabled())
+        {
+            snprintf(result, result_size,
+                     "延长使用时间的功能没有开启，请让爸爸妈妈在设置里打开哦");
+            PLOG_I("MCP", "limit_delay 被拒: 语音延迟工具未开启");
+            return 0;
+        }
         int mins = atoi(name + 18);
         if (mins <= 0 || mins > 720)
         {
@@ -702,7 +716,7 @@ void mcp_handler_process_message(mcp_handler_t *mcp, const char *json, size_t le
                                  "{\"name\":\"self.get_mcp_tools\",\"description\":\"List and describe all available MCP tools on this device\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.reboot\",\"description\":\"Restart the device (reboot). Use ONLY when the user explicitly asks to RESTART/REBOOT (重启/重新启动). NOT for shutting down.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}},"
                                  "{\"name\":\"self.limit_info\",\"description\":\"Query today's device usage time. Use when user asks 今天用了多久/使用时长/还剩多少时间. Returns used minutes, daily limit and remaining minutes in Chinese.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
-                                 "{\"name\":\"self.limit_delay\",\"description\":\"Temporarily extend today's usage time by N minutes when the daily limit is locked. Use when user says 延长时间/再玩10分钟/继续使用一会儿. Append minutes after the tool name, e.g. self.limit_delay 10.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.limit_delay\",\"description\":\"Temporarily extend today's usage time by N minutes when the daily limit is locked. ONLY works if the parent enabled this feature in the settings panel (use_limit_delay_tool), otherwise it politely refuses. Use when user says 延长时间/再玩10分钟/继续使用一会儿. Append minutes after the tool name, e.g. self.limit_delay 10.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.poweroff\",\"description\":\"Power off / shut down the device completely with native shutdown animation. Use when the user says 关机/关闭/断电/睡觉/不玩了 (shut down, turn off, power off). This is the correct tool for ending device usage.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}}"
                                  "]}}}",
                                  (long long)id);

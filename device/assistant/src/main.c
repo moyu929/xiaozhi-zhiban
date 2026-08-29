@@ -2363,6 +2363,14 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
             PLOG_I("UL", "会话中达到每日上限, 断开并清理");
             app->pending_stop_request = 1;
         }
+        /* 时段锁(作息限制): 进入非允许时段边界时, 进行中会话同样收敛
+         * (与达限锁独立, 动态判定: 边界跨越即触发, 无需标志位) */
+        if (use_limit_out_of_span() &&
+            (from == kStateSpeaking || from == kStateListening))
+        {
+            PLOG_I("UL", "会话中进入非允许时段, 断开并清理");
+            app->pending_stop_request = 1;
+        }
     }
 
     switch (to)
@@ -3563,6 +3571,18 @@ int main(int argc, char *argv[])
             xiaozhi_state_t cur = state_machine_get_state(&app->sm);
             if (cur == kStateListening || cur == kStateSpeaking)
             {
+                state_machine_transition(&app->sm, kStateCleaning);
+            }
+        }
+
+        /* 时段锁(作息限制)周期检查: 对话持续中跨过时段边界即断
+         * (状态回调只覆盖转换时刻, 持续 Listening/Speaking 不会触发) */
+        if (app->in_session && use_limit_out_of_span())
+        {
+            xiaozhi_state_t cur = state_machine_get_state(&app->sm);
+            if (cur == kStateListening || cur == kStateSpeaking)
+            {
+                PLOG_I("UL", "对话中进入非允许时段, 断开并清理");
                 state_machine_transition(&app->sm, kStateCleaning);
             }
         }

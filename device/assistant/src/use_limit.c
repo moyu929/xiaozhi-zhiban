@@ -44,6 +44,11 @@ typedef struct {
     char day[9];            /* YYYYMMDD */
     int locked;
     long delay_until;       /* 临时延迟到期 epoch 秒, 0=无 */
+    int delay_tool;         /* 语音延迟工具开关(家长面板), 默认 0 */
+    int sched_enable;       /* 使用时段限制开关 */
+    int sched_days;         /* 允许星期位图 bit0=周日..bit6=周六 */
+    char sched_span1[12];   /* "HHMM-HHMM", 空=不限 */
+    char sched_span2[12];
     int wake_block_prompted;
     int session_break_pending;
     uint64_t persist_last_ms;
@@ -91,12 +96,19 @@ void use_limit_init(void)
     g_ul.limit_sec = minutes > 0 ? minutes * 60 : 0;
     g_ul.prompt_id = cfg_get_int(UL_KEY_PROMPT_ID, 14);
     g_ul.delay_until = cfg_get_int(UL_KEY_DELAY_UNTIL, 0);
+    g_ul.delay_tool = cfg_get_int(UL_KEY_DELAY_TOOL, 0);          /* 默认关闭 */
+    g_ul.sched_enable = cfg_get_int(UL_KEY_SCHED_ENABLE, 0);
+    g_ul.sched_days = cfg_get_int(UL_KEY_SCHED_DAYS, 127);        /* 默认每天 */
+    get_config(UL_KEY_SCHED_SPAN1, g_ul.sched_span1, sizeof(g_ul.sched_span1));
+    get_config(UL_KEY_SCHED_SPAN2, g_ul.sched_span2, sizeof(g_ul.sched_span2));
 
     load_day_spent();
     g_ul.locked = (g_ul.enable && g_ul.limit_sec > 0 && g_ul.spent_sec >= g_ul.limit_sec);
 
-    PLOG_I("UL", "init: enable=%d minutes=%ld spent=%ld delay_until=%ld%s",
-           g_ul.enable, minutes, g_ul.spent_sec, g_ul.delay_until,
+    PLOG_I("UL", "init: enable=%d minutes=%ld spent=%ld delay_until=%ld delay_tool=%d "
+           "sched=%d days=0x%x span1='%s' span2='%s'%s",
+           g_ul.enable, minutes, g_ul.spent_sec, g_ul.delay_until, g_ul.delay_tool,
+           g_ul.sched_enable, g_ul.sched_days, g_ul.sched_span1, g_ul.sched_span2,
            g_ul.locked ? " [LOCKED]" : "");
 }
 
@@ -167,6 +179,52 @@ int use_limit_is_locked(void)
     return 1;
 }
 
+/* ---- 使用时段限制(作息锁, 与达限锁独立, 延迟不豁免) ---- */
+
+static int span_hit(const char *span, int hhmm)
+{
+    /* "HHMM-HHMM" 判定 hhmm 是否在窗口内; 支持跨午夜(如 2100-0700) */
+    if (!span[0])
+        return 0;
+    const char *dash = strchr(span, '-');
+    if (!dash)
+        return 0;
+    int a = atoi(span);
+    int b = atoi(dash + 1);
+    if (a == b)
+        return 0;
+    if (a < b)
+        return hhmm >= a && hhmm < b;
+    return hhmm >= a || hhmm < b; /* 跨午夜 */
+}
+
+int use_limit_out_of_span(void)
+{
+    if (!g_ul.sched_enable)
+        return 0;
+    time_t t = time(NULL);
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    if (tmv.tm_year + 1900 < 2020)
+        return 0; /* RTC 未对时(默认2018), 时段判定不可靠, 不误锁 */
+    if (!(g_ul.sched_days & (1 << tmv.tm_wday)))
+        return 1; /* 今天不在允许星期 */
+    if (!g_ul.sched_span1[0] && !g_ul.sched_span2[0])
+        return 0; /* 未设时段=全天允许 */
+    int hhmm = tmv.tm_hour * 100 + tmv.tm_min;
+    if (span_hit(g_ul.sched_span1, hhmm))
+        return 0;
+    if (span_hit(g_ul.sched_span2, hhmm))
+        return 0;
+    return 1;
+}
+
+/* 总锁定 = 达限锁 || 时段锁 (唤醒拦截与会话中断用它) */
+static int ul_any_locked(void)
+{
+    return use_limit_is_locked() || use_limit_out_of_span();
+}
+
 /* ---- 运行时设置(面板/语音, 2026-08-30 补全) ---- */
 
 void use_limit_set_enable(int on)
@@ -223,6 +281,58 @@ int use_limit_get_enable(void)
     return g_ul.enable;
 }
 
+int use_limit_delay_tool_enabled(void)
+{
+    return g_ul.delay_tool;
+}
+
+void use_limit_set_delay_tool(int on)
+{
+    g_ul.delay_tool = on ? 1 : 0;
+    cfg_set_int(UL_KEY_DELAY_TOOL, g_ul.delay_tool);
+    sync_config();
+    PLOG_I("UL", "语音延迟工具=%d", g_ul.delay_tool);
+}
+
+void use_limit_set_schedule(int enable, int days, const char *span1, const char *span2)
+{
+    g_ul.sched_enable = enable ? 1 : 0;
+    if (days < 0 || days > 127)
+        days = 127;
+    g_ul.sched_days = days;
+    if (span1)
+        snprintf(g_ul.sched_span1, sizeof(g_ul.sched_span1), "%s", span1);
+    else
+        g_ul.sched_span1[0] = '\0';
+    if (span2)
+        snprintf(g_ul.sched_span2, sizeof(g_ul.sched_span2), "%s", span2);
+    else
+        g_ul.sched_span2[0] = '\0';
+    cfg_set_int(UL_KEY_SCHED_ENABLE, g_ul.sched_enable);
+    cfg_set_int(UL_KEY_SCHED_DAYS, g_ul.sched_days);
+    set_config(UL_KEY_SCHED_SPAN1, g_ul.sched_span1, strlen(g_ul.sched_span1));
+    set_config(UL_KEY_SCHED_SPAN2, g_ul.sched_span2, strlen(g_ul.sched_span2));
+    sync_config();
+    g_ul.wake_block_prompted = 0; /* 状态变化后允许重新提示 */
+    PLOG_I("UL", "时段设置: enable=%d days=0x%x span1='%s' span2='%s'",
+           g_ul.sched_enable, g_ul.sched_days, g_ul.sched_span1, g_ul.sched_span2);
+}
+
+int use_limit_get_sched_enable(void)
+{
+    return g_ul.sched_enable;
+}
+
+int use_limit_get_days(void)
+{
+    return g_ul.sched_days;
+}
+
+const char *use_limit_get_span(int idx)
+{
+    return idx == 2 ? g_ul.sched_span2 : g_ul.sched_span1;
+}
+
 int use_limit_take_session_break_flag(void)
 {
     int v = g_ul.session_break_pending;
@@ -232,13 +342,14 @@ int use_limit_take_session_break_flag(void)
 
 int use_limit_should_block_wakeup(void)
 {
-    if (!use_limit_is_locked())
+    if (!ul_any_locked())
         return 0;
 
     if (!g_ul.wake_block_prompted)
     {
         g_ul.wake_block_prompted = 1;
-        PLOG_I("UL", "唤醒请求被限时拦截, 播提醒音(id=%d)", g_ul.prompt_id);
+        PLOG_I("UL", "唤醒请求被限时拦截(达限锁=%d 时段锁=%d), 播提醒音(id=%d)",
+               use_limit_is_locked(), use_limit_out_of_span(), g_ul.prompt_id);
         platform_tts_play(g_ul.prompt_id);
     }
     return 1;

@@ -30,6 +30,11 @@ extern "C" {
 #define UL_KEY_SPENT      "USE_LIMIT_SPENT_SEC"
 #define UL_KEY_DAY        "USE_LIMIT_DAY"
 #define UL_KEY_DELAY_UNTIL "USE_LIMIT_DELAY_UNTIL" /* 临时延迟到期epoch秒, 当日有效 */
+#define UL_KEY_DELAY_TOOL "USE_LIMIT_DELAY_TOOL"  /* 语音延迟工具开关, 默认0关 */
+#define UL_KEY_SCHED_ENABLE "USE_LIMIT_SCHED_ENABLE" /* 使用时段限制开关 */
+#define UL_KEY_SCHED_DAYS   "USE_LIMIT_SCHED_DAYS"   /* 允许星期位图 bit0=周日..bit6=周六, 127=每天 */
+#define UL_KEY_SCHED_SPAN1  "USE_LIMIT_SCHED_SPAN1"  /* 时段1 "HHMM-HHMM", 如 "1600-2000" */
+#define UL_KEY_SCHED_SPAN2  "USE_LIMIT_SCHED_SPAN2"  /* 时段2(可选, 空=无) */
 
 void use_limit_init(void);
 
@@ -44,6 +49,9 @@ long use_limit_spent_sec(void);
 
 /** 当前是否处于达限锁定态（动态判定: 达限且不在延迟窗口内） */
 int use_limit_is_locked(void);
+
+/** 当前是否处于允许使用时段外(时段锁, 与达限锁相互独立, 延迟不豁免) */
+int use_limit_out_of_span(void);
 
 /** 会话中触限后的善后查询：返回 1 表示需要断开清理（一次性消费标志） */
 int use_limit_take_session_break_flag(void);
@@ -61,6 +69,18 @@ long use_limit_delay_until(void);
 int use_limit_get_minutes(void);
 /** 限时开关状态 */
 int use_limit_get_enable(void);
+/** 语音延迟工具开关 */
+int use_limit_delay_tool_enabled(void);
+/** 设语音延迟工具开关 */
+void use_limit_set_delay_tool(int on);
+/** 设使用时段: enable/days位图/span1/span2("HHMM-HHMM", span2可空串) */
+void use_limit_set_schedule(int enable, int days, const char *span1, const char *span2);
+/** 时段限制开关状态 */
+int use_limit_get_sched_enable(void);
+/** 允许星期位图 */
+int use_limit_get_days(void);
+/** 取时段串(idx=1/2), 未设返回空串 */
+const char *use_limit_get_span(int idx);
 
 #ifdef __cplusplus
 }

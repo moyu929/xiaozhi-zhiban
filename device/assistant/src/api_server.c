@@ -139,7 +139,8 @@ void api_server_write_config(void)
         "\"mcp_endpoint\":\"%s\",\"listening_mode\":\"%s\",\"aec_mode\":\"%s\","
         "\"boot_push_disable\":%d,\"transport_mode\":%d,"
         "\"use_limit\":{\"enable\":%d,\"minutes\":%d,\"spent_sec\":%ld,"
-        "\"remain_sec\":%ld,\"locked\":%d,\"delay_until\":%ld}}\n",
+        "\"remain_sec\":%ld,\"locked\":%d,\"delay_until\":%ld,\"delay_tool\":%d,"
+        "\"sched\":{\"enable\":%d,\"days\":%d,\"span1\":\"%s\",\"span2\":\"%s\",\"in_span\":%d}}}\n",
         esc_ws_url,
         esc_ws_token,
         plog_lvl == PLOG_LEVEL_DEBUG ? "DEBUG" :
@@ -161,7 +162,13 @@ void api_server_write_config(void)
             ? (long)use_limit_get_minutes() * 60 - use_limit_spent_sec()
             : 0,
         use_limit_is_locked(),
-        use_limit_delay_until());
+        use_limit_delay_until(),
+        use_limit_delay_tool_enabled(),
+        use_limit_get_sched_enable(),
+        use_limit_get_days(),
+        use_limit_get_span(1),
+        use_limit_get_span(2),
+        use_limit_out_of_span() ? 0 : 1);
     write_file_atomic("/tmp/sair_config.json", buf, len);
 }
 
@@ -424,6 +431,38 @@ void api_server_check_commands(void)
                 long until = use_limit_request_delay(val);
                 PLOG_I(TAG, "use_limit 延迟%d分钟, 到期epoch=%ld", val, until);
                 api_server_write_config();
+            }
+            if (parse_json_int(buf, "use_limit_delay_tool", &val) == 0 && val >= 0 && val <= 1)
+            {
+                use_limit_set_delay_tool(val);
+                PLOG_I(TAG, "use_limit_delay_tool=%d 已设置", val);
+                api_server_write_config();
+            }
+            if (parse_json_int(buf, "use_limit_sched_days", &val) == 0)
+            {
+                /* 星期位图与时段一起生效(保持 enable/span 原值) */
+                use_limit_set_schedule(use_limit_get_sched_enable(),
+                                       val,
+                                       use_limit_get_span(1), use_limit_get_span(2));
+                PLOG_I(TAG, "use_limit_sched_days=0x%x 已设置", val);
+                api_server_write_config();
+            }
+            {
+                char sv[24] = {0};
+                int sen = -1;
+                if (parse_json_str(buf, "use_limit_sched", sv, sizeof(sv)) == 0 && sv[0])
+                {
+                    /* 格式 "enable,days,span1,span2" span 可空: 如 "1,62,1600-2000," */
+                    int en = 0, dys = 127;
+                    char s1[12] = {0}, s2[12] = {0};
+                    if (sscanf(sv, "%d,%d,%11[^,],%11s", &en, &dys, s1, s2) >= 2)
+                    {
+                        use_limit_set_schedule(en, dys, s1, s2);
+                        PLOG_I(TAG, "use_limit_sched='%s' 已设置", sv);
+                        api_server_write_config();
+                    }
+                }
+                (void)sen;
             }
         }
         {
