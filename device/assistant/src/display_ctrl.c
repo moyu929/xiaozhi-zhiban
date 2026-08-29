@@ -189,6 +189,18 @@ int display_ctrl_is_off(void)
     return g_dc.screen_off;
 }
 
+int display_ctrl_manual_on(void)
+{
+    /* MCP 主动亮屏: 息屏态恢复亮度并清手动标志(会话结束亮屏逻辑回归) */
+    if (g_dc.screen_off)
+    {
+        g_dc.manual_off = 0;
+        screen_on_restore("mcp-screen-on");
+        return 0;
+    }
+    return 1; /* 本来就亮着 */
+}
+
 int display_ctrl_notify_input(void)
 {
     if (g_dc.screen_off)

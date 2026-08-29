@@ -496,6 +496,16 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
         return 0;
     }
 
+    /* 主动亮屏: 手动息屏后语音唤醒屏幕(2026-08-30) */
+    if (strcmp(name, "self.screen_on_now") == 0)
+    {
+        int r = display_ctrl_manual_on();
+        snprintf(result, result_size,
+                 r == 0 ? "好的，屏幕已打开" : "屏幕现在就是亮着的");
+        PLOG_I("MCP", "screen_on_now: ret=%d", r);
+        return 0;
+    }
+
     /* 会话域息屏秒数设置（§八③, 形如 "self.screen_off_set 30"） */
     if (strncmp(name, "self.screen_off_set ", 20) == 0)
     {
@@ -592,7 +602,8 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
                  "9.self.limit_info - Ask today's usage time (今日已用/上限/剩余); "
                  "10.self.limit_delay N - Extend usage time N minutes when daily limit reached (再延长N分钟); "
                  "11.self.screen_off_set N - Set screen-off idle seconds (0=off); "
-                 "12.self.screen_off_now - Turn off screen immediately, voice chat continues");
+                 "12.self.screen_off_now - Turn off screen immediately, voice chat continues; "
+                 "13.self.screen_on_now - Turn screen back on. 亮屏/打开屏幕");
         return 0;
     }
 
@@ -732,7 +743,9 @@ void mcp_handler_process_message(mcp_handler_t *mcp, const char *json, size_t le
                                  "{\"name\":\"self.reboot\",\"description\":\"Restart device. ONLY for 重启/重新启动, NOT for 关机 (use self.poweroff).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}},"
                                  "{\"name\":\"self.limit_info\",\"description\":\"Query today's usage time: used/limit/remaining minutes. 今天用了多久/还剩多久.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.limit_delay\",\"description\":\"Extend usage N minutes, needs parent enable. 延长时间/再玩N分钟. Append minutes: self.limit_delay 10\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
-                                 "{\"name\":\"self.screen_off_now\",\"description\":\"Turn off screen now, voice chat continues. 关屏幕/息屏. Touch wakes screen.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"                                 "{\"name\":\"self.poweroff\",\"description\":\"Shut down device with native animation, for 关机/关闭/不玩了/睡觉. NOT for 重启 (use self.reboot).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}}"
+                                 "{\"name\":\"self.screen_off_now\",\"description\":\"Turn off screen now, voice chat continues. 关屏幕/息屏. Touch wakes screen.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.screen_on_now\",\"description\":\"Turn the screen back on after it was turned off. Use when user says 亮屏/打开屏幕/把屏幕点亮.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.poweroff\",\"description\":\"Shut down device with native animation, for 关机/关闭/不玩了/睡觉. NOT for 重启 (use self.reboot).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}}"
                                  "]}}}",
                                  (long long)id);
                 if (n >= (int)sizeof(json) - 1)

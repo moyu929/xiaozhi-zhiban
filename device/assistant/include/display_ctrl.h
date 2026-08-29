@@ -43,6 +43,9 @@ int display_ctrl_manual_off(void);
 /** 当前是否息屏态 */
 int display_ctrl_is_off(void);
 
+/** MCP 主动亮屏: 息屏态恢复并清手动标志; 已亮返回1 */
+int display_ctrl_manual_on(void);
+
 #ifdef __cplusplus
 }
 #endif

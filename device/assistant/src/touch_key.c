@@ -8,6 +8,7 @@
  */
 
 #include "touch_key.h"
+#include "display_ctrl.h"
 #include <stdio.h>
 
 
@@ -132,12 +133,26 @@ static void *touchkey_thread_func(void *arg)
         if (n != sizeof(ev))
             continue;
 
+        /* 触摸亮屏(2026-08-30): 手动息屏(MCP)后触摸/按键唤醒屏幕.
+         * EV_ABS(触摸坐标)或 BTN_TOUCH 即视为触摸活动; 息屏态的首次
+         * 输入只亮屏(返回1), 不透传按键动作 */
+        if (ev.type == EV_ABS ||
+            (ev.type == EV_KEY && ev.code == BTN_TOUCH))
+        {
+            display_ctrl_notify_input();
+        }
+
         /* 过滤按键按下事件（value=1表示按下） */
         if (ev.type == EV_KEY && ev.value == 1)
         {
             if (ev.code == GOODIX_KEY_HOME || ev.code == GOODIX_KEY_BACK)
             {
                 PLOG_I("KEY", "按键按下: code=%d", ev.code);
+                if (display_ctrl_notify_input())
+                {
+                    PLOG_I("KEY", "息屏态按键, 仅亮屏不透传");
+                    continue;
+                }
                 tk->pending_key = ev.code;
                 /* 触发上层按键回调 */
                 if (tk->on_key)
