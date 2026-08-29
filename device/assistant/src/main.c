@@ -690,8 +690,8 @@ static void boot_push_tick(void)
     uint64_t now = get_time_ms();
     int enabled = boot_push_disable_enabled();
 
-    /* 抑制期 2s 粒度(抓 boot_push 启动窗口), 非抑制 60s 维护 */
-    if (now - last_ms < (enabled ? 2000 : 60000))
+    /* 抑制期 1s 粒度(抓 boot_push 启动窗口), 非抑制 60s 维护 */
+    if (now - last_ms < (enabled ? 1000 : 60000))
         return;
     last_ms = now;
 
@@ -700,34 +700,93 @@ static void boot_push_tick(void)
         return;
 
     /* 抑制期残留处理: 372 广播不依赖下载成败(实测), boot_push.so 仍会被
-     * exec, swf 内容缺失时停在黑场景等按键. 此处自动替用户按一次
-     * "返回": 给 manager 发 MSG_RESUME_LAST(24), 走原生应用退出 +
-     * 调用链恢复路径(与物理返回键同路, 详见 manager_impl 逆向稿).
-     * 安全边界: 仅在进程年龄<30s(开机动画窗口)且助手非对话态时发送,
-     * 避免 boot_push 后台残留/用户交互中被误切回主页. */
+     * exec, swf 内容缺失时停在黑场景等按键.
+     * v3.1.7 重构(前一版实测失效): 年龄判定改 /proc/PID/stat 第22字段
+     * starttime(时钟滴答, 内核标准)——proc 目录 mtime 在老内核上不可靠,
+     * 曾致 age 恒>30s 永不发送. 退出改双保险:
+     *   a) 直发 boot_push 通用退出消息 type=1(manager 广播退出同款,
+     *      applib 消息循环处理 → applib_quit 自愿退出)
+     *   b) MSG_RESUME_LAST(24) 给 manager 恢复调用链(兜底)
+     * 安全边界: 年龄<90s 且助手非对话态; 5s 重发节流. */
     int pid = find_pid_by_comm_simple("boot_push");
-    if (pid <= 0 || now - last_send_ms < 10000)
+    if (pid <= 0 || now - last_send_ms < 5000)
         return;
 
-    char ppath[32];
-    struct stat pst;
-    snprintf(ppath, sizeof(ppath), "/proc/%d", pid);
-    if (stat(ppath, &pst) != 0)
-        return;
-    long age = (long)time(NULL) - (long)pst.st_mtime;
-    if (age > 30)
+    /* 读 /proc/PID/stat 第22字段 starttime(单位: 滴答, 一般100/s) */
+    long start_ticks = -1;
+    char spath[40];
+    snprintf(spath, sizeof(spath), "/proc/%d/stat", pid);
+    int sfd = open(spath, O_RDONLY);
+    if (sfd >= 0)
+    {
+        char sbuf[512];
+        int n = read(sfd, sbuf, sizeof(sbuf) - 1);
+        close(sfd);
+        if (n > 0)
+        {
+            sbuf[n] = '\0';
+            /* comm 字段含空格时以 ')' 结束定位, 之后字段从 state 开始计数 */
+            char *p = strrchr(sbuf, ')');
+            if (p)
+            {
+                int field = 2; /* ')' 后第一个是 state=字段3 */
+                long val = 0;
+                char *q = p + 1;
+                while (*q && field <= 22)
+                {
+                    while (*q == ' ')
+                        q++;
+                    if (!*q)
+                        break;
+                    val = strtol(q, &q, 10);
+                    field++;
+                }
+                if (field > 22)
+                    start_ticks = val;
+            }
+        }
+    }
+    if (start_ticks < 0)
+        return; /* 解析失败不误杀 */
+
+    /* 系统运行时长(秒) = /proc/uptime 第一字段; 进程年龄 = uptime - start/HZ */
+    double uptime = 0;
+    int ufd = open("/proc/uptime", O_RDONLY);
+    if (ufd >= 0)
+    {
+        char ubuf[64];
+        int n = read(ufd, ubuf, sizeof(ubuf) - 1);
+        close(ufd);
+        if (n > 0)
+        {
+            ubuf[n] = '\0';
+            uptime = atof(ubuf);
+        }
+    }
+    long age = (long)(uptime - start_ticks / 100.0);
+    if (age < 0 || age > 90)
         return;
 
     xiaozhi_state_t st = state_machine_get_state(&g_app.sm);
     if (st == kStateListening || st == kStateSpeaking)
         return;
 
-    char msg[8];
-    memset(msg, 0, sizeof(msg));
-    *(int *)msg = 24; /* MSG_RESUME_LAST */
-    send_async_msg("manager", msg);
+    /* a) 直发退出消息: type=1 + 进程名(applib 通用应用退出, 同 manager
+     * 杀应用广播的载荷形态: manager_impl case MSG_APP_EXIT 前置流程) */
+    char qmsg[64];
+    memset(qmsg, 0, sizeof(qmsg));
+    *(int *)qmsg = 1;
+    snprintf(qmsg + 4, sizeof(qmsg) - 4, "boot_push");
+    send_async_msg("boot_push", qmsg);
+
+    /* b) RESUME_LAST 兜底: 恢复 launcher 前台 */
+    char rmsg[8];
+    memset(rmsg, 0, sizeof(rmsg));
+    *(int *)rmsg = 24; /* MSG_RESUME_LAST */
+    send_async_msg("manager", rmsg);
+
     last_send_ms = now;
-    PLOG_I("PUSH", "boot_push(pid=%d, age=%lds) 黑屏残留, 已代按返回(MSG_RESUME_LAST)", pid, age);
+    PLOG_I("PUSH", "boot_push(pid=%d, age=%lds) 黑屏残留, 已发退出+RESUME_LAST", pid, age);
 }
 
 
