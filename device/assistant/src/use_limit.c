@@ -49,10 +49,12 @@ typedef struct {
     int sched_days;         /* 允许星期位图 bit0=周日..bit6=周六 */
     char sched_span1[12];   /* "HHMM-HHMM", 空=不限 */
     char sched_span2[12];
-    int wake_block_prompted;
-    int session_break_pending;
+    uint64_t break_pending_ms;  /* 会话中断延迟窗到期时刻(MONO ms), 0=无 */
     uint64_t persist_last_ms;
 } ul_ctx_t;
+
+/* 会话中断延迟: 播提示后给提示音留的播放时间 */
+#define UL_BREAK_DELAY_MS 2500
 
 static ul_ctx_t g_ul;
 
@@ -144,7 +146,6 @@ void use_limit_on_speaking(uint64_t elapsed_ms)
         g_ul.spent_sec = 0;
         set_config(UL_KEY_DAY, g_ul.day, strlen(g_ul.day));
         g_ul.locked = 0;
-        g_ul.wake_block_prompted = 0;
         g_ul.delay_until = 0; /* 延迟随当日失效 */
         cfg_set_int(UL_KEY_DELAY_UNTIL, 0);
     }
@@ -156,8 +157,7 @@ void use_limit_on_speaking(uint64_t elapsed_ms)
     if (g_ul.limit_sec > 0 && g_ul.spent_sec >= g_ul.limit_sec)
     {
         g_ul.locked = 1;
-        g_ul.session_break_pending = 1;
-        PLOG_I("UL", "今日使用时长已耗尽(%lds), 进入锁定", g_ul.spent_sec);
+        PLOG_I("UL", "今日使用时长已耗尽(%lds), 进入锁定(断开由主循环 poll 处理)", g_ul.spent_sec);
     }
     persist_if_needed(now_ms);
 }
@@ -232,8 +232,6 @@ void use_limit_set_enable(int on)
     g_ul.enable = on ? 1 : 0;
     cfg_set_int(UL_KEY_ENABLE, g_ul.enable);
     sync_config();
-    if (!g_ul.enable)
-        g_ul.wake_block_prompted = 0; /* 关闭后允许重新提示 */
     PLOG_I("UL", "set_enable=%d (minutes=%ld spent=%ld)",
            g_ul.enable, g_ul.limit_sec / 60, g_ul.spent_sec);
 }
@@ -247,8 +245,6 @@ void use_limit_set_minutes(int minutes)
     g_ul.limit_sec = (long)minutes * 60;
     cfg_set_int(UL_KEY_MINUTES, minutes);
     sync_config();
-    if (g_ul.spent_sec < g_ul.limit_sec)
-        g_ul.wake_block_prompted = 0; /* 上限提高后未超限, 允许重新提示 */
     PLOG_I("UL", "set_minutes=%d (spent=%lds)", minutes, g_ul.spent_sec);
 }
 
@@ -261,7 +257,6 @@ long use_limit_request_delay(int minutes)
     g_ul.delay_until = (long)time(NULL) + (long)minutes * 60;
     cfg_set_int(UL_KEY_DELAY_UNTIL, (int)g_ul.delay_until);
     sync_config();
-    g_ul.wake_block_prompted = 0; /* 延迟到期回锁时重新提示一次 */
     PLOG_I("UL", "临时延迟 %d 分钟, 到期 epoch=%ld", minutes, g_ul.delay_until);
     return g_ul.delay_until;
 }
@@ -313,7 +308,6 @@ void use_limit_set_schedule(int enable, int days, const char *span1, const char 
     set_config(UL_KEY_SCHED_SPAN1, g_ul.sched_span1, strlen(g_ul.sched_span1));
     set_config(UL_KEY_SCHED_SPAN2, g_ul.sched_span2, strlen(g_ul.sched_span2));
     sync_config();
-    g_ul.wake_block_prompted = 0; /* 状态变化后允许重新提示 */
     PLOG_I("UL", "时段设置: enable=%d days=0x%x span1='%s' span2='%s'",
            g_ul.sched_enable, g_ul.sched_days, g_ul.sched_span1, g_ul.sched_span2);
 }
@@ -333,24 +327,41 @@ const char *use_limit_get_span(int idx)
     return idx == 2 ? g_ul.sched_span2 : g_ul.sched_span1;
 }
 
-int use_limit_take_session_break_flag(void)
-{
-    int v = g_ul.session_break_pending;
-    g_ul.session_break_pending = 0;
-    return v;
-}
-
 int use_limit_should_block_wakeup(void)
 {
     if (!ul_any_locked())
         return 0;
 
-    if (!g_ul.wake_block_prompted)
-    {
-        g_ul.wake_block_prompted = 1;
-        PLOG_I("UL", "唤醒请求被限时拦截(达限锁=%d 时段锁=%d), 播提醒音(id=%d)",
-               use_limit_is_locked(), use_limit_out_of_span(), g_ul.prompt_id);
-        platform_tts_play(g_ul.prompt_id);
-    }
+    /* 每次唤醒都播提示(2026-08-30 用户决策): 只播一次会让孩子以为设备坏了 */
+    PLOG_I("UL", "唤醒被限时拦截(达限锁=%d 时段锁=%d), 播提示(id=%d)",
+           use_limit_is_locked(), use_limit_out_of_span(), g_ul.prompt_id);
+    platform_tts_play(g_ul.prompt_id);
     return 1;
+}
+
+/* ---- 会话中断轮询(达限/时段锁统一入口) ---- */
+
+int use_limit_session_break_poll(void)
+{
+    if (!ul_any_locked())
+    {
+        g_ul.break_pending_ms = 0;
+        return 0;
+    }
+
+    if (g_ul.break_pending_ms == 0)
+    {
+        /* 首次进入锁定: 播提示并开延迟窗(等提示播完再断) */
+        platform_tts_play(g_ul.prompt_id);
+        g_ul.break_pending_ms = ul_now_ms() + UL_BREAK_DELAY_MS;
+        PLOG_I("UL", "会话中锁定生效, 播提示后%ums断开(达限锁=%d 时段锁=%d)",
+               UL_BREAK_DELAY_MS, use_limit_is_locked(), use_limit_out_of_span());
+        return 0;
+    }
+    return ul_now_ms() >= g_ul.break_pending_ms;
+}
+
+void use_limit_break_reset(void)
+{
+    g_ul.break_pending_ms = 0;
 }

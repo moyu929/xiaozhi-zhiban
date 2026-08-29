@@ -2356,21 +2356,8 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
         else if (to == kStateSpeaking && from != kStateSpeaking)
             speak_started_ms = now;
 
-        /* 会话中触限 -> 与 ai_stop 同一收敛路径 */
-        if (use_limit_take_session_break_flag() &&
-            (from == kStateSpeaking || from == kStateListening))
-        {
-            PLOG_I("UL", "会话中达到每日上限, 断开并清理");
-            app->pending_stop_request = 1;
-        }
-        /* 时段锁(作息限制): 进入非允许时段边界时, 进行中会话同样收敛
-         * (与达限锁独立, 动态判定: 边界跨越即触发, 无需标志位) */
-        if (use_limit_out_of_span() &&
-            (from == kStateSpeaking || from == kStateListening))
-        {
-            PLOG_I("UL", "会话中进入非允许时段, 断开并清理");
-            app->pending_stop_request = 1;
-        }
+        /* 会话中断(达限/时段锁)统一走主循环 use_limit_session_break_poll:
+         * 播提示后延迟断开(提示播完), 状态回调不再直接掐断 */
     }
 
     switch (to)
@@ -3575,16 +3562,17 @@ int main(int argc, char *argv[])
             }
         }
 
-        /* 时段锁(作息限制)周期检查: 对话持续中跨过时段边界即断
-         * (状态回调只覆盖转换时刻, 持续 Listening/Speaking 不会触发) */
-        if (app->in_session && use_limit_out_of_span())
+        /* 限时/时段锁统一轮询: 锁定首次进入播提示并开 2.5s 延迟窗,
+         * 窗口到点(提示播完)才断开——避免"说到一半突然哑火" */
+        if (app->in_session && use_limit_session_break_poll())
         {
             xiaozhi_state_t cur = state_machine_get_state(&app->sm);
             if (cur == kStateListening || cur == kStateSpeaking)
             {
-                PLOG_I("UL", "对话中进入非允许时段, 断开并清理");
+                PLOG_I("UL", "锁定提示已播完, 断开并清理");
                 state_machine_transition(&app->sm, kStateCleaning);
             }
+            use_limit_break_reset();
         }
 
         /* 处理API激活请求 */

@@ -41,7 +41,7 @@ void use_limit_init(void);
 /** TTS 播放打点：Speaking 进入/退出各调一次，间隔毫秒数由调用方给出 */
 void use_limit_on_speaking(uint64_t elapsed_ms);
 
-/** 唤醒事件入口处调用；返回 1=已锁定（内部已播提醒音，调用方必须拦截本次唤醒） */
+/** 唤醒事件入口处调用；返回 1=已锁定（每次都播提示音, 调用方必须拦截本次唤醒） */
 int use_limit_should_block_wakeup(void);
 
 /** 当前已累计使用秒数(MCP查询用) */
@@ -53,8 +53,13 @@ int use_limit_is_locked(void);
 /** 当前是否处于允许使用时段外(时段锁, 与达限锁相互独立, 延迟不豁免) */
 int use_limit_out_of_span(void);
 
-/** 会话中触限后的善后查询：返回 1 表示需要断开清理（一次性消费标志） */
-int use_limit_take_session_break_flag(void);
+/* ---- 会话中断轮询(达限/时段锁统一入口, 主循环调用) ---- */
+/** 锁定首次进入播提示并开 2.5s 延迟窗(提示播完); 窗口到点返回 1(该断开);
+ *  未锁定时自动复位 */
+int use_limit_session_break_poll(void);
+
+/** 断开完成后清延迟窗(下次锁定重新播提示) */
+void use_limit_break_reset(void);
 
 /* ---- 运行时设置(面板/语音, 见 2026-08-30 补全) ---- */
 /** 开/关限时(写配置+生效) */
