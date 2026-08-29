@@ -92,6 +92,7 @@ static void load_day_spent(void)
 
 void use_limit_init(void)
 {
+    int dirty = 0;
     memset(&g_ul, 0, sizeof(g_ul));
     g_ul.enable = cfg_get_int(UL_KEY_ENABLE, 0);
     long minutes = cfg_get_int(UL_KEY_MINUTES, 60);
@@ -103,6 +104,42 @@ void use_limit_init(void)
     g_ul.sched_days = cfg_get_int(UL_KEY_SCHED_DAYS, 127);        /* 默认每天 */
     get_config(UL_KEY_SCHED_SPAN1, g_ul.sched_span1, sizeof(g_ul.sched_span1));
     get_config(UL_KEY_SCHED_SPAN2, g_ul.sched_span2, sizeof(g_ul.sched_span2));
+
+    /* config.bin 脏数据自愈(2026-08-30): 历史解析器 bug 曾把 epoch 秒串进
+     * 各配置键并落盘(sched_enable=788064597 之类), 跨重启复活导致时段锁
+     * 误开/唤醒全拦. 值域校验不过即重置默认并落盘覆盖脏值 */
+    if (g_ul.sched_enable != 0 && g_ul.sched_enable != 1)
+    {
+        PLOG_W("UL", "SCHED_ENABLE 脏值(%d), 重置为0并落盘", g_ul.sched_enable);
+        g_ul.sched_enable = 0;
+        cfg_set_int(UL_KEY_SCHED_ENABLE, 0);
+        dirty = 1;
+    }
+    if (g_ul.sched_days < 0 || g_ul.sched_days > 127)
+    {
+        PLOG_W("UL", "SCHED_DAYS 脏值(%d), 重置127并落盘", g_ul.sched_days);
+        g_ul.sched_days = 127;
+        cfg_set_int(UL_KEY_SCHED_DAYS, 127);
+        dirty = 1;
+    }
+    if (g_ul.delay_tool != 0 && g_ul.delay_tool != 1)
+    {
+        PLOG_W("UL", "DELAY_TOOL 脏值(%d), 重置0并落盘", g_ul.delay_tool);
+        g_ul.delay_tool = 0;
+        cfg_set_int(UL_KEY_DELAY_TOOL, 0);
+        dirty = 1;
+    }
+    if (g_ul.delay_until < 0 ||
+        g_ul.delay_until > (long)time(NULL) + 12 * 60 * 60)
+    {
+        /* 未来超过12小时的延迟必为脏值(合法上限12h) */
+        PLOG_W("UL", "DELAY_UNTIL 脏值(%ld), 重置0并落盘", g_ul.delay_until);
+        g_ul.delay_until = 0;
+        cfg_set_int(UL_KEY_DELAY_UNTIL, 0);
+        dirty = 1;
+    }
+    if (dirty)
+        sync_config();
 
     load_day_spent();
     g_ul.locked = (g_ul.enable && g_ul.limit_sec > 0 && g_ul.spent_sec >= g_ul.limit_sec);

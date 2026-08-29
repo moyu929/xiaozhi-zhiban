@@ -716,22 +716,27 @@ void mcp_handler_process_message(mcp_handler_t *mcp, const char *json, size_t le
             PLOG_I("MCP", "tools/list 请求, ID=%lld", (long long)id);
             if (mcp->send_json)
             {
-                char json[5120];
+                /* 11 个工具的长描述实测逼近 5K(2026-08-30 事故: 5120 截断
+                 * 产生非法 JSON, 云端解析失败即断连 → "唤醒后秒退"),
+                 * 扩到 8192 并加截断熔断日志 */
+                char json[8192];
                 int n = snprintf(json, sizeof(json),
                                  "{\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%lld,"
                                  "\"result\":{\"tools\":["
-                                 "{\"name\":\"self.get_device_status\",\"description\":\"Get the real-time status of the device including volume percentage, charging state, battery level, CPU load and memory usage\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
-                                 "{\"name\":\"self.audio_speaker.volume_up\",\"description\":\"Increase the device volume by one step. This triggers the native volume button event so the volume bar animation is shown on screen. Use when user says turn up volume or make it louder\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
-                                 "{\"name\":\"self.audio_speaker.volume_down\",\"description\":\"Decrease the device volume by one step. This triggers the native volume button event so the volume bar animation is shown on screen. Use when user says turn down volume or make it quieter\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
-                                 "{\"name\":\"self.get_system_info\",\"description\":\"Get system information including version, volume and battery\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
-                                 "{\"name\":\"self.clean_junk\",\"description\":\"Clean temporary files and drop system caches to free memory and improve performance\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
-                                 "{\"name\":\"self.get_mcp_tools\",\"description\":\"List and describe all available MCP tools on this device\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
-                                 "{\"name\":\"self.reboot\",\"description\":\"Restart the device (reboot). Use ONLY when the user explicitly asks to RESTART/REBOOT (重启/重新启动). NOT for shutting down.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}},"
-                                 "{\"name\":\"self.limit_info\",\"description\":\"Query today's device usage time. Use when user asks 今天用了多久/使用时长/还剩多少时间. Returns used minutes, daily limit and remaining minutes in Chinese.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
-                                 "{\"name\":\"self.limit_delay\",\"description\":\"Temporarily extend today's usage time by N minutes when the daily limit is locked. ONLY works if the parent enabled this feature in the settings panel (use_limit_delay_tool), otherwise it politely refuses. Use when user says 延长时间/再玩10分钟/继续使用一会儿. Append minutes after the tool name, e.g. self.limit_delay 10.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
-                                 "{\"name\":\"self.screen_off_now\",\"description\":\"Turn off the display screen immediately while voice conversation continues normally. Use when user says 关屏幕/息屏/把屏幕关掉. The screen wakes on touch.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}",                                 "{\"name\":\"self.poweroff\",\"description\":\"Power off / shut down the device completely with native shutdown animation. Use when the user says 关机/关闭/断电/睡觉/不玩了 (shut down, turn off, power off). This is the correct tool for ending device usage.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}}"
+                                 "{\"name\":\"self.get_device_status\",\"description\":\"Device status: volume, battery, charging, CPU, memory. 问设备状态/电量/音量\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.audio_speaker.volume_up\",\"description\":\"Volume up one step, native volume bar shown. 大点声/调大音量\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.audio_speaker.volume_down\",\"description\":\"Volume down one step, native volume bar shown. 小点声/调小音量\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.get_system_info\",\"description\":\"System info: version, volume, battery. 查版本/系统信息\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.clean_junk\",\"description\":\"Clean temp files and caches to free memory. 清理垃圾/清理内存\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.get_mcp_tools\",\"description\":\"List all device MCP tools. 有哪些工具\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.reboot\",\"description\":\"Restart device. ONLY for 重启/重新启动, NOT for 关机 (use self.poweroff).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}},"
+                                 "{\"name\":\"self.limit_info\",\"description\":\"Query today's usage time: used/limit/remaining minutes. 今天用了多久/还剩多久.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.limit_delay\",\"description\":\"Extend usage N minutes, needs parent enable. 延长时间/再玩N分钟. Append minutes: self.limit_delay 10\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+                                 "{\"name\":\"self.screen_off_now\",\"description\":\"Turn off screen now, voice chat continues. 关屏幕/息屏. Touch wakes screen.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"                                 "{\"name\":\"self.poweroff\",\"description\":\"Shut down device with native animation, for 关机/关闭/不玩了/睡觉. NOT for 重启 (use self.reboot).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}}"
                                  "]}}}",
                                  (long long)id);
+                if (n >= (int)sizeof(json) - 1)
+                    PLOG_E("MCP", "tools/list 响应被截断(%d>=%d), JSON 非法!", n, (int)sizeof(json));
                 mcp->send_json(json, n, mcp->user_data);
             }
         }
