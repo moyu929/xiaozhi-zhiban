@@ -198,6 +198,9 @@ static uint64_t g_last_bcast_ms = 0;
 /* 0x231(会话结束事件)发出时间: wiki 收到后回调 sair_ai_stop(0x3EC),
  * 该回环在窗内忽略, 防止字幕清屏误杀进行中的 AutoStop 会话 */
 static uint64_t g_last_end_evt_ms = 0;
+/* 唤醒广播(0x235)专用时间戳: msg_server 收到后契约性回发 AI_STOP(0x3EC),
+ * 打断场景该回环杀死刚建立的新会话, AI_STOP 处理器以此时间戳开窗忽略 */
+static uint64_t g_last_awake_bcast_ms = 0;
 static uint64_t get_time_ms(void); /* 前向声明: 定义在下方, 本包装需先用 */
 
 static int sair_broadcast(void *msg)
@@ -1231,6 +1234,9 @@ static void broadcast_sair_awake(int wakeup_result)
         msg[0] = MSG_SAIR_AWAKE_CMD; /* MSG_SAIR_AWAKE_CMD: 平台SDK定义的IPC消息ID - 命令式唤醒通知 */
         msg[1] = wakeup_result + 256;
     }
+    /* 唤醒广播专用时间戳: AI_STOP 回环窗口判定用(勿复用 g_last_bcast_ms——
+     * 字幕 0x23A 推送也刷新它, 对话中字幕高频会把真 smart_player 抢占误杀) */
+    g_last_awake_bcast_ms = get_time_ms();
     int ret = sair_broadcast(msg);
     PLOG_I("IPC", "广播 MSG_SAIR_AWAKE msg[0]=0x%x msg[1]=%d ret=%d", msg[0], msg[1], ret);
 }
@@ -2203,6 +2209,22 @@ static void proc_srv_msg(void *req_header_ptr, int *resp_result)
         {
             PLOG_I("IPC", "MSG_SAIR_AI_STOP: 字幕清屏回环(%llums), 忽略",
                    (unsigned long long)(_now - g_last_end_evt_ms));
+            if (resp_result)
+                *resp_result = 1;
+            break;
+        }
+        /* 唤醒广播(0x235)触发的 msg_server 契约性回环: msg_server 播唤醒动画
+         * 前按契约回发 AI_STOP 停旧 AI. 打断场景(2026-08-30 实录)该回环在
+         * 广播后 ~42ms 到达, 正好砸在刚同步建立的 Listening 上, 杀死打断后
+         * 的新会话("唤醒打断变退出"). 正常唤醒不受影响(0x3EC 到达时还在
+         * Connecting, 收敛块不管 Connecting, 后续 AI_START 清挂起).
+         * 窗口 800ms: 真正的 smart_player 抢占在此窗内到达会被误忽略一次,
+         * 但 smart_player 的仲裁抢占是持续的(每次 status 查询都会发), 下一条
+         * (窗外)即生效; 且音乐被唤醒打断本就是预期行为. */
+        if (g_last_awake_bcast_ms && _now - g_last_awake_bcast_ms < 800)
+        {
+            PLOG_I("IPC", "MSG_SAIR_AI_STOP: 唤醒广播回环(%llums), 忽略",
+                   (unsigned long long)(_now - g_last_awake_bcast_ms));
             if (resp_result)
                 *resp_result = 1;
             break;
