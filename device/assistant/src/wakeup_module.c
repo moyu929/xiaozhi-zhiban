@@ -257,7 +257,32 @@ static void wakeup_audio_callback(const int16_t *data, int len, void *user_data)
         return;
     if (mod->f_asr_feed_data)
     {
-        mod->f_asr_feed_data(mod->asr_handle, data, len * 2);
+        /* 整帧对齐防护(X14 成果转化): fespl 按 wavChan(3)×2B=6B 切帧,
+         * 非整帧尾字节使交织通道索引错位(0xC603C 崩溃同机理).
+         * 残帧(最多2个int16)跨批缓存, 拼接后只喂整帧. */
+        static int16_t s_residual[2];
+        static int s_residual_n = 0;
+        int16_t aligned[3072 + 8]; /* 32ms 批上限(1024样本×3ch) + 残帧余量 */
+        int total = s_residual_n;
+
+        if (total > (int)(sizeof(aligned) / sizeof(aligned[0]) - len))
+        {
+            /* 防御: 残帧异常累积, 丢弃重置 */
+            s_residual_n = 0;
+            total = 0;
+        }
+        memcpy(aligned, s_residual, total * sizeof(int16_t));
+        memcpy(aligned + total, data, len * sizeof(int16_t));
+        total += len;
+
+        int frames = total / 3; /* 1 样本 = 3ch 交织 */
+        if (frames > 0)
+            mod->f_asr_feed_data(mod->asr_handle, aligned,
+                                 frames * 3 * sizeof(int16_t)); /* 字节数(9fb80 反汇编定论: len 累加进写pos) */
+
+        s_residual_n = total - frames * 3;
+        if (s_residual_n > 0)
+            memcpy(s_residual, aligned + frames * 3, s_residual_n * sizeof(int16_t));
     }
 }
 

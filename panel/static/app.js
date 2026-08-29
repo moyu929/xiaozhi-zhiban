@@ -1537,7 +1537,7 @@ async function restoreAssistantDefaults() {
         body: JSON.stringify({
             mcp_endpoint: '',
             log_level: 'INFO',
-            listening_mode: 'realtime',
+            listening_mode: 'autostop',
             aec_mode: 'local',
             listen_timeout: 120000,
             session_timeout: 300000,

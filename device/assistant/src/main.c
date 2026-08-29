@@ -112,6 +112,45 @@ typedef struct {
 static sair_content_t g_subtitle;
 static pthread_mutex_t g_subtitle_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* ---- 字幕流式(打字机) + 自动消失 (g_subtitle_mutex 保护) ----
+ * 协议层 sentence_start 为整句下发(无字符级 delta, websocket.md 定论),
+ * 故按 TTS 语音节奏(约 4 字/秒)本地逐字滚出, 视觉等效流式.
+ * 句子完成后延迟 SUBTITLE_HIDE_MS 自动清屏, 避免残留. */
+#define TYPE_MS_PER_CHAR 250
+#define SUBTITLE_HIDE_MS 2000
+static char g_type_full[SUBTITLE_MAX_LEN]; /* 待打字全文 */
+static int g_type_chars;                   /* 全文 UTF-8 字符数 */
+static int g_type_shown;                   /* 已显示字符数 */
+static uint64_t g_type_start_ms;           /* 打字起点 */
+static int g_type_done = 1;                /* 1=无任务/已完成 */
+static uint64_t g_subtitle_hide_ms;        /* 计划清屏时刻(0=无计划) */
+
+/** UTF-8 字符串前 max_chars 个字符的字节数(截断不撕裂多字节) */
+static int utf8_prefix_bytes(const char *s, int max_chars)
+{
+    int chars = 0, i = 0;
+    while (s[i] && chars < max_chars)
+    {
+        unsigned char c = (unsigned char)s[i];
+        i += (c & 0x80) == 0 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
+        chars++;
+    }
+    return i;
+}
+
+/** UTF-8 字符串字符数 */
+static int utf8_char_count(const char *s)
+{
+    int chars = 0, i = 0;
+    while (s[i])
+    {
+        unsigned char c = (unsigned char)s[i];
+        i += (c & 0x80) == 0 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
+        chars++;
+    }
+    return chars;
+}
+
 static int mic_set_enable(int enable)
 {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -156,6 +195,9 @@ static int mic_set_enable(int enable)
  * 用户打断 -> 播放停止 + ignore_tts_audio -> TTS 音频帧全被静默丢弃).
  * 统一经本包装广播并记录时间, AI_START 短窗内到达即判回环忽略. ---- */
 static uint64_t g_last_bcast_ms = 0;
+/* 0x231(会话结束事件)发出时间: wiki 收到后回调 sair_ai_stop(0x3EC),
+ * 该回环在窗内忽略, 防止字幕清屏误杀进行中的 AutoStop 会话 */
+static uint64_t g_last_end_evt_ms = 0;
 static uint64_t get_time_ms(void); /* 前向声明: 定义在下方, 本包装需先用 */
 
 static int sair_broadcast(void *msg)
@@ -186,15 +228,23 @@ static void sair_subtitle_push(const char *text)
     g_last_bcast_ms = get_time_ms(); /* 触发回环, 纳入防护窗 */
 }
 
-/** 清除屏幕残留字幕（空文本覆盖显示; 会话结束调用） */
+/** 清除屏幕残留字幕（会话结束/自动隐藏/打断时调用）
+ * 两连发: 0x233+空文本清文字(仅清文字, 7678 只判 NULL 指针, 空串仍画容器)
+ *        + 0x231 会话结束事件(wiki a888 空字幕路径: 重绘场景回 idle, 容器消失)
+ * 注: wiki 收 0x231 会回调 sair_ai_stop(0x3EC), MSG_SAIR_AI_STOP 处理器
+ *     依 g_last_end_evt_ms 窗口判回环忽略, 保护进行中的 AutoStop 会话. */
 static void sair_subtitle_clear(void)
 {
-    char buf[16];
+    char buf[72];
     memset(buf, 0, sizeof(buf));
     *(int *)buf = 0x233;
     *(int *)(buf + 4) = 5;
     send_async_msg("launcher", buf);
+    memset(buf, 0, sizeof(buf));
+    *(int *)buf = 0x231; /* 会话结束事件, payload[0]=0 → idle 化+清容器 */
+    send_async_msg("launcher", buf);
     g_last_bcast_ms = get_time_ms();
+    g_last_end_evt_ms = g_last_bcast_ms;
 }
 
 static void subtitle_set(int type, const char *text)
@@ -213,8 +263,36 @@ static void subtitle_set(int type, const char *text)
     pthread_mutex_unlock(&g_subtitle_mutex);
 
     /* 需求②: 屏幕底部字幕仅显示回复(TTS)内容, 渲染由原生 wiki 场景完成 */
-    if (type == SUBTITLE_TYPE_TTS)
-        sair_subtitle_push(text);
+    if (type == SUBTITLE_TYPE_TTS && text && text[0])
+    {
+        /* 打字机流式: 立即显示句首 2 字, 余下由主循环 tick 按语音节奏推进 */
+        char head[SUBTITLE_MAX_LEN];
+        int bytes;
+        pthread_mutex_lock(&g_subtitle_mutex);
+        strncpy(g_type_full, text, SUBTITLE_MAX_LEN - 1);
+        g_type_full[SUBTITLE_MAX_LEN - 1] = '\0';
+        g_type_chars = utf8_char_count(g_type_full);
+        g_type_shown = (g_type_chars > 2) ? 2 : g_type_chars;
+        g_type_start_ms = get_time_ms();
+        g_type_done = (g_type_shown >= g_type_chars);
+        g_subtitle_hide_ms = 0; /* 新句到达, 取消挂起的清屏计划 */
+        bytes = utf8_prefix_bytes(g_type_full, g_type_shown);
+        memcpy(head, g_type_full, bytes);
+        pthread_mutex_unlock(&g_subtitle_mutex);
+        head[bytes] = '\0';
+        sair_subtitle_push(head);
+    }
+    else if (type == SUBTITLE_TYPE_ASR)
+    {
+        /* 新一轮用户说话: 上一轮 TTS 字幕立即清屏, 打字机作废 */
+        pthread_mutex_lock(&g_subtitle_mutex);
+        g_type_done = 1;
+        g_type_chars = 0;
+        g_type_shown = 0;
+        g_subtitle_hide_ms = 0;
+        pthread_mutex_unlock(&g_subtitle_mutex);
+        sair_subtitle_clear();
+    }
 
     PLOG_I("SUB", "字幕更新: type=%d text='%.64s'", type, text ? text : "");
 }
@@ -224,8 +302,240 @@ static void subtitle_clear(void)
     pthread_mutex_lock(&g_subtitle_mutex);
     g_subtitle.type = SUBTITLE_TYPE_NONE;
     g_subtitle.content[0] = '\0';
+    g_type_done = 1;
+    g_type_chars = 0;
+    g_type_shown = 0;
+    g_subtitle_hide_ms = 0;
     pthread_mutex_unlock(&g_subtitle_mutex);
     sair_subtitle_clear();
+}
+
+/** 打字机立即完成(整句全量上屏), TTS stop/打断兜底时调用 */
+static void subtitle_finish_typing(void)
+{
+    char full[SUBTITLE_MAX_LEN];
+    int need_push;
+    pthread_mutex_lock(&g_subtitle_mutex);
+    need_push = (!g_type_done && g_type_chars > 0);
+    if (need_push)
+    {
+        memcpy(full, g_type_full, sizeof(full));
+        g_type_done = 1;
+        g_type_shown = g_type_chars;
+    }
+    pthread_mutex_unlock(&g_subtitle_mutex);
+    if (need_push)
+        sair_subtitle_push(full);
+}
+
+/** 安排字幕延迟消失(毫秒), tts stop 播放完成后调用 */
+static void subtitle_schedule_hide(uint64_t delay_ms)
+{
+    pthread_mutex_lock(&g_subtitle_mutex);
+    g_subtitle_hide_ms = get_time_ms() + delay_ms;
+    pthread_mutex_unlock(&g_subtitle_mutex);
+}
+
+/** 字幕打断: 打字机作废 + 立即清屏(用户抢话/中止时调用) */
+static void subtitle_interrupt(void)
+{
+    pthread_mutex_lock(&g_subtitle_mutex);
+    g_type_done = 1;
+    g_type_chars = 0;
+    g_type_shown = 0;
+    g_subtitle_hide_ms = 0;
+    pthread_mutex_unlock(&g_subtitle_mutex);
+    sair_subtitle_clear();
+}
+
+/**
+ * @brief 字幕打字机推进 + 自动清屏 (主循环周期调用, 内部 150ms 节流)
+ */
+static void subtitle_typing_tick(void)
+{
+    static uint64_t last_tick_ms = 0;
+    uint64_t now = get_time_ms();
+    if (now - last_tick_ms < 150)
+        return;
+    last_tick_ms = now;
+
+    /* 打字机推进 */
+    pthread_mutex_lock(&g_subtitle_mutex);
+    if (!g_type_done && g_type_chars > 0)
+    {
+        char full[SUBTITLE_MAX_LEN];
+        memcpy(full, g_type_full, sizeof(full));
+        int total_chars = g_type_chars;
+        int shown = g_type_shown;
+        pthread_mutex_unlock(&g_subtitle_mutex);
+
+        int target = (int)((now - g_type_start_ms) / TYPE_MS_PER_CHAR);
+        if (target < shown)
+            target = shown;
+        if (target > total_chars)
+            target = total_chars;
+        if (target > shown)
+        {
+            int bytes = utf8_prefix_bytes(full, target);
+            full[bytes] = '\0';
+            pthread_mutex_lock(&g_subtitle_mutex);
+            g_type_shown = target;
+            if (target >= total_chars)
+                g_type_done = 1;
+            pthread_mutex_unlock(&g_subtitle_mutex);
+            sair_subtitle_push(full);
+            return; /* 本 tick 已推送, 清屏下轮再看 */
+        }
+    }
+    else
+    {
+        pthread_mutex_unlock(&g_subtitle_mutex);
+    }
+
+    /* 自动清屏 */
+    pthread_mutex_lock(&g_subtitle_mutex);
+    uint64_t hide_at = g_subtitle_hide_ms;
+    pthread_mutex_unlock(&g_subtitle_mutex);
+    if (hide_at && now >= hide_at && g_subtitle.type != SUBTITLE_TYPE_NONE)
+    {
+        PLOG_D("SUB", "字幕超时自动清屏");
+        subtitle_clear();
+    }
+}
+
+/* ---- 电池伪低电守卫 (2026-08-30 电池调查定论) ----
+ * atc260x 内核驱动 OCV 查表按原装电池标定, 换大容量电池后 capacity
+ * 系统性偏低(实测 3.86V 只读 6-11%, 重启重标定跳 33%), msg_server 低电
+ * 监控触发自动关机(用户实锤), 续航被软阉割. sysfs 只读(errno=13)无法
+ * 上游覆写, 故双管齐下:
+ *  1. 主循环 30s tick: 伪低电(查表 cap<=15 但真实电压>=3.40V 且放电中)
+ *     写 /tmp/.fake_low_power 标记(tmpfs, 重启自清)
+ *  2. install_poweroff_guard 幂等安装 /sbin/poweroff 守卫脚本:
+ *     - 调用者经溯源是 msg_server 且电压>=3.40V → 拦截
+ *     - 调用者是 manager 且伪低电标记在 且电压>=3.40V → 拦截(删标记,
+ *       一次性, 用户主动关机第二次即成功)
+ *     - 其余(用户按键/xwebd/mqtt远程/真低电)放行
+ * 真低电(<3.40V)永远放行, 保护电池不过放. 拦截记录:
+ * /var/upgrade/poweroff_guard.log */
+#define BATT_GUARD_VOLT_UV 3400000
+#define BATT_GUARD_LOW_CAP 15
+#define FAKE_LOW_FLAG "/tmp/.fake_low_power"
+
+static int batt_read_node_int(const char *path)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return -1;
+    char buf[32];
+    int n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0)
+        return -1;
+    buf[n] = '\0';
+    return atoi(buf);
+}
+
+/** 电池伪低电监控 tick (主循环 30s 节流) */
+static void battery_guard_tick(void)
+{
+    static uint64_t last_ms = 0;
+    static int last_flagged = -1;
+    uint64_t now = get_time_ms();
+    if (now - last_ms < 30000)
+        return;
+    last_ms = now;
+
+    int volt = batt_read_node_int("/sys/class/power_supply/battery/voltage_now");
+    int cap = batt_read_node_int("/sys/class/power_supply/battery/capacity");
+    if (volt < 0 || cap < 0)
+        return;
+
+    /* 充电中不标记(msg_server 低电监控仅放电时触发, 且充电期用户关机不应被误拦) */
+    int usb_on = batt_read_node_int("/sys/class/power_supply/atc260x-usb/online");
+    int wall_on = batt_read_node_int("/sys/class/power_supply/atc260x-wall/online");
+    int charging = (usb_on > 0 || wall_on > 0);
+
+    int flagged = (!charging && cap <= BATT_GUARD_LOW_CAP && volt >= BATT_GUARD_VOLT_UV);
+    if (flagged != last_flagged)
+    {
+        if (flagged)
+        {
+            int fd = open(FAKE_LOW_FLAG, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd >= 0)
+                close(fd);
+            PLOG_W("BATT", "伪低电标记: 查表cap=%d%% 真实电压=%d.%03dV (原装电池标定偏差, 低电关机将被拦截)",
+                   cap, volt / 1000000, (volt / 1000) % 1000);
+        }
+        else
+        {
+            unlink(FAKE_LOW_FLAG);
+            PLOG_I("BATT", "伪低电标记清除: cap=%d%% volt=%duV charging=%d", cap, volt, charging);
+        }
+        last_flagged = flagged;
+    }
+}
+
+/** 安装 poweroff 守卫脚本 (幂等; 写 /var/upgrade/poweroff)
+ * /sbin 只读(EROFS 实测), 但 PATH=/var/upgrade 优先级最高(rcS/profile),
+ * system("poweroff") 解析先命中守卫, 零系统侵入, 删文件即卸载. */
+static void install_poweroff_guard(void)
+{
+    const char *guard_path = "/var/upgrade/poweroff";
+
+    /* 已是守卫脚本(shebang 开头)则跳过 */
+    int fd = open(guard_path, O_RDONLY);
+    if (fd >= 0)
+    {
+        char head[64] = {0};
+        int n = read(fd, head, sizeof(head) - 1);
+        close(fd);
+        if (n > 9 && strncmp(head, "#!/bin/sh", 9) == 0)
+        {
+            PLOG_I("BATT", "poweroff 守卫已安装, 跳过");
+            return;
+        }
+    }
+
+    /* 调用者溯源: system() 经 sh -c 时脚本父进程是 sh, 需再上溯一级 */
+    const char *guard =
+        "#!/bin/sh\n"
+        "# poweroff_guard: 伪低电关机拦截 (sair 自动安装, 删本文件即卸载)\n"
+        "V=$(cat /sys/class/power_supply/battery/voltage_now 2>/dev/null)\n"
+        "P=$(cat /proc/$PPID/comm 2>/dev/null)\n"
+        "if [ \"$P\" = \"sh\" ] || [ \"$P\" = \"ash\" ]; then\n"
+        "  GP=$(awk '{print $4}' /proc/$PPID/stat 2>/dev/null)\n"
+        "  [ -n \"$GP\" ] && P=$(cat /proc/$GP/comm 2>/dev/null)\n"
+        "fi\n"
+        "if [ \"$V\" -ge 3400000 ] 2>/dev/null; then\n"
+        "  if [ \"$P\" = \"msg_server\" ]; then\n"
+        "    echo \"$(date '+%m-%d %H:%M:%S') BLOCK msg_server v=$V\" >> /var/upgrade/poweroff_guard.log\n"
+        "    exit 0\n"
+        "  fi\n"
+        "  if [ \"$P\" = \"manager\" ] && [ -f /tmp/.fake_low_power ]; then\n"
+        "    rm -f /tmp/.fake_low_power\n"
+        "    echo \"$(date '+%m-%d %H:%M:%S') BLOCK manager-fakelow v=$V\" >> /var/upgrade/poweroff_guard.log\n"
+        "    exit 0\n"
+        "  fi\n"
+        "fi\n"
+        "exec /sbin/poweroff \"$@\"\n";
+
+    fd = open(guard_path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+    if (fd < 0)
+    {
+        PLOG_W("BATT", "poweroff 守卫安装失败(写脚本): errno=%d", errno);
+        return;
+    }
+    int len = (int)strlen(guard);
+    if (write(fd, guard, len) != len)
+    {
+        close(fd);
+        unlink(guard_path);
+        PLOG_W("BATT", "poweroff 守卫安装失败(写入中断)");
+        return;
+    }
+    close(fd);
+    chmod(guard_path, 0755);
+    PLOG_I("BATT", "poweroff 守卫已安装: %s (PATH 优先级拦截)", guard_path);
 }
 
 /* 全局应用上下文 */
@@ -970,6 +1280,10 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
         {
             PLOG_I("PROTO", "TTS 开始");
             app->ignore_tts_audio = 0;
+            /* 新 TTS 段开始: 取消挂起的自动清屏(连续对话场景) */
+            pthread_mutex_lock(&g_subtitle_mutex);
+            g_subtitle_hide_ms = 0;
+            pthread_mutex_unlock(&g_subtitle_mutex);
             xiaozhi_state_t cur = state_machine_get_state(&app->sm);
             if (cur == kStateCleaning)
             {
@@ -997,6 +1311,9 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
                 PLOG_I("PROTO", "TTS 结束 (正常完成)");
                 bool wait_play = (app->listening_mode != LISTENING_MODE_REALTIME);
                 audio_player_stop_with_wait(&app->player, wait_play);
+                /* 打字机兜底完成(末句音频播完后整句必然显示完), 并安排延迟清屏 */
+                subtitle_finish_typing();
+                subtitle_schedule_hide(SUBTITLE_HIDE_MS);
                 xiaozhi_state_t cur_state = state_machine_get_state(&app->sm);
                 if (cur_state != kStateCleaning)
                 {
@@ -1101,6 +1418,8 @@ static void on_proto_json(const char *json, size_t len, void *user_data)
                 app->ignore_tts_audio = 1;
                 app->player.aborted = true;
                 audio_player_stop(&app->player);
+                /* 用户抢话: 旧回复字幕立即清屏, 打字机作废 */
+                subtitle_interrupt();
                 if (protocol_handler_is_connected(&app->proto))
                 {
                     protocol_handler_send_abort(&app->proto, "server_listening");
@@ -1625,6 +1944,17 @@ static void proc_srv_msg(void *req_header_ptr, int *resp_result)
     }
     case MSG_SAIR_AI_STOP:      /* smart_player 播放态(status==4)抢占入口 -- M2 §3/R1 §17.6 */
     {
+        /* 字幕清屏(0x231)触发的 sair_ai_stop 回环: 忽略, 保护 AutoStop 会话;
+         * 真实 smart_player 抢占(窗外到达)正常处理 */
+        uint64_t _now = get_time_ms();
+        if (g_last_end_evt_ms && _now - g_last_end_evt_ms < 800)
+        {
+            PLOG_I("IPC", "MSG_SAIR_AI_STOP: 字幕清屏回环(%llums), 忽略",
+                   (unsigned long long)(_now - g_last_end_evt_ms));
+            if (resp_result)
+                *resp_result = 1;
+            break;
+        }
         g_app.pending_stop_request = 1;   /* 主循环统一收敛(复用 pending_api_abort 模式) */
         if (resp_result)
             *resp_result = 1;
@@ -2600,7 +2930,10 @@ int main(int argc, char *argv[])
     g_app.session_timeout_ms = SESSION_TIMEOUT_MS;
     g_app.wakeup_cooldown_ms = WAKEUP_COOLDOWN_MS;
     g_app.ws_ping_interval_ms = WS_PING_INTERVAL_MS;
-    g_app.listening_mode = LISTENING_MODE_REALTIME;
+    /* 默认 AutoStop(2026-08-29 用户决策): Realtime 依赖的本地 NLMS 回声消除
+     * 效果有限(X14 终论: 原生持续 AEC 输出接口不存在, 软方案已达上限),
+     * Realtime 双讲场景回声残留影响体验; AutoStop 打断走唤醒词更可靠. */
+    g_app.listening_mode = LISTENING_MODE_AUTOSTOP;
     app->precache_enabled = read_precache_enabled();
     PLOG_I("INIT", "音频预缓存: %s", app->precache_enabled ? "已启用" : "已禁用");
     app->transport_mode = read_transport_mode();
@@ -2708,6 +3041,11 @@ int main(int argc, char *argv[])
                     app->listening_mode = LISTENING_MODE_REALTIME;
                     PLOG_I("INIT", "已加载监听模式: realtime");
                 }
+                else if (strcmp(mline, "autostop") == 0)
+                {
+                    app->listening_mode = LISTENING_MODE_AUTOSTOP;
+                    PLOG_I("INIT", "已加载监听模式: autostop");
+                }
             }
             fclose(mfp);
         }
@@ -2789,6 +3127,9 @@ int main(int argc, char *argv[])
         system("/var/upgrade/xwebd -d >/dev/null 2>&1 &");
         PLOG_I("INIT", "xwebd 已由助手拉起 (-d)");
     }
+
+    /* 电池伪低电守卫: 安装 poweroff 拦截脚本(幂等, 详见 battery_guard 注释) */
+    install_poweroff_guard();
 
     ret = register_srv_dispatcher(proc_srv_msg);
     PLOG_I("INIT", "register_srv_dispatcher 返回值=%d", ret);
@@ -2909,6 +3250,12 @@ int main(int argc, char *argv[])
         process_pending_wakeup(app);
         process_pending_key(app, &app->pending_key_exit, "BACK键退出", "user_key_exit");
         process_pending_key(app, &app->pending_key_home, "HOME键", "user_key_home");
+
+        /* 字幕打字机推进 + 自动清屏 */
+        subtitle_typing_tick();
+
+        /* 电池伪低电监控(30s 节流) */
+        battery_guard_tick();
 
         /* 处理API中止请求 */
         if (app->pending_api_abort)

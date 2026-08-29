@@ -201,7 +201,7 @@ void api_server_check_commands(void)
         unlink("/tmp/sair_diag_request");
         PLOG_I(TAG, "收到自检请求，生成诊断文件");
         diag_result_t result = diag_run_all();
-        char buf[4096];
+        char buf[16384];
         int len = diag_result_to_json(&result, buf, sizeof(buf));
         if (len > 0)
         {

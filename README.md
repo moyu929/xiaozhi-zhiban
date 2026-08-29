@@ -492,7 +492,7 @@ cp project_config.example.json project_config.json
 | ws_ping_interval | 25000 | 5000-120000 ms | WebSocket 心跳间隔 |
 | mcp_endpoint | (空) | 任意 URL | MCP 接入点地址（从 xiaozhi.me 控制台获取的智能体专属端点） |
 | transport_mode | 0 | 0=WebSocket, 1=MQTT+UDP | 传输模式（当前仅 WebSocket 可用） |
-| listening_mode | realtime | realtime/autostop | 监听模式（持久化于 /var/upgrade/.listening_mode） |
+| listening_mode | autostop | realtime/autostop | 监听模式（默认 AutoStop，本地 AEC 效果有限时推荐；持久化于 /var/upgrade/.listening_mode） |
 | custom_ws_url | (空) | 任意 URL | 自定义 WebSocket 地址 |
 
 #### 设备侧配置（config.bin，经 MCP 工具修改或直改后重启）
@@ -690,7 +690,7 @@ assistant 通过 WebSocket 连接云端 API 完成设备激活和语音对话。
 
 ## 🔄 关于实时对话模式（Realtime Mode）
 
-支持两种监听模式（`listening_mode`，持久化于 `/var/upgrade/.listening_mode`，默认 realtime）：
+支持两种监听模式（`listening_mode`，持久化于 `/var/upgrade/.listening_mode`，**默认 AutoStop**——Realtime 依赖本地软 AEC，回声残留影响体验，效果改善后可切回）：
 
 - **AutoStop（自动停止）模式** — TTS 播放时停止向云端上传音频，TTS 播放结束后恢复上传；用户可通过唤醒词打断当前播放
 - **Realtime（实时对话）模式** — 播放期间持续上传音频，配合本地 AEC 实现边播边听、随时插话打断

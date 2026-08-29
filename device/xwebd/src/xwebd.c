@@ -2441,7 +2441,7 @@ static int handle_get_assistant_diag(int fd, const char *body, const char *query
         usleep(100000);
         int dfd = open("/tmp/sair_diag.json", O_RDONLY);
         if (dfd >= 0) {
-            char buf[4096] = "";
+            char buf[16384] = "";
             int n = read(dfd, buf, sizeof(buf) - 1);
             close(dfd);
             if (n > 0) {
