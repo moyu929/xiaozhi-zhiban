@@ -53,14 +53,16 @@ void platform_tts_play(int id)
 typedef int (*std_time_fn_t)(int seconds);
 
 /**
- * 关机兜底线程：给原生动画链 8 s 时窗。正常关机会经由 manager 杀死本进程，
- * 该线程根本活不到执行 system()；一旦活着执行到说明优雅链路失效，硬关兜底。
+ * 关机兜底线程：给原生动画链 12s 时窗(1s 定时 + 关机动画 + manager 杀应用)。
+ * 正常关机会经由 manager 杀死本进程，该线程根本活不到执行 system()；
+ * 一旦活着执行到说明优雅链路失效，硬关兜底。时窗不宜过短，否则会
+ * 在动画播放中途 poweroff -f 打断动画(实测教训)。
  */
 static void *shutdown_fallback_thread(void *arg)
 {
     (void)arg;
-    sleep(8);
-    PLOG_W("PW", "优雅关机 8s 未生效, fallback poweroff -f");
+    sleep(12);
+    PLOG_W("PW", "优雅关机 12s 未生效, fallback poweroff -f");
     system("poweroff -f");
     return NULL;
 }
@@ -73,9 +75,12 @@ int platform_power_shutdown_elegant(void)
     if (h)
     {
         dlerror();
-        fn = (std_time_fn_t)dlsym(h, "set_timed_shutdown_time");
+        /* 真实导出名带 systime_ 前缀(dynsym 实证: systime_set_timed_shutdown_time
+         * @0x11b8 → send_srv_msg(0x2c33, sec)); 旧名 set_timed_shutdown_time
+         * 曾致 dlsym 失败走 poweroff -f 黑屏硬关(2026-08-30 实机日志) */
+        fn = (std_time_fn_t)dlsym(h, "systime_set_timed_shutdown_time");
         if (!fn)
-            PLOG_W("PW", "set_timed_shutdown_time 符号缺失: %s", dlerror());
+            PLOG_W("PW", "systime_set_timed_shutdown_time 符号缺失: %s", dlerror());
     }
     else
     {
