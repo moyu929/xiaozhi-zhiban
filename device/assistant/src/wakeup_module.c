@@ -521,8 +521,11 @@ void wakeup_pause_feed(wakeup_module_t *mod)
 {
     if (!mod)
         return;
-    mod->paused = 1;
-    PLOG_D("WAKEUP", "音频输入已暂停");
+    if (!mod->paused)
+    {
+        mod->paused = 1;
+        PLOG_I("WAKEUP", "音频输入已暂停");
+    }
 }
 
 /**
@@ -534,8 +537,11 @@ void wakeup_resume_feed(wakeup_module_t *mod)
 {
     if (!mod)
         return;
-    mod->paused = 0;
-    PLOG_D("WAKEUP", "音频输入已恢复");
+    if (mod->paused)
+    {
+        mod->paused = 0;
+        PLOG_I("WAKEUP", "音频输入已恢复");
+    }
 }
 
 /**

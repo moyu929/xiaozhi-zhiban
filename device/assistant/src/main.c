@@ -3721,6 +3721,16 @@ int main(int argc, char *argv[])
                     }
                 }
             }
+            /* 唤醒feed自愈(2026-08-30): 异常会话(如云端瞬时断开)的状态转换
+             * 竞态可能使 paused 标志未被 resume, 导致 Idle 下唤醒引擎收不到
+             * 音频(实测: 会话结束后唤醒失灵). 主循环周期检查强制恢复,
+             * 无论根因是何种竞态, 下一循环 tick 即自愈 */
+            if (cur_state == kStateIdle && app->wakeup.started &&
+                !wakeup_is_feed_active(&app->wakeup))
+            {
+                wakeup_resume_feed(&app->wakeup);
+                PLOG_W("WAKEUP", "feed 意外未激活, 已自愈恢复");
+            }
         }
 
         /* 检查各类超时 */
