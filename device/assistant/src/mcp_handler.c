@@ -26,6 +26,7 @@
 #include <linux/input.h>
 #include "platform_power.h"
 #include "use_limit.h"
+#include "display_ctrl.h"
 #include <stdlib.h>
 
 /* 动态加载符号的宏，加载失败时输出警告日志 */
@@ -485,6 +486,16 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
         return 0;
     }
 
+    /* 主动息屏: 立即灭屏, 交流不受影响(§八③延伸, 2026-08-30) */
+    if (strcmp(name, "self.screen_off_now") == 0)
+    {
+        int r = display_ctrl_manual_off();
+        snprintf(result, result_size,
+                 r == 0 ? "好的，屏幕已关闭，随时可以聊天" : "屏幕当前已是关闭状态");
+        PLOG_I("MCP", "screen_off_now: ret=%d", r);
+        return 0;
+    }
+
     /* 会话域息屏秒数设置（§八③, 形如 "self.screen_off_set 30"） */
     if (strncmp(name, "self.screen_off_set ", 20) == 0)
     {
@@ -580,7 +591,8 @@ static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json
                  "8.self.poweroff - Power off / shut down, for 关机/关闭/不玩了 requests, native shutdown animation (user only); "
                  "9.self.limit_info - Ask today's usage time (今日已用/上限/剩余); "
                  "10.self.limit_delay N - Extend usage time N minutes when daily limit reached (再延长N分钟); "
-                 "11.self.screen_off_set N - Set screen-off idle seconds (0=off)");
+                 "11.self.screen_off_set N - Set screen-off idle seconds (0=off); "
+                 "12.self.screen_off_now - Turn off screen immediately, voice chat continues");
         return 0;
     }
 
@@ -717,7 +729,7 @@ void mcp_handler_process_message(mcp_handler_t *mcp, const char *json, size_t le
                                  "{\"name\":\"self.reboot\",\"description\":\"Restart the device (reboot). Use ONLY when the user explicitly asks to RESTART/REBOOT (重启/重新启动). NOT for shutting down.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}},"
                                  "{\"name\":\"self.limit_info\",\"description\":\"Query today's device usage time. Use when user asks 今天用了多久/使用时长/还剩多少时间. Returns used minutes, daily limit and remaining minutes in Chinese.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
                                  "{\"name\":\"self.limit_delay\",\"description\":\"Temporarily extend today's usage time by N minutes when the daily limit is locked. ONLY works if the parent enabled this feature in the settings panel (use_limit_delay_tool), otherwise it politely refuses. Use when user says 延长时间/再玩10分钟/继续使用一会儿. Append minutes after the tool name, e.g. self.limit_delay 10.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
-                                 "{\"name\":\"self.poweroff\",\"description\":\"Power off / shut down the device completely with native shutdown animation. Use when the user says 关机/关闭/断电/睡觉/不玩了 (shut down, turn off, power off). This is the correct tool for ending device usage.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}}"
+                                 "{\"name\":\"self.screen_off_now\",\"description\":\"Turn off the display screen immediately while voice conversation continues normally. Use when user says 关屏幕/息屏/把屏幕关掉. The screen wakes on touch.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}",                                 "{\"name\":\"self.poweroff\",\"description\":\"Power off / shut down the device completely with native shutdown animation. Use when the user says 关机/关闭/断电/睡觉/不玩了 (shut down, turn off, power off). This is the correct tool for ending device usage.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"annotations\":{\"audience\":[\"user\"]}}"
                                  "]}}}",
                                  (long long)id);
                 mcp->send_json(json, n, mcp->user_data);

@@ -36,6 +36,13 @@ void display_ctrl_set_session(int active);
 /** 输入事件入口挂钩（触摸/按键）。返回 1=本次输入已被息屏恢复消费（调用方应忽略后续处理） */
 int display_ctrl_notify_input(void);
 
+/** MCP 主动息屏: 立即灭屏, 交流不受影响; 会话结束不自动亮回,
+ * 触摸输入唤醒(display_ctrl_notify_input). 返回0成功 */
+int display_ctrl_manual_off(void);
+
+/** 当前是否息屏态 */
+int display_ctrl_is_off(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -27,6 +27,7 @@ typedef struct {
     volatile int running;
     volatile int session_active;
     volatile int screen_off;
+    volatile int manual_off;    /* MCP 主动息屏: 会话结束不自动亮屏, 输入亮屏 */
     volatile uint64_t last_activity_ms;
     int interval_sec;            /* <=0 = 不息屏 */
     int saved_brightness;
@@ -159,14 +160,40 @@ void display_ctrl_set_session(int active)
     g_dc.session_active = active;
     if (active)
         g_dc.last_activity_ms = now_ms();
-    else if (g_dc.screen_off)
+    else if (g_dc.screen_off && !g_dc.manual_off)
         screen_on_restore("session-end");
+}
+
+int display_ctrl_manual_off(void)
+{
+    /* MCP 主动息屏: 立即灭屏但不影响交流(音频链路无关背光);
+     * 会话结束不自动亮回(手动标志), 触摸输入经 display_ctrl_notify_input 亮屏 */
+    if (!g_dc.screen_off)
+    {
+        screen_off_apply();
+        if (g_dc.screen_off)
+        {
+            g_dc.manual_off = 1;
+            PLOG_I("DISP", "手动息屏(MCP), 触摸可唤醒");
+            return 0;
+        }
+        return -1;
+    }
+    /* 已是息屏(自动/手动)态: 升级为手动标志(会话结束不亮) */
+    g_dc.manual_off = 1;
+    return 0;
+}
+
+int display_ctrl_is_off(void)
+{
+    return g_dc.screen_off;
 }
 
 int display_ctrl_notify_input(void)
 {
     if (g_dc.screen_off)
     {
+        g_dc.manual_off = 0;
         screen_on_restore("input");
         g_dc.last_activity_ms = now_ms();  /* 只点亮，计数重置，吞掉该次输入 */
         return 1;
