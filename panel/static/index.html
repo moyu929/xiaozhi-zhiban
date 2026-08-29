@@ -284,14 +284,7 @@
                 </select>
               </div>
               <div class="form-group">
-                <label class="form-label">传输模式 <span class="form-hint">（WebSocket：当前可用；MQTT+UDP：暂不可用；修改后重启生效）</span></label>
-                <select id="cfgTransportMode" class="select" onchange="updateTransportModeUI()">
-                  <option value="0">WebSocket（默认）</option>
-                  <option value="1">MQTT+UDP</option>
-                </select>
-              </div>
-              <div class="form-group" id="customWsUrlGroup" style="display:none">
-                <label class="form-label">自定义 WS URL <span class="form-hint">（WebSocket模式下使用自定义服务端地址，留空则使用官方地址）</span></label>
+                <label class="form-label">自定义 WS URL <span class="form-hint">（使用自定义服务端地址，留空则使用官方地址）</span></label>
                 <input type="text" id="cfgCustomWsUrl" class="input-text" value="" placeholder="wss://your-server.com/xiaozhi/v1/">
               </div>
               <div style="display:flex;gap:8px;margin-bottom:12px">

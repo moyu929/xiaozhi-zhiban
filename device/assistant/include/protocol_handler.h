@@ -2,8 +2,6 @@
 #define PROTOCOL_HANDLER_H
 
 #include "websocket.h"
-#include "mqtt_client.h"
-#include "udp_audio.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <pthread.h>
@@ -13,8 +11,8 @@
 #define PROTO_SEND_QUEUE_SIZE 32
 #define PROTO_MAX_TIMESTAMPS 8
 
-#define TRANSPORT_MODE_WEBSOCKET 0
-#define TRANSPORT_MODE_MQTT_UDP  1
+/* 2026-08-30: MQTT+UDP 旧传输路线已整体移除(设备实测恒走 WebSocket,
+ * 且 3.3.x 的 MCP/字幕/打断全绑定 WS 路径). OTA 若下发 mqtt 段亦忽略. */
 
 typedef struct {
     uint16_t version;
@@ -54,29 +52,16 @@ typedef struct {
     int channels;
     int frame_duration;
     uint64_t ping_interval_ms;
-
-    int transport_mode;
-    char mqtt_host[128];
-    int mqtt_port;
-    char mqtt_client_id[256];
-    char mqtt_username[512];
-    char mqtt_password[512];
-    int mqtt_keepalive;
-    char mqtt_subscribe_topic[256];
-    char mqtt_publish_topic[256];
 } protocol_config_t;
 
 typedef struct {
     websocket_t ws;
-    mqtt_client_t mqtt;
-    udp_audio_t udp;
     protocol_config_t config;
 
     char session_id[PROTO_MAX_SESSION_ID];
     int server_sample_rate;
     int server_frame_duration;
     int protocol_version;
-    int transport_mode;
     int cloud_aec;       /* 云端AEC: 1=hello声明aec:true(需服务器支持), 0=本地NLMS */
 
     bool connected;

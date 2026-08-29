@@ -293,51 +293,8 @@ int config_manager_check_activation(config_manager_t *cfg)
         }
     }
 
-    const char *mqtt_start = memmem(response.body, response.body_len, "\"mqtt\"", 6);
-    if (mqtt_start)
-    {
-        char mqtt_host[128] = {0};
-        char mqtt_port_str[16] = {0};
-        char mqtt_client_id[256] = {0};
-        char mqtt_username[512] = {0};
-        char mqtt_password[512] = {0};
-        char mqtt_keepalive_str[16] = {0};
-        char mqtt_sub_topic[256] = {0};
-        char mqtt_pub_topic[256] = {0};
-
-        size_t mqtt_len = response.body_len - (mqtt_start - response.body);
-        find_json_str(mqtt_start, mqtt_len, "endpoint", mqtt_host, sizeof(mqtt_host));
-        find_json_str(mqtt_start, mqtt_len, "port", mqtt_port_str, sizeof(mqtt_port_str));
-        find_json_str(mqtt_start, mqtt_len, "client_id", mqtt_client_id, sizeof(mqtt_client_id));
-        find_json_str(mqtt_start, mqtt_len, "username", mqtt_username, sizeof(mqtt_username));
-        find_json_str(mqtt_start, mqtt_len, "password", mqtt_password, sizeof(mqtt_password));
-        find_json_str(mqtt_start, mqtt_len, "keepalive", mqtt_keepalive_str, sizeof(mqtt_keepalive_str));
-        find_json_str(mqtt_start, mqtt_len, "subscribe_topic", mqtt_sub_topic, sizeof(mqtt_sub_topic));
-        find_json_str(mqtt_start, mqtt_len, "publish_topic", mqtt_pub_topic, sizeof(mqtt_pub_topic));
-
-        if (mqtt_host[0] && mqtt_client_id[0])
-        {
-            strncpy(cfg->mqtt_host, mqtt_host, sizeof(cfg->mqtt_host) - 1);
-            cfg->mqtt_port = atoi(mqtt_port_str);
-            if (cfg->mqtt_port <= 0)
-                cfg->mqtt_port = 8883;
-            strncpy(cfg->mqtt_client_id, mqtt_client_id, sizeof(cfg->mqtt_client_id) - 1);
-            strncpy(cfg->mqtt_username, mqtt_username, sizeof(cfg->mqtt_username) - 1);
-            strncpy(cfg->mqtt_password, mqtt_password, sizeof(cfg->mqtt_password) - 1);
-            cfg->mqtt_keepalive = atoi(mqtt_keepalive_str);
-            if (cfg->mqtt_keepalive <= 0)
-                cfg->mqtt_keepalive = 240;
-            if (mqtt_sub_topic[0] && strcmp(mqtt_sub_topic, "null") != 0)
-                strncpy(cfg->mqtt_subscribe_topic, mqtt_sub_topic, sizeof(cfg->mqtt_subscribe_topic) - 1);
-            else
-                cfg->mqtt_subscribe_topic[0] = '\0';
-            strncpy(cfg->mqtt_publish_topic, mqtt_pub_topic, sizeof(cfg->mqtt_publish_topic) - 1);
-            cfg->has_mqtt_config = 1;
-            PLOG_I("CFG", "OTA: MQTT配置已获取, host=%s port=%d sub_topic=%s",
-                   mqtt_host, cfg->mqtt_port,
-                   cfg->mqtt_subscribe_topic[0] ? cfg->mqtt_subscribe_topic : "(none)");
-        }
-    }
+    /* OTA 下发的 "mqtt" 段已忽略: MQTT+UDP 传输路线于 2026-08-30 移除,
+     * 设备恒走 WebSocket(见 protocol_handler.h 注释) */
 
     const char *act_start = memmem(response.body, response.body_len, "\"activation\"", 12);
     if (act_start)

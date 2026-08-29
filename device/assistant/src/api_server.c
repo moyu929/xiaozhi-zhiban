@@ -137,7 +137,7 @@ void api_server_write_config(void)
         "\"listen_timeout\":%llu,\"session_timeout\":%llu,"
         "\"wakeup_cooldown\":%llu,\"ws_ping_interval\":%llu,"
         "\"mcp_endpoint\":\"%s\",\"listening_mode\":\"%s\",\"aec_mode\":\"%s\","
-        "\"boot_push_disable\":%d,\"transport_mode\":%d,"
+        "\"boot_push_disable\":%d,"
         "\"use_limit\":{\"enable\":%d,\"minutes\":%d,\"spent_sec\":%ld,"
         "\"remain_sec\":%ld,\"locked\":%d,\"delay_until\":%ld,\"delay_tool\":%d,"
         "\"sched\":{\"enable\":%d,\"days\":%d,\"span1\":\"%s\",\"span2\":\"%s\",\"in_span\":%d}}}\n",
@@ -154,7 +154,6 @@ void api_server_write_config(void)
         g_app.listening_mode == LISTENING_MODE_REALTIME ? "realtime" : "autostop",
         g_app.aec_mode ? "cloud" : "local",
         boot_push_disable_enabled(),
-        g_app.transport_mode,
         use_limit_get_enable(),
         use_limit_get_minutes(),
         use_limit_spent_sec(),
@@ -499,19 +498,6 @@ void api_server_check_commands(void)
                     }
                 }
                 (void)sen;
-            }
-        }
-        {
-            int val = 0;
-            if (parse_json_int(buf, "transport_mode", &val) == 0 && val >= 0 && val <= 1)
-            {
-                if (val != g_app.transport_mode)
-                {
-                    PLOG_I(TAG, "transport_mode 变更: %d -> %d", g_app.transport_mode, val);
-                    g_app.transport_mode = val;
-                    g_app.pending_api_transport_change = 1;
-                    api_server_write_config();
-                }
             }
         }
     }

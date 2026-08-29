@@ -417,7 +417,7 @@ static void subtitle_typing_tick(void)
  *     - 调用者经溯源是 msg_server 且电压>=3.40V → 拦截
  *     - 调用者是 manager 且伪低电标记在 且电压>=3.40V → 拦截(删标记,
  *       一次性, 用户主动关机第二次即成功)
- *     - 其余(用户按键/xwebd/mqtt远程/真低电)放行
+ *     - 其余(用户按键/xwebd远程/真低电)放行
  * 真低电(<3.40V)永远放行, 保护电池不过放. 拦截记录:
  * /var/upgrade/poweroff_guard.log */
 #define BATT_GUARD_VOLT_UV 3400000
@@ -812,38 +812,6 @@ static int read_precache_enabled(void)
     if (p)
         return atoi(p + 9);
     return 0;
-}
-
-static int read_transport_mode(void)
-{
-    char buf[512];
-    int fd = open("/var/upgrade/xwebd_persist.conf", O_RDONLY);
-    if (fd < 0)
-    {
-        PLOG_W("INIT", "无法读取persist文件(errno=%d), 默认WebSocket", errno);
-        return TRANSPORT_MODE_WEBSOCKET;
-    }
-    int n = read(fd, buf, sizeof(buf) - 1);
-    close(fd);
-    if (n <= 0)
-    {
-        PLOG_W("INIT", "persist文件为空, 默认WebSocket");
-        return TRANSPORT_MODE_WEBSOCKET;
-    }
-    buf[n] = '\0';
-    char *p = strstr(buf, "transport_mode=");
-    if (p)
-    {
-        int v = atoi(p + 15);
-        PLOG_I("INIT", "persist中transport_mode=%d", v);
-        if (v >= 0 && v <= 1)
-            return v;
-    }
-    else
-    {
-        PLOG_W("INIT", "persist中未找到transport_mode, 默认WebSocket");
-    }
-    return TRANSPORT_MODE_WEBSOCKET;
 }
 
 static void read_custom_ws_url(char *out, int out_size)
@@ -1850,7 +1818,7 @@ static void *ota_thread_func(void *arg)
     while (retries < 3 && g_running)
     {
         config_manager_check_activation(&app->config);
-        if (app->config.has_ws_config || app->config.has_mqtt_config)
+        if (app->config.has_ws_config)
         {
             app->ota_config_received = 1;
             break;
@@ -1859,36 +1827,14 @@ static void *ota_thread_func(void *arg)
         sleep(10);
     }
 
-    /* 根据OTA响应自适应调整传输模式
-     * 官方OTA同时返回MQTT和WebSocket配置
-     * 优先使用MQTT+UDP：官方服务器主要通过MQTT网关提供服务
-     * 仅在MQTT配置不可用时回退到WebSocket */
-    PLOG_I("OTA", "OTA自适应: transport_mode=%d has_mqtt=%d has_ws=%d",
-            app->transport_mode, app->config.has_mqtt_config, app->config.has_ws_config);
-    if (app->transport_mode == TRANSPORT_MODE_WEBSOCKET && app->config.has_mqtt_config)
-    {
-        if (!app->config.has_ws_config)
-        {
-            PLOG_I("OTA", "用户选择WebSocket但无WS配置, 使用MQTT+UDP");
-            app->transport_mode = TRANSPORT_MODE_MQTT_UDP;
-        }
-    }
-    else if (app->transport_mode == TRANSPORT_MODE_MQTT_UDP && !app->config.has_mqtt_config && app->config.has_ws_config)
-    {
-        PLOG_W("OTA", "OTA未返回MQTT配置但有WebSocket配置, 自动切换到WebSocket模式");
-        app->transport_mode = TRANSPORT_MODE_WEBSOCKET;
-    }
-    else if (app->transport_mode == TRANSPORT_MODE_MQTT_UDP && !app->config.has_mqtt_config && !app->config.has_ws_config)
-    {
-        PLOG_E("OTA", "OTA未返回任何传输配置!");
-    }
+    /* 2026-08-30: MQTT+UDP 传输路线已移除, OTA 下发的 mqtt 段在 config_manager
+     * 层直接忽略, 不再自适应切换传输模式(原切换会把设备带入 MCP/字幕/打断
+     * 全不可用的半残形态) */
 
     if (app->ota_config_received)
     {
-        PLOG_I("OTA", "已获取配置: ws_url=%s mqtt=%s transport=%s",
-               app->config.ws_url,
-               app->config.has_mqtt_config ? app->config.mqtt_host : "无",
-               app->transport_mode == TRANSPORT_MODE_MQTT_UDP ? "MQTT+UDP" : "WebSocket");
+        PLOG_I("OTA", "已获取配置: ws_url=%s",
+               app->config.ws_url);
     }
 
     app->ota_done = 1;
@@ -1933,43 +1879,9 @@ static void *connect_thread_func(void *arg)
     protocol_config_t proto_config;
     memset(&proto_config, 0, sizeof(proto_config));
 
-    /* 安全回退：优先MQTT+UDP，WebSocket作为备选 */
-    int effective_transport = app->transport_mode;
-    if (effective_transport == TRANSPORT_MODE_WEBSOCKET && app->config.has_mqtt_config)
-    {
-        if (app->config.has_ws_config)
-        {
-            PLOG_I("CONN", "用户选择WebSocket模式(有WS配置可用)");
-        }
-        else
-        {
-            PLOG_I("CONN", "MQTT+UDP配置可用但无WS配置, 使用MQTT+UDP");
-            effective_transport = TRANSPORT_MODE_MQTT_UDP;
-        }
-    }
-    else if (effective_transport == TRANSPORT_MODE_MQTT_UDP && !app->config.has_mqtt_config && app->config.has_ws_config)
-    {
-        PLOG_W("CONN", "MQTT配置不可用, 回退到WebSocket模式");
-        effective_transport = TRANSPORT_MODE_WEBSOCKET;
-    }
-    proto_config.transport_mode = effective_transport;
-
-    PLOG_I("CONN", "传输模式: %s (配置: mqtt=%s ws=%s)",
-           effective_transport == TRANSPORT_MODE_MQTT_UDP ? "MQTT+UDP" : "WebSocket",
-           app->config.has_mqtt_config ? "有" : "无",
+    /* 2026-08-30: MQTT+UDP 路线已移除, 恒走 WebSocket */
+    PLOG_I("CONN", "传输模式: WebSocket (配置: ws=%s)",
            app->config.has_ws_config ? "有" : "无");
-
-    if (effective_transport == TRANSPORT_MODE_MQTT_UDP && app->config.has_mqtt_config)
-    {
-        strncpy(proto_config.mqtt_host, app->config.mqtt_host, sizeof(proto_config.mqtt_host) - 1);
-        proto_config.mqtt_port = app->config.mqtt_port;
-        strncpy(proto_config.mqtt_client_id, app->config.mqtt_client_id, sizeof(proto_config.mqtt_client_id) - 1);
-        strncpy(proto_config.mqtt_username, app->config.mqtt_username, sizeof(proto_config.mqtt_username) - 1);
-        strncpy(proto_config.mqtt_password, app->config.mqtt_password, sizeof(proto_config.mqtt_password) - 1);
-        proto_config.mqtt_keepalive = app->config.mqtt_keepalive;
-        strncpy(proto_config.mqtt_subscribe_topic, app->config.mqtt_subscribe_topic, sizeof(proto_config.mqtt_subscribe_topic) - 1);
-        strncpy(proto_config.mqtt_publish_topic, app->config.mqtt_publish_topic, sizeof(proto_config.mqtt_publish_topic) - 1);
-    }
 
     if (app->custom_ws_url[0])
         strncpy(proto_config.url, app->custom_ws_url, sizeof(proto_config.url) - 1);
@@ -3208,8 +3120,6 @@ int main(int argc, char *argv[])
     g_app.listening_mode = LISTENING_MODE_AUTOSTOP;
     app->precache_enabled = read_precache_enabled();
     PLOG_I("INIT", "音频预缓存: %s", app->precache_enabled ? "已启用" : "已禁用");
-    app->transport_mode = read_transport_mode();
-    PLOG_I("INIT", "传输模式: %s", app->transport_mode == TRANSPORT_MODE_MQTT_UDP ? "MQTT+UDP" : "WebSocket");
     read_custom_ws_url(app->custom_ws_url, sizeof(app->custom_ws_url));
     if (app->custom_ws_url[0])
         PLOG_I("INIT", "自定义WS URL: %s", app->custom_ws_url);
@@ -3656,23 +3566,6 @@ int main(int argc, char *argv[])
             {
                 app->pending_wakeup = 1;
                 app->pending_wakeup_type = 0;
-            }
-        }
-
-        /* 处理传输模式变更 */
-        if (app->pending_api_transport_change)
-        {
-            app->pending_api_transport_change = 0;
-            PLOG_I("API", "传输模式已变更为 %s, 断开当前连接",
-                   app->transport_mode == TRANSPORT_MODE_MQTT_UDP ? "MQTT+UDP" : "WebSocket");
-            xiaozhi_state_t cur = state_machine_get_state(&app->sm);
-            if (cur == kStateListening || cur == kStateSpeaking || cur == kStateConnecting)
-            {
-                state_machine_transition(&app->sm, kStateCleaning);
-            }
-            else if (app->proto_initialized && protocol_handler_is_connected(&app->proto))
-            {
-                protocol_handler_disconnect(&app->proto);
             }
         }
 

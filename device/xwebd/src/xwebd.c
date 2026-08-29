@@ -82,7 +82,6 @@ static int g_persist_usb_lun = -1;
 static int g_persist_telnet = -1;
 static int g_persist_led = -1;
 static int g_persist_precache = 0;
-static int g_persist_transport_mode = 0;
 static char g_persist_custom_ws_url[512] = "";
 
 static int g_plog_fd = -1;
@@ -964,7 +963,6 @@ static int handle_get_services(int fd, const char *body, const char *query) {
         "\"usb_lun\":{\"enabled\":%s},"
         "\"led\":{\"enabled\":%s},"
         "\"audio_precache\":{\"enabled\":%s},"
-        "\"transport_mode\":%d,"
         "\"custom_ws_url\":\"%s\","
         "\"key_backlight\":{\"enabled\":%s}}",
         telnet_running ? "true" : "false",
@@ -974,7 +972,6 @@ static int handle_get_services(int fd, const char *body, const char *query) {
         usb_lun_enabled ? "true" : "false",
         led_enabled ? "true" : "false",
         precache_enabled ? "true" : "false",
-        g_persist_transport_mode,
         esc_ws_url,
         key_backlight_enabled == -1 ? "null" : (key_backlight_enabled ? "true" : "false"));
     return send_response(fd, 200, "application/json", buf, len);
@@ -1259,12 +1256,11 @@ static int handle_put_backlight(int fd, const char *body, const char *query) {
 
 static void save_persist_conf(void) {
     char buf[1024];
-    int len = snprintf(buf, sizeof(buf), "usb_lun=%d\ntelnet=%d\nled=%d\nprecache=%d\ntransport_mode=%d\ncustom_ws_url=%s\nbl_enable=%d\nbl_value=%d\n",
+    int len = snprintf(buf, sizeof(buf), "usb_lun=%d\ntelnet=%d\nled=%d\nprecache=%d\ncustom_ws_url=%s\nbl_enable=%d\nbl_value=%d\n",
                        g_persist_usb_lun >= 0 ? g_persist_usb_lun : 0,
                        g_persist_telnet >= 0 ? g_persist_telnet : 1,
                        g_persist_led >= 0 ? g_persist_led : 1,
                        g_persist_precache,
-                       g_persist_transport_mode,
                        g_persist_custom_ws_url,
                        g_persist_bl_enable,
                        g_persist_bl_value);
@@ -1301,8 +1297,7 @@ static void load_persist_conf(void) {
     if (p) g_persist_led = atoi(p + 4);
     p = strstr(buf, "precache=");
     if (p) g_persist_precache = atoi(p + 9);
-    p = strstr(buf, "transport_mode=");
-    if (p) { int v = atoi(p + 15); if (v >= 0 && v <= 1) g_persist_transport_mode = v; }
+    /* transport_mode 键已废弃(2026-08-30 移除 MQTT+UDP 路线), 旧文件的孤儿行忽略 */
     p = strstr(buf, "bl_enable=");
     if (p && p[11] != '\0') { g_persist_bl_enable = atoi(p + 11); }
     p = strstr(buf, "bl_value=");
@@ -1316,8 +1311,8 @@ static void load_persist_conf(void) {
             g_persist_custom_ws_url[i++] = *p++;
         g_persist_custom_ws_url[i] = '\0';
     }
-    XLOG_I(TAG, "持久化配置已加载: usb_lun=%d, telnet=%d, led=%d, precache=%d, transport_mode=%d, custom_ws_url=%s",
-           g_persist_usb_lun, g_persist_telnet, g_persist_led, g_persist_precache, g_persist_transport_mode, g_persist_custom_ws_url);
+    XLOG_I(TAG, "持久化配置已加载: usb_lun=%d, telnet=%d, led=%d, precache=%d, custom_ws_url=%s",
+           g_persist_usb_lun, g_persist_telnet, g_persist_led, g_persist_precache, g_persist_custom_ws_url);
 }
 
 static void apply_persist_conf(void) {
@@ -1438,19 +1433,6 @@ static int handle_post_service_toggle(int fd, const char *body, const char *quer
         g_persist_precache = enable;
         save_persist_conf();
         XLOG_I(TAG, "音频预缓存: %s", enable ? "enabled" : "disabled");
-    } else if (strcmp(service, "transport_mode") == 0) {
-        int mode = enable;
-        parse_json_int(body, "value", &mode);
-        if (mode < 0 || mode > 1) return send_error(fd, 400, "transport_mode must be 0 (websocket) or 1 (mqtt+udp)");
-        g_persist_transport_mode = mode;
-        save_persist_conf();
-        XLOG_I(TAG, "传输模式: %s", mode == 1 ? "MQTT+UDP" : "WebSocket");
-        {
-            char cmd[64];
-            snprintf(cmd, sizeof(cmd), "{\"cmd\":\"set_config\",\"transport_mode\":%d}", mode);
-            send_sair_cmd(cmd, strlen(cmd));
-            signal_sair("传输模式变更");
-        }
     } else if (strcmp(service, "custom_ws_url") == 0) {
         char url[512] = {0};
         const char *url_key = strstr(body, "\"value\"");
@@ -2052,9 +2034,9 @@ static int handle_get_assistant_status(int fd, const char *body, const char *que
 
     char buf[4096];
     snprintf(buf, sizeof(buf),
-        "{\"installed\":%s,\"running\":%s,\"native_running\":%s,\"pid\":%d,\"native_backup_exists\":%s,\"state\":\"%s\",\"version\":\"%s\",\"activation_code\":\"%s\",\"activated\":%s,\"ws_url\":\"%s\",\"ws_token\":\"%s\",\"log_level\":\"%s\",\"transport_mode\":%d}",
+        "{\"installed\":%s,\"running\":%s,\"native_running\":%s,\"pid\":%d,\"native_backup_exists\":%s,\"state\":\"%s\",\"version\":\"%s\",\"activation_code\":\"%s\",\"activated\":%s,\"ws_url\":\"%s\",\"ws_token\":\"%s\",\"log_level\":\"%s\"}",
         installed ? "true" : "false", running ? "true" : "false", native_running ? "true" : "false", pid,
-        backup_exists ? "true" : "false", esc_state, esc_version, esc_activation, activated ? "true" : "false", esc_ws_url, esc_ws_token, esc_log_level, g_persist_transport_mode);
+        backup_exists ? "true" : "false", esc_state, esc_version, esc_activation, activated ? "true" : "false", esc_ws_url, esc_ws_token, esc_log_level);
     return send_json(fd, 200, buf);
 }
 
@@ -2206,9 +2188,8 @@ static int handle_post_assistant_uninstall(int fd, const char *body, const char 
         }
     }
 
-    g_persist_transport_mode = 0;
     save_persist_conf();
-    XLOG_I(TAG, "助手卸载: 传输模式已重置为WebSocket");
+    XLOG_I(TAG, "助手卸载: 持久化配置已重置");
 
     return 0;
 }
@@ -2388,14 +2369,6 @@ static int handle_put_assistant_config(int fd, const char *body, const char *que
     if (cmd_len >= (int)sizeof(cmd_json))
         return send_error(fd, 400, "Config too large");
 
-    {
-        int tmode = -1;
-        if (parse_json_int(body, "transport_mode", &tmode) == 0 && tmode >= 0 && tmode <= 1) {
-            g_persist_transport_mode = tmode;
-            save_persist_conf();
-            XLOG_I(TAG, "传输模式(随助手配置): %s", tmode == 1 ? "MQTT+UDP" : "WebSocket");
-        }
-    }
     {
         char ws_url[512] = {0};
         if (parse_json_str(body, "custom_ws_url", ws_url, sizeof(ws_url)) == 0) {

@@ -12,15 +12,7 @@ typedef struct {
     char ws_token[512];
     char activation_code[64];
     char mcp_endpoint[512];
-    char mqtt_host[128];
-    int mqtt_port;
-    char mqtt_client_id[256];
-    char mqtt_username[512];
-    char mqtt_password[512];
-    int mqtt_keepalive;
-    char mqtt_subscribe_topic[256];
-    char mqtt_publish_topic[256];
-    int has_mqtt_config;
+    /* MQTT+UDP 传输路线已于 2026-08-30 移除, OTA 下发的 mqtt 段直接忽略 */
     int has_ws_config;
     int needs_activation;
     int ws_protocol_version;

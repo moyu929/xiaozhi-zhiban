@@ -82,7 +82,6 @@ typedef struct app_context_t {
     volatile int pending_api_abort;
     volatile int pending_api_activate;
     volatile int pending_api_config;
-    volatile int pending_api_transport_change;
     char pending_config_buf[256];
 
     uint64_t listen_timeout_ms;
@@ -94,7 +93,6 @@ typedef struct app_context_t {
     int listening_mode;
     int aec_mode;          /* AEC方案: 0=本地NLMS(默认) 1=云端(timestamp配对) */
     int precache_enabled;
-    int transport_mode;
     char custom_ws_url[512];
 } app_context_t;
 

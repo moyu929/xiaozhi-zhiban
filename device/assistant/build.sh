@@ -88,11 +88,7 @@ $CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/http_client.c" -o "$BUILD_DIR/http_clien
 echo "[11/20] Compiling websocket.o"
 $CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/websocket.c" -o "$BUILD_DIR/websocket.o"
 
-echo "[12/20] Compiling mqtt_client.o"
-$CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/mqtt_client.c" -o "$BUILD_DIR/mqtt_client.o"
 
-echo "[13/20] Compiling udp_audio.o"
-$CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/udp_audio.c" -o "$BUILD_DIR/udp_audio.o"
 
 echo "[14/20] Compiling protocol_handler.o"
 $CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/protocol_handler.c" -o "$BUILD_DIR/protocol_handler.o"
@@ -141,8 +137,6 @@ $CC --sysroot=$SYSROOT \
     $BUILD_DIR/tls_transport.o \
     $BUILD_DIR/http_client.o \
     $BUILD_DIR/websocket.o \
-    $BUILD_DIR/mqtt_client.o \
-    $BUILD_DIR/udp_audio.o \
     $BUILD_DIR/protocol_handler.o \
     $BUILD_DIR/audio_player.o \
     $BUILD_DIR/audio_recorder.o \

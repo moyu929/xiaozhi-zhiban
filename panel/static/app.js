@@ -846,9 +846,7 @@ function resetWirelessUI() {
     $('cfgMcpEndpoint').value = '';
     $('cfgSairLogLevel').value = '';
     $('cfgListeningMode').value = 'realtime';
-    $('cfgTransportMode').value = '0';
     $('cfgCustomWsUrl').value = '';
-    updateTransportModeUI();
     $('cfgListenTimeout').value = '';
     $('cfgSessionTimeout').value = '';
     $('cfgWakeupCooldown').value = '';
@@ -1140,23 +1138,6 @@ async function toggleService(service, enable) {
     }
 }
 
-async function setTransportMode(mode) {
-    if (!S.wl.connected) return;
-    var r = await api('/api/services/toggle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service: 'transport_mode', action: 'enable', value: mode }),
-    });
-    if (r.ok) {
-        toast('传输模式已设置为 ' + (mode === 1 ? 'MQTT+UDP' : 'WebSocket'), 'success');
-        await new Promise(function(resolve) { setTimeout(resolve, 500); });
-        await refreshServices();
-    } else {
-        toast('设置失败: ' + (r.error || ''), 'error');
-        await refreshServices();
-    }
-}
-
 async function setCustomWsUrl(url) {
     if (!S.wl.connected) return;
     var r = await api('/api/services/toggle', {
@@ -1172,12 +1153,6 @@ async function setCustomWsUrl(url) {
         toast('设置失败: ' + (r.error || ''), 'error');
         await refreshServices();
     }
-}
-
-function updateTransportModeUI() {
-    var mode = parseInt($('cfgTransportMode').value);
-    var urlGroup = $('customWsUrlGroup');
-    if (urlGroup) urlGroup.style.display = (mode === 0) ? '' : 'none';
 }
 
 async function refreshServicesWithFlash() {
@@ -1379,11 +1354,7 @@ async function refreshConfig() {
     var r3 = await api('/api/services');
     if (!r3.error) {
         var sd = r3.data || r3;
-        if (sd.transport_mode != null) {
-            $('cfgTransportMode').value = sd.transport_mode;
-        }
         if (sd.custom_ws_url !== undefined) $('cfgCustomWsUrl').value = sd.custom_ws_url;
-        updateTransportModeUI();
     }
 }
 
@@ -1489,8 +1460,6 @@ async function saveAssistantConfig() {
     if (sessionTimeout > 0) config.session_timeout = sessionTimeout * 1000;
     if (wakeupCooldown > 0) config.wakeup_cooldown = wakeupCooldown * 1000;
     if (wsPingInterval > 0) config.ws_ping_interval = wsPingInterval * 1000;
-    var transportMode = parseInt($('cfgTransportMode').value);
-    if (transportMode >= 0 && transportMode <= 1) config.transport_mode = transportMode;
     var customWsUrl = $('cfgCustomWsUrl').value.trim();
     config.custom_ws_url = customWsUrl;
     var r = await api('/api/assistant/config', {
@@ -1529,7 +1498,6 @@ async function restoreAssistantDefaults() {
     $('cfgSessionTimeout').value = '300';
     $('cfgWakeupCooldown').value = '3';
     $('cfgWsPingInterval').value = '25';
-    $('cfgTransportMode').value = '0';
     $('cfgCustomWsUrl').value = '';
     var r = await api('/api/assistant/config', {
         method: 'PUT',
@@ -1543,7 +1511,6 @@ async function restoreAssistantDefaults() {
             session_timeout: 300000,
             wakeup_cooldown: 3000,
             ws_ping_interval: 25000,
-            transport_mode: 0,
             custom_ws_url: ''
         }),
     });
