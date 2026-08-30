@@ -963,6 +963,7 @@ function refreshAll() {
     refreshAssistantStatus();
     refreshXwebdStatus();
     refreshServices();
+    refreshPlugins();
     refreshProcesses();
     refreshFiles();
     refreshLogPanel('panel', false);
@@ -1120,6 +1121,11 @@ async function refreshServices() {
     $('svcList').innerHTML = html;
 }
 
+async function refreshServicesAndPlugins() {
+    await refreshServices();
+    await refreshPlugins();
+}
+
 async function toggleService(service, enable) {
     if (!S.wl.connected) return;
     var action = enable ? 'enable' : 'disable';
@@ -1153,6 +1159,94 @@ async function setCustomWsUrl(url) {
         toast('设置失败: ' + (r.error || ''), 'error');
         await refreshServices();
     }
+}
+
+// ==================== Plugins (B0 插件框架) ====================
+
+async function refreshPlugins() {
+    if (!S.wl.connected) return;
+    var r = await api('/api/plugins');
+    if (r.error) return;
+    var d = r.data || r;
+    var plugs = (d.plugins || []);
+    var html = '';
+    if (!plugs.length) {
+        html = '<div class="empty-state">暂无插件，点击右上角「安装插件」</div>';
+    } else {
+        plugs.forEach(function(p) {
+            var status = p.disabled ? '<span class="svc-status svc-off">已停用</span>'
+                : (p.online ? '<span class="svc-status svc-on">运行中</span>'
+                            : '<span class="svc-status svc-off">离线</span>');
+            html += '<div class="svc-item">';
+            html += '<span class="svc-name">' + p.name + '</span>';
+            html += status;
+            if (p.mem_kb) html += '<span class="svc-hint">' + p.mem_kb + 'KB</span>';
+            if (p.restarts) html += '<span class="svc-hint">重启' + p.restarts + '次</span>';
+            html += '<span class="svc-hint">pid ' + (p.pid || '--') + '</span>';
+            html += '<button class="btn btn-ghost btn-sm" onclick="pluginRestart(\' + p.name + \')">重启</button>';
+            html += '<button class="btn btn-danger btn-outline btn-sm" onclick="pluginRemove(\' + p.name + \')">卸载</button>';
+            html += '</div>';
+        });
+    }
+    $('plugList').innerHTML = html;
+}
+
+async function pluginRestart(name) {
+    if (!S.wl.connected) return;
+    var r = await api('/api/plugins/restart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name }),
+    });
+    if (r.ok || !r.error) { toast('插件 ' + name + ' 已重启', 'success'); }
+    else toast('重启失败: ' + (r.error || ''), 'error');
+    await new Promise(function(resolve) { setTimeout(resolve, 800); });
+    await refreshPlugins();
+}
+
+async function pluginRemove(name) {
+    if (!S.wl.connected) return;
+    showConfirm('确定卸载插件 ' + name + '？', {
+        danger: true,
+        onOk: async function() {
+            var r = await api('/api/plugins/remove', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name }),
+            });
+            if (r.ok || !r.error) { toast('插件 ' + name + ' 已卸载', 'success'); }
+            else toast('卸载失败: ' + (r.error || ''), 'error');
+            await refreshPlugins();
+        },
+    });
+}
+
+async function showPluginInstall() {
+    if (!S.wl.connected) { toast('请先连接设备', 'error'); return; }
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.onchange = async function() {
+        if (!input.files.length) return;
+        var file = input.files[0];
+        var m = file.name.match(/^xwplug-([\w-]+)$/);
+        if (!m) { toast('文件名须为 xwplug-<名称> 形式', 'error'); return; }
+        var name = m[1];
+        toast('上传插件 ' + name + ' 中...', 'info');
+        try {
+            var up = await fetch('/api/files/upload?path=' + encodeURIComponent('/var/upgrade/plugins'),
+                                  { method: 'POST', body: file });
+            var upData = await up.json();
+            if (!upData.ok) { toast('上传失败: ' + (upData.error || ''), 'error'); return; }
+            var r = await api('/api/plugins/install', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name, path: '/var/upgrade/plugins/' + file.name }),
+            });
+            if (r.ok || !r.error) { toast('插件 ' + name + ' 已安装', 'success'); await refreshPlugins(); }
+            else toast('安装失败: ' + (r.error || ''), 'error');
+        } catch (e) { toast('安装失败: ' + e.message, 'error'); }
+    };
+    input.click();
 }
 
 async function refreshServicesWithFlash() {

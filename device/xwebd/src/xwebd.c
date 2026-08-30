@@ -14,6 +14,7 @@
  * 注意: sair是Assistant(助手)的二进制文件名，受平台约束不可改名
  */
 #include "xwebd_config.h"
+#include "plugin_gateway.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -216,11 +217,12 @@ static void xlog_vwrite(int level, const char *tag, const char *fmt, va_list ap)
     pthread_mutex_unlock(&g_plog_mutex);
 }
 
-static void xlog_write(int level, const char *tag, const char *fmt, ...) {
+int xlog_write(int level, const char *tag, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     xlog_vwrite(level, tag, fmt, ap);
     va_end(ap);
+    return 0;
 }
 
 /* ===== CPU增量采样(无需线程) ===== */
@@ -368,7 +370,7 @@ static int send_led_cmd(int enable) {
 
 /* ===== HTTP工具函数 ===== */
 
-static int send_response(int fd, int status, const char *content_type, const char *body, int body_len) {
+int send_response(int fd, int status, const char *content_type, const char *body, int body_len) {
     const char *status_text;
     switch (status) {
         case 200: status_text = "OK"; break;
@@ -394,11 +396,11 @@ static int send_response(int fd, int status, const char *content_type, const cha
     return 0;
 }
 
-static int send_json(int fd, int status, const char *json) {
+int send_json(int fd, int status, const char *json) {
     return send_response(fd, status, "application/json", json, strlen(json));
 }
 
-static int send_error(int fd, int code, const char *message) {
+int send_error(int fd, int code, const char *message) {
     char buf[256];
     snprintf(buf, sizeof(buf), "{\"error\":\"%s\"}", message);
     return send_json(fd, code, buf);
@@ -2497,6 +2499,11 @@ static const route_t g_routes[] = {
     {"POST",   "/api/assistant/uninstall",   handle_post_assistant_uninstall},
     {"POST",   "/api/assistant/logs/clear",  handle_post_assistant_logs_clear},
     {"POST",   "/api/self-update",           handle_post_self_update},
+    /* 插件管理(B0 框架, 见 plugin_gateway.c) */
+    {"GET",    "/api/plugins",              xwplug_handle_list},
+    {"POST",   "/api/plugins/restart",      xwplug_handle_restart},
+    {"POST",   "/api/plugins/remove",       xwplug_handle_remove},
+    {"POST",   "/api/plugins/install",      xwplug_handle_install},
     {"GET",    "/api/backlight",             handle_get_backlight},
     {"PUT",    "/api/backlight",             handle_put_backlight},
     {NULL, NULL, NULL}
@@ -2885,6 +2892,10 @@ static int handle_request(int client_fd) {
             return g_routes[i].handler(client_fd, body, query);
     }
 
+    /* 插件转发: /api/plugin/<name>/<sub...> (精确路由优先, 故插件不会遮蔽内置端点) */
+    if (strncmp(path, "/api/plugin/", 12) == 0)
+        return xwplug_forward(client_fd, method, path + 12, query, body, body_received);
+
     /* CORS预检 */
     if (strcmp(method, "OPTIONS") == 0)
         return send_json(client_fd, 200, "{}");
@@ -2920,6 +2931,7 @@ static void worker_loop(void) {
     load_persist_conf();
     apply_backlight_from_persist();
     apply_persist_conf();
+    xwplug_init();
 
     g_server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (g_server_fd < 0) {
@@ -2953,6 +2965,7 @@ static void worker_loop(void) {
 
     while (g_running) {
         while (waitpid(-1, NULL, WNOHANG) > 0) {}
+        xwplug_tick();
 
         if (g_led_pending_value >= 0 && time(NULL) >= g_led_retry_time) {
             if (send_led_cmd(g_led_pending_value) == 0) {
@@ -2992,6 +3005,7 @@ static void worker_loop(void) {
     }
 
     close(g_server_fd);
+    xwplug_shutdown();
     xlog_close();
     XLOG_I(TAG, "xwebd工作进程退出 (g_running=%d)", g_running);
 }

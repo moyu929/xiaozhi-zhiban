@@ -304,6 +304,30 @@ def _api_services_toggle(handler, xwebd, body, query):
     return xwebd._request("POST", "/api/services/toggle", data=body)
 
 
+@_api_route("GET", "/api/plugins")
+@_requires_xwebd
+def _api_plugins(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/plugins")
+
+
+@_api_route("POST", "/api/plugins/restart")
+@_requires_xwebd
+def _api_plugins_restart(handler, xwebd, body, query):
+    return xwebd._request("POST", "/api/plugins/restart", data=body)
+
+
+@_api_route("POST", "/api/plugins/remove")
+@_requires_xwebd
+def _api_plugins_remove(handler, xwebd, body, query):
+    return xwebd._request("POST", "/api/plugins/remove", data=body)
+
+
+@_api_route("POST", "/api/plugins/install")
+@_requires_xwebd
+def _api_plugins_install(handler, xwebd, body, query):
+    return xwebd._request("POST", "/api/plugins/install", data=body)
+
+
 @_api_route("GET", "/api/panel/logs/stream")
 def _api_panel_logs_stream(handler, xwebd, body, query):
     handler.send_response(200)

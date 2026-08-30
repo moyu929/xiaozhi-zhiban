@@ -39,8 +39,11 @@ echo "=== Building xwebd ==="
 echo "CC: $CC"
 echo "SYSROOT: $SYSROOT"
 
-echo "[1/1] Compiling xwebd"
+echo "[1/2] Compiling xwebd"
 $CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/xwebd.c" -o "$BUILD_DIR/xwebd.o"
+
+echo "[2/2] Compiling plugin_gateway"
+$CC $COMMON_CFLAGS -c "$PROJECT_DIR/src/plugin_gateway.c" -o "$BUILD_DIR/plugin_gateway.o"
 
 echo "Linking xwebd"
 $CC --sysroot=$SYSROOT \
@@ -48,7 +51,7 @@ $CC --sysroot=$SYSROOT \
     -mfloat-abi=soft \
     -no-pie \
     $BUILD_DIR/xwebd.o \
-    -L$SYSROOT/usr/lib \
+    $BUILD_DIR/plugin_gateway.o \
     -lpthread -lrt -lm \
     -o "$BUILD_DIR/xwebd"
 

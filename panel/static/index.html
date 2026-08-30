@@ -233,6 +233,12 @@
             </div>
             <div class="section-overlay" id="serviceOverlay" style="display:none"><div class="spinner"></div></div>
           </section>
+          <section class="card">
+            <div class="card-header"><h2>插件管理</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" onclick="refreshPlugins()">刷新</button><button class="btn btn-primary btn-sm" onclick="showPluginInstall()">安装插件</button></div></div>
+            <div class="svc-list" id="plugList">
+              <div class="empty-state">等待连接设备...</div>
+            </div>
+          </section>
         </div>
 
         <section class="card" id="assistantSection" style="margin-bottom:16px">
