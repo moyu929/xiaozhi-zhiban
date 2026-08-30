@@ -731,12 +731,18 @@ async function connectDevice() {
         resetWiredUI();
     }
 
-    var r = await api('/api/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: host }),
-    });
+    var r;
+    try {
+        r = await api('/api/connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host: host }),
+        });
+    } catch (e) {
+        r = { ok: false, error: '连接请求异常: ' + (e && e.message || e) };
+    }
 
+    try {
     if (r.ok && r.xwebd_connected) {
         S.wl.connected = true;
         S.wl.xwebd = true;
@@ -770,8 +776,12 @@ async function connectDevice() {
         toast(r.error ? '连接失败：' + r.error : '连接失败', 'error');
     }
 
+    } catch (e) {
+        toast('连接过程异常: ' + (e && e.message || e), 'error');
+    } finally {
     hideWirelessOverlays();
     if (!S.wl.connected) { btn.disabled = false; btn.textContent = '连接'; btn.className = 'btn btn-primary'; }
+    }
 }
 
 function resetWirelessUI() {
