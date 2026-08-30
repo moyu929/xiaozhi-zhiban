@@ -39,6 +39,9 @@ int xwplug_handle_install(int fd, const char *body, const char *query);
 /* 查询某插件是否在线(旧路径改写判定用) */
 int xwplug_is_online(const char *name);
 
+/* 查询某插件是否已安装(不看运行状态; xwebd 职责交接判定用) */
+int xwplug_is_installed(const char *name);
+
 /* 进程退出清理: kill 全部插件 */
 void xwplug_shutdown(void);
 

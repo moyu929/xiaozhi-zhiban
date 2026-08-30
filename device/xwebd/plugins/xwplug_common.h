@@ -39,6 +39,59 @@
     } \
 } while (0)
 
+/* ---- 插件自有配置: /var/upgrade/xwplug_<name>.conf (key=value 行) ----
+ * 与 xwebd_persist.conf 完全隔离, 杜绝并发写竞态. */
+
+static void xwplug_conf_path(const char *plug_name, char *out, int out_size)
+{
+    snprintf(out, out_size, "/var/upgrade/xwplug_%s.conf", plug_name);
+}
+
+__attribute__((unused)) static int xwplug_conf_get(const char *plug_name, const char *key, int def)
+{
+    char path[96], line[128], pat[48];
+    xwplug_conf_path(plug_name, path, sizeof(path));
+    snprintf(pat, sizeof(pat), "%s=", key);
+    FILE *f = fopen(path, "r");
+    if (!f) return def;
+    int val = def;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, pat, strlen(pat)) == 0) { val = atoi(line + strlen(pat)); break; }
+    }
+    fclose(f);
+    return val;
+}
+
+/* 单键写入: 保留文件中其他键(读改写, 原子 rename) */
+__attribute__((unused)) static void xwplug_conf_set(const char *plug_name, const char *key, int val)
+{
+    char path[96], tmp[104], pat[48];
+    xwplug_conf_path(plug_name, path, sizeof(path));
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    snprintf(pat, sizeof(pat), "%s=", key);
+
+    char body[1024] = "";
+    int blen = 0;
+    FILE *f = fopen(path, "r");
+    if (f) {
+        char line[128];
+        while (fgets(line, sizeof(line), f)) {
+            if (strncmp(line, pat, strlen(pat)) == 0) continue; /* 旧值丢弃 */
+            int n = (int)strlen(line);
+            if (blen + n < (int)sizeof(body) - 1) { memcpy(body + blen, line, n); blen += n; }
+        }
+        fclose(f);
+    }
+    blen += snprintf(body + blen, sizeof(body) - blen, "%s=%d\n", key, val);
+
+    FILE *o = fopen(tmp, "w");
+    if (o) {
+        fwrite(body, 1, blen, o);
+        fclose(o);
+        rename(tmp, path);
+    }
+}
+
 typedef struct {
     char method[8];
     char path[256];     /* 不含 query 的子路径, 如 "/list" */
@@ -49,6 +102,9 @@ typedef struct {
 
 /* ---- 插件需实现的唯一入口: 返回 HTTP 状态码, resp 填 JSON 体 ---- */
 extern int plug_handle(const xwplug_req_t *req, char *resp, int resp_size);
+
+/* 可选启动钩子: sock 监听建立前调用一次(恢复持久配置等); 不定义则跳过 */
+__attribute__((weak)) int plug_init(void);
 
 /* ---- 工具: 从请求 body/query 中取 JSON 字符串/整数值 ---- */
 __attribute__((unused)) static int xwplug_json_str(const char *hay, const char *key, char *out, int out_size)
@@ -91,6 +147,7 @@ __attribute__((unused)) static int xwplug_json_int(const char *hay, const char *
         prctl(PR_SET_NAME, "xwplug-" name);                                       \
         signal(SIGPIPE, SIG_IGN);                                                 \
         signal(SIGALRM, plug_req_timeout);                                        \
+        if (plug_init) plug_init(); /* 弱符号: 未定义则为 NULL 跳过 */              \
                                                                                   \
         int fd = socket(AF_UNIX, SOCK_STREAM, 0);                                 \
         if (fd < 0) return 1;                                                     \

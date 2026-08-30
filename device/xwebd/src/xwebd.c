@@ -1206,8 +1206,9 @@ static int sysfs_write(const char *path, const char *val) {
     return n > 0 ? 0 : -1;
 }
 
-/* 开机应用：enable 且 value 合法才动 sysfs */
+/* 开机应用：enable 且 value 合法才动 sysfs; backlight 插件已安装时由插件负责 */
 static void apply_backlight_from_persist(void) {
+    if (xwplug_is_installed("backlight")) { XLOG_I(TAG, "背光已插件化, 由 xwplug-backlight 恢复"); return; }
     if (!g_persist_bl_enable) { XLOG_I(TAG, "背光持久化未启用, 不干预"); return; }
     int v = g_persist_bl_value;
     if (v < 10 || v > 255) v = BL_BRIGHTNESS_DEFVAL;
@@ -2897,6 +2898,24 @@ static int handle_request(int client_fd) {
             return xwplug_forward(client_fd, "POST", "files/batch-delete", query, body, body_received);
         if (strcmp(method, "POST") == 0 && strcmp(path, "/api/files/cleanup") == 0)
             return xwplug_forward(client_fd, "GET", "files/cleanup", query, NULL, 0);
+    }
+    if (xwplug_is_online("procs")) {
+        if (strcmp(method, "GET") == 0 && strcmp(path, "/api/processes") == 0)
+            return xwplug_forward(client_fd, "GET", "procs/list", query, NULL, 0);
+        if (strcmp(method, "POST") == 0 && strcmp(path, "/api/processes/control") == 0)
+            return xwplug_forward(client_fd, "POST", "procs/control", query, body, body_received);
+    }
+    if (xwplug_is_online("usb")) {
+        if (strcmp(method, "GET") == 0 && strcmp(path, "/api/usb/mode") == 0)
+            return xwplug_forward(client_fd, "GET", "usb/mode", query, NULL, 0);
+        if (strcmp(method, "POST") == 0 && strcmp(path, "/api/usb/mode") == 0)
+            return xwplug_forward(client_fd, "POST", "usb/mode", query, body, body_received);
+    }
+    if (xwplug_is_online("backlight")) {
+        if (strcmp(method, "GET") == 0 && strcmp(path, "/api/backlight") == 0)
+            return xwplug_forward(client_fd, "GET", "backlight/state", query, NULL, 0);
+        if (strcmp(method, "PUT") == 0 && strcmp(path, "/api/backlight") == 0)
+            return xwplug_forward(client_fd, "PUT", "backlight/state", query, body, body_received);
     }
 
     /* 路由表查找 */

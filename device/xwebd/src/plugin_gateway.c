@@ -367,6 +367,13 @@ int xwplug_is_online(const char *name)
     return (p && p->online && !p->disabled) ? 1 : 0;
 }
 
+int xwplug_is_installed(const char *name)
+{
+    char path[192];
+    snprintf(path, sizeof(path), "%s/xwplug-%s", XWPLUG_DIR, name);
+    return access(path, X_OK) == 0 ? 1 : 0;
+}
+
 /* ---- 管理端点 ---- */
 
 int xwplug_handle_list(int fd, const char *body, const char *query)
