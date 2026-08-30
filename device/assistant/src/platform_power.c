@@ -49,6 +49,106 @@ void platform_tts_play(int id)
     }
 }
 
+/* ---- libmusic_player_api: 本地音频文件播放 (原生 music_player 服务) ----
+ * ABI 依据 M2 §5.1/§11.5 + alarm_play.so 调用序列印证:
+ *   mp_open() 无参返回 handle (内部 start_service("music_player")+RPC 1000)
+ *   mp_set_file(handle, url) / mp_play / mp_stop / mp_close(handle)
+ *   mp_get_cur_time / mp_get_total_time 返回值即秒
+ * 红线: 只经库函数调用, 绝不发裸 RPC(1001 close 裸发曾致服务死亡→整机重启) */
+
+typedef void *(*mp_open_fn)(void);
+typedef int (*mp_handle_fn)(void *);
+typedef int (*mp_set_file_fn)(void *, const char *);
+typedef int (*mp_time_fn)(void *);
+
+static void *media_play_thread(void *arg)
+{
+    char *path = (char *)arg;
+
+    void *h = dlopen("libmusic_player_api.so", RTLD_NOW);
+    if (!h)
+    {
+        PLOG_W("PW", "libmusic_player_api 加载失败: %s", dlerror());
+        free(path);
+        return NULL;
+    }
+    mp_open_fn f_open = (mp_open_fn)dlsym(h, "mp_open");
+    mp_set_file_fn f_set = (mp_set_file_fn)dlsym(h, "mp_set_file");
+    mp_handle_fn f_play = (mp_handle_fn)dlsym(h, "mp_play");
+    mp_handle_fn f_stop = (mp_handle_fn)dlsym(h, "mp_stop");
+    mp_handle_fn f_close = (mp_handle_fn)dlsym(h, "mp_close");
+    mp_time_fn f_cur = (mp_time_fn)dlsym(h, "mp_get_cur_time");
+    mp_time_fn f_total = (mp_time_fn)dlsym(h, "mp_get_total_time");
+    if (!f_open || !f_set || !f_play || !f_stop || !f_close)
+    {
+        PLOG_W("PW", "music_player API 符号缺失");
+        free(path);
+        return NULL;
+    }
+
+    void *mp = f_open();
+    if (!mp)
+    {
+        PLOG_W("PW", "mp_open 失败: %s", path);
+        free(path);
+        return NULL;
+    }
+    /* music_player URL 校验要求 file:// 前缀(M2 §5.3: check_url 家族) */
+    char url[1100];
+    snprintf(url, sizeof(url), "file://%s", path);
+    /* 返回值语义(反汇编 0xa70): set_file 成功返回 strlen(url)(>0), 失败 -1;
+     * play/stop 失败返回负数 */
+    if (f_set(mp, url) < 0 || f_play(mp) < 0)
+    {
+        PLOG_W("PW", "mp_set_file/mp_play 失败: %s", path);
+        f_close(mp);
+        free(path);
+        return NULL;
+    }
+    PLOG_I("PW", "播放提示音: %s", path);
+
+    /* 轮询播完: cur 到 total 或 30s 超时兜底 */
+    for (int i = 0; i < 60; i++)
+    {
+        usleep(500 * 1000);
+        if (f_cur && f_total)
+        {
+            int cur = f_cur(mp), total = f_total(mp);
+            if (total > 0 && cur >= total - 1)
+                break;
+        }
+    }
+    f_stop(mp);
+    f_close(mp); /* 内含 stop_service, music_player 进程随之退出 */
+    PLOG_I("PW", "提示音播完: %s", path);
+    free(path);
+    return NULL;
+}
+
+int platform_media_play_file(const char *path)
+{
+    if (!path || access(path, R_OK) != 0)
+        return -1;
+
+    char *p = strdup(path);
+    if (!p)
+        return -1;
+
+    pthread_t tid;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 32 * 1024);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&tid, &attr, media_play_thread, p) != 0)
+    {
+        free(p);
+        pthread_attr_destroy(&attr);
+        return -1;
+    }
+    pthread_attr_destroy(&attr);
+    return 0;
+}
+
 /* ---- 优雅关机 ---- */
 
 /**

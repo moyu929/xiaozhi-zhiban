@@ -553,6 +553,12 @@ void api_server_check_commands(void)
         g_hot_update_pending = 1;
         PLOG_I(TAG, "热更新命令已排队 (g_hot_update_pending=1)");
     }
+    else if (strcmp(cmd, "play_prompt") == 0)
+    {
+        PLOG_I(TAG, "收到提示音播放命令(调试入口)");
+        extern void use_limit_play_prompt(void);
+        use_limit_play_prompt();
+    }
     else if (strcmp(cmd, "poweroff") == 0)
     {
         /* 电池插件低电自护: 原生低电链实测不触发(2026-08-30 深放3.12V硬断电),

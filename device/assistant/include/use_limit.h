@@ -38,6 +38,12 @@ extern "C" {
 
 void use_limit_init(void);
 
+/**
+ * @brief 播放耗尽提示音(自定义 mp3 优先, 无文件回退原生 tts 占位)
+ * 兼作调试入口(api_server play_prompt 命令)
+ */
+void use_limit_play_prompt(void);
+
 /** TTS 播放打点：Speaking 进入/退出各调一次，间隔毫秒数由调用方给出 */
 void use_limit_on_speaking(uint64_t elapsed_ms);
 

@@ -44,6 +44,16 @@ void platform_power_reboot(void);
  */
 void platform_tts_play(int id);
 
+/**
+ * @brief 播放本地音频文件（原生 music_player 服务，mp3 等，后台异步）
+ *
+ * 走 libmusic_player_api 的 mp_open/mp_set_file/mp_play 链（alarm_play 同款
+ * 原生路径），播完自动 mp_close（music_player 进程随之退出）。
+ * @param path 文件绝对路径；不存在返回 -1
+ * @return 0=已触发后台播放，-1=文件不可用
+ */
+int platform_media_play_file(const char *path);
+
 #ifdef __cplusplus
 }
 #endif

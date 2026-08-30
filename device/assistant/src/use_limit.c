@@ -13,6 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <unistd.h>
+
 
 static uint64_t ul_now_ms(void)
 {
@@ -57,6 +59,17 @@ typedef struct {
 #define UL_BREAK_DELAY_MS 2500
 
 static ul_ctx_t g_ul;
+/* 耗尽提示音: 优先自定义 mp3(用户制作, 原生 music_player 播放),
+ * 无文件回退原生 tts 占位音 */
+#define UL_PROMPT_MP3 "/var/upgrade/use_limit_exhausted.mp3"
+
+void use_limit_play_prompt(void)
+{
+    if (access(UL_PROMPT_MP3, R_OK) == 0 &&
+        platform_media_play_file(UL_PROMPT_MP3) == 0)
+        return;
+    platform_tts_play(g_ul.prompt_id);
+}
 
 static void today_str(char out[9])
 {
@@ -379,7 +392,7 @@ int use_limit_should_block_wakeup(void)
         last_prompt_ms = now;
         PLOG_I("UL", "唤醒被限时拦截(达限锁=%d 时段锁=%d), 播提示(id=%d)",
                use_limit_is_locked(), use_limit_out_of_span(), g_ul.prompt_id);
-        platform_tts_play(g_ul.prompt_id);
+        use_limit_play_prompt();
     }
     return 1;
 }
@@ -397,7 +410,7 @@ int use_limit_session_break_poll(void)
     if (g_ul.break_pending_ms == 0)
     {
         /* 首次进入锁定: 播提示并开延迟窗(等提示播完再断) */
-        platform_tts_play(g_ul.prompt_id);
+        use_limit_play_prompt();
         g_ul.break_pending_ms = ul_now_ms() + UL_BREAK_DELAY_MS;
         PLOG_I("UL", "会话中锁定生效, 播提示后%ums断开(达限锁=%d 时段锁=%d)",
                UL_BREAK_DELAY_MS, use_limit_is_locked(), use_limit_out_of_span());
