@@ -2891,6 +2891,32 @@ int main(int argc, char *argv[])
         PLOG_W("INIT", "设置调度优先级失败, 以普通优先级继续");
     }
 
+    /* 禁用原生屏保(P3 逆向: msg_server 的 libsystime 按 BACKLIGHT_DURATION
+     * 默认30s空闲关背光)。原厂各应用都会 forbid, 我们拦掉每日动画后开机
+     * 无人禁屏保 → 开机30s黑屏(2026-08-30 实测根因, 非boot_push残留)。
+     * forbid(1) 禁屏保+恢复已关背光; sair 退出即回原生行为(安全降级)。
+     * 桌面常亮, 会话中息屏仍由自研 display_ctrl 管(SCREEN_OFF_IDLE_SEC)。 */
+    {
+        void *libst = dlopen("libsystime_api.so", RTLD_LAZY);
+        if (libst)
+        {
+            int (*forbid)(int) = (int (*)(int))dlsym(libst, "systime_forbid_screensaver");
+            if (forbid)
+            {
+                int r = forbid(1);
+                PLOG_I("INIT", "原生屏保已禁用 (systime_forbid_screensaver=%d)", r);
+            }
+            else
+            {
+                PLOG_W("INIT", "systime_forbid_screensaver 符号缺失, 原生屏保未被禁用");
+            }
+        }
+        else
+        {
+            PLOG_W("INIT", "libsystime_api.so 加载失败: %s, 原生屏保未被禁用", dlerror());
+        }
+    }
+
     if (is_hot_update)
     {
         PLOG_I("INIT", "热更新: 确保音频服务运行中");
