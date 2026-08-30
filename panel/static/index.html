@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>小智 · 智伴</title>
-<link rel="stylesheet" href="/style.css?v=27">
+<link rel="stylesheet" href="/style.css?v=28">
 </head>
 <body>
 <canvas id="particles"></canvas>
@@ -238,8 +238,8 @@
           </section>
         </div>
 
-        <!-- 第二排: 插件管理 + 助手环境自检 -->
-        <div class="grid-2col">
+        <!-- 第二排: 插件管理 + 助手环境自检 (fill-row: 卡片等高, 滚动区填满) -->
+        <div class="grid-2col fill-row">
           <section class="card">
             <div class="card-header"><h2>插件管理</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" onclick="refreshPlugins()">刷新</button><button class="btn btn-primary btn-sm" onclick="showPluginInstall()">安装插件</button></div></div>
             <div class="plugin-list" id="plugList">
@@ -396,12 +396,8 @@
                 <summary>更多选项（进阶）</summary>
                 <div class="fold-body">
                   <div class="form-group">
-                    <label class="form-label">当前服务地址 <span class="form-hint">（助手实际连接的 WebSocket 地址，来自官方激活配置）</span></label>
-                    <input type="text" id="curWsUrl" class="input-text value-mono" value="--" readonly>
-                  </div>
-                  <div class="form-group">
-                    <label class="form-label">自定义 WS URL <span class="form-hint">（使用自建服务端时填写，留空使用官方地址）</span></label>
-                    <input type="text" id="cfgCustomWsUrl" class="input-text" value="" placeholder="wss://your-server.com/xiaozhi/v1/">
+                    <label class="form-label">当前 WS URL <span class="form-hint">（助手实际连接的地址，修改后保存生效；清空则恢复官方地址）</span></label>
+                    <input type="text" id="cfgCustomWsUrl" class="input-text value-mono" value="" placeholder="wss://your-server.com/xiaozhi/v1/">
                   </div>
                   <div class="use-limit-row" style="cursor:not-allowed" onclick="showBootPushDisabled()" title="该功能暂不可用">
                     <label class="svc-toggle use-limit-switch">
@@ -625,6 +621,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=38"></script>
+<script src="/app.js?v=39"></script>
 </body>
 </html>

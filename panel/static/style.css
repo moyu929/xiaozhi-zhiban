@@ -296,6 +296,12 @@ body {
 
 .grid-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
 .grid-2-1 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 16px; }
+/* fill-row(2026-08-31): 该行卡片等高, 内部滚动区响应式填满本栏
+ * (用户指正: 助手自检/MCP 下方留白, 应与左侧滚动区同高) */
+.grid-2col.fill-row { align-items: stretch; }
+.fill-row > .card { display: flex; flex-direction: column; }
+.fill-row .plugin-list { flex: 1; min-height: 160px; max-height: none; }
+.fill-row .diag-container { flex: 1; min-height: 160px; height: auto; }
 .grid-3col {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
@@ -306,6 +312,12 @@ body {
   padding: 16px 14px;
 }
 .grid-2-1 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 16px; }
+/* fill-row(2026-08-31): 该行卡片等高, 内部滚动区响应式填满本栏
+ * (用户指正: 助手自检/MCP 下方留白, 应与左侧滚动区同高) */
+.grid-2col.fill-row { align-items: stretch; }
+.fill-row > .card { display: flex; flex-direction: column; }
+.fill-row .plugin-list { flex: 1; min-height: 160px; max-height: none; }
+.fill-row .diag-container { flex: 1; min-height: 160px; height: auto; }
 .assistant-layout {
   display: flex;
   gap: 20px;
@@ -323,7 +335,7 @@ body {
 .assistant-right .mcp-tools-list {
   flex: 1;
   overflow-y: auto;
-  max-height: 320px;
+  min-height: 200px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.1) transparent;
 }
@@ -1580,7 +1592,11 @@ body {
   gap: 8px;
   max-height: 320px;
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
 }
+.plugin-list::-webkit-scrollbar { width: 4px; }
+.plugin-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 .plugin-item {
   padding: 10px 12px;
   background: var(--bg-secondary);

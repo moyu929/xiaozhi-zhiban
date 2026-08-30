@@ -817,7 +817,6 @@ function resetWirelessUI() {
     $('cfgAecMode').value = 'local';
     updateAecVisibility();
     $('cfgCustomWsUrl').value = '';
-    $('curWsUrl').value = '--';
     $('cfgBootPushDisable').checked = false;
     $('cfgLimitEnable').checked = false;
     $('cfgLimitMinutes').value = '';
@@ -1230,12 +1229,7 @@ async function refreshXwebdServices() {
     S.svcData = d;
 
     var html = '';
-    /* 必开项: 状态徽标 */
-    var autoOk = d.xwebd && d.xwebd.autostart;
-    html += '<div class="svc-item"><span class="svc-name">开机自启动</span><span class="svc-status ' + (autoOk ? 'svc-on' : 'svc-off') + '">' + (autoOk ? '已启用' : '未启用') + '</span><span class="svc-hint">核心机制</span></div>';
-    var wd = d.boot_watchdog || {};
-    var wdOk = wd.running || wd.deployed;
-    html += '<div class="svc-item"><span class="svc-name">启动看门狗</span><span class="svc-status ' + (wdOk ? 'svc-on' : 'svc-off') + '">' + (wd.running ? '运行中' : (wd.deployed ? '已部署' : '未部署')) + '</span><span class="svc-hint">崩溃回退保护</span></div>';
+    /* 必开项(自启动/看门狗)不展示: 用户指正属"废话"信息 */
     /* 可选项: 开关 */
     var togglable = [
         { name: 'Telnet 终端', service: 'telnet', on: d.telnet && d.telnet.running, hint: '调试用' },
@@ -1596,7 +1590,6 @@ async function refreshConfig() {
         if (r.session_timeout) $('cfgSessionTimeout').value = Math.round(r.session_timeout / 1000);
         if (r.wakeup_cooldown) $('cfgWakeupCooldown').value = Math.round(r.wakeup_cooldown / 1000);
         if (r.ws_ping_interval) $('cfgWsPingInterval').value = Math.round(r.ws_ping_interval / 1000);
-        if (r.ws_url) $('curWsUrl').value = r.ws_url;
         if (r.boot_push_disable !== undefined) $('cfgBootPushDisable').checked = false; /* 死锁缺陷禁用: 强制关, 见 bootPushModal */
         if (r.screen_off_idle_sec !== undefined) $('cfgScreenOffSec').value = r.screen_off_idle_sec;
         if (r.volume !== undefined && r.volume >= 0) {
@@ -1636,7 +1629,8 @@ async function refreshConfig() {
     if (!r3.error) {
         var sd = r3.data || r3;
         S.svcData = sd;
-        if (sd.custom_ws_url !== undefined) $('cfgCustomWsUrl').value = sd.custom_ws_url;
+        /* 合并栏: 显示实际生效地址(自定义优先, 其次官方), 清空保存即恢复官方 */
+        $('cfgCustomWsUrl').value = sd.custom_ws_url || r.ws_url || '';
         if (sd.audio_precache) $('cfgPrecache').checked = !!sd.audio_precache.enabled;
     }
 }
