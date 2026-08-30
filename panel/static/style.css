@@ -1669,3 +1669,7 @@ body {
   color: var(--text-primary);
 }
 .bl-persist-label { white-space: nowrap; }
+
+/* 每日动画拦截开关灰态(死锁缺陷禁用, 2026-08-31) */
+.svc-toggle-track.svc-toggle-disabled { opacity: 0.4; }
+.svc-toggle input:disabled + .svc-toggle-track { cursor: not-allowed; }

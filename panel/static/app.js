@@ -1578,7 +1578,7 @@ async function refreshConfig() {
         if (r.wakeup_cooldown) $('cfgWakeupCooldown').value = Math.round(r.wakeup_cooldown / 1000);
         if (r.ws_ping_interval) $('cfgWsPingInterval').value = Math.round(r.ws_ping_interval / 1000);
         if (r.ws_url) $('curWsUrl').value = r.ws_url;
-        if (r.boot_push_disable !== undefined) $('cfgBootPushDisable').checked = !!r.boot_push_disable;
+        if (r.boot_push_disable !== undefined) $('cfgBootPushDisable').checked = false; /* 死锁缺陷禁用: 强制关, 见 bootPushModal */
         if (r.screen_off_idle_sec !== undefined) $('cfgScreenOffSec').value = r.screen_off_idle_sec;
         if (r.volume !== undefined && r.volume >= 0) {
             $('volSlider').value = r.volume;
@@ -2792,6 +2792,11 @@ function renderDiagSection(title, result) {
 
 function showHelp() { $('helpModal').style.display = 'flex'; }
 function closeHelp() { $('helpModal').style.display = 'none'; }
+
+/* 每日动画拦截: 已知死锁缺陷, panel 侧禁用安装(2026-08-31)
+ * 详见开发文档《每日动画拦截死锁调查》; 代码保留待修复后重新开放 */
+function showBootPushDisabled() { $('bootPushModal').style.display = 'flex'; }
+function closeBootPushDisabled() { $('bootPushModal').style.display = 'none'; }
 
 // ==================== Emergency Nuke ====================
 
