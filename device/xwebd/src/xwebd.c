@@ -2886,6 +2886,19 @@ static int handle_request(int client_fd) {
             return handle_upload_raw(client_fd, content_type, content_length, body, body_received, req_buf);
     }
 
+    /* 功能插件化改写(B1+): 对应插件在线时旧路径改写到插件, 未装回落内置实现.
+     * download/upload 大文件流式永远走内置. */
+    if (xwplug_is_online("files")) {
+        if (strcmp(method, "GET") == 0 && strcmp(path, "/api/files") == 0)
+            return xwplug_forward(client_fd, "GET", "files/list", query, NULL, 0);
+        if (strcmp(method, "DELETE") == 0 && strcmp(path, "/api/files") == 0)
+            return xwplug_forward(client_fd, "GET", "files/delete", query, NULL, 0);
+        if (strcmp(method, "POST") == 0 && strcmp(path, "/api/files/batch-delete") == 0)
+            return xwplug_forward(client_fd, "POST", "files/batch-delete", query, body, body_received);
+        if (strcmp(method, "POST") == 0 && strcmp(path, "/api/files/cleanup") == 0)
+            return xwplug_forward(client_fd, "GET", "files/cleanup", query, NULL, 0);
+    }
+
     /* 路由表查找 */
     for (int i = 0; g_routes[i].handler; i++) {
         if (strcmp(method, g_routes[i].method) == 0 && strcmp(path, g_routes[i].path) == 0)

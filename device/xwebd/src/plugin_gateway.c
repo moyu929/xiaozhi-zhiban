@@ -361,6 +361,12 @@ fwd_fail:
     return send_json(client_fd, 502, "{\"error\":\"plugin write fail\"}"), 1;
 }
 
+int xwplug_is_online(const char *name)
+{
+    xwplug_t *p = find_plug(name);
+    return (p && p->online && !p->disabled) ? 1 : 0;
+}
+
 /* ---- 管理端点 ---- */
 
 int xwplug_handle_list(int fd, const char *body, const char *query)

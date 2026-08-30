@@ -31,6 +31,14 @@
 #define XWPLUG_RESP_MAX  16384
 #define XWPLUG_REQ_TIMEOUT_SEC 10
 
+/* 追加式 snprintf(超长截断不越界) */
+#define APPEND_PRINTF(buf, pos, size, ...) do { \
+    if ((pos) < (size) - 1) { \
+        (pos) += snprintf((buf) + (pos), (size) - (pos), __VA_ARGS__); \
+        if ((pos) >= (size)) (pos) = (size) - 1; \
+    } \
+} while (0)
+
 typedef struct {
     char method[8];
     char path[256];     /* 不含 query 的子路径, 如 "/list" */

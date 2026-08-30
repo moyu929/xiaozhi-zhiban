@@ -36,6 +36,9 @@ int xwplug_handle_restart(int fd, const char *body, const char *query);
 int xwplug_handle_remove(int fd, const char *body, const char *query);
 int xwplug_handle_install(int fd, const char *body, const char *query);
 
+/* 查询某插件是否在线(旧路径改写判定用) */
+int xwplug_is_online(const char *name);
+
 /* 进程退出清理: kill 全部插件 */
 void xwplug_shutdown(void);
 
