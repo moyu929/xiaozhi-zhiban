@@ -520,7 +520,6 @@ void xwplug_init(void)
 {
     mkdir(XWPLUG_SOCK_DIR, 0755);
     mkdir(XWPLUG_DIR, 0755);
-    mkdir(XWPLUG_TMP_DIR, 0755); /* 上传中转目录(安装端点从此取件) */
     /* tmpfs 残留 sock 清扫(插件未起时先清自家目录) */
     DIR *d = opendir(XWPLUG_SOCK_DIR);
     if (d) {

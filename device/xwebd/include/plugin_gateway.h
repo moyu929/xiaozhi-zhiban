@@ -10,8 +10,7 @@
 #ifndef PLUGIN_GATEWAY_H
 #define PLUGIN_GATEWAY_H
 
-#define XWPLUG_DIR      "/usr/local/xwebd/plugins"   /* 安装目录(rootfs 持久) */
-#define XWPLUG_TMP_DIR  "/var/upgrade/plugins"       /* 上传中转 */
+#define XWPLUG_DIR      "/var/upgrade/plugins"       /* 安装目录(jffs2 可写持久; /usr/local 在只读 rootfs 不可用) */
 #define XWPLUG_SOCK_DIR "/tmp/xwplug"                /* 套接字目录(tmpfs) */
 #define XWPLUG_MAX      8
 #define XWPLUG_PROBE_SEC    5                        /* 健康探测周期 */
