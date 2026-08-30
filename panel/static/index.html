@@ -229,6 +229,10 @@
               <button id="btnXwebdRestart" class="btn btn-ghost" onclick="doXwebdRestart()">重启</button>
               <button id="btnXwebdRemove" class="btn btn-danger" onclick="doXwebdRemove()">卸载</button>
             </div>
+            <div class="settings-group-title">服务与功能</div>
+            <div class="svc-list" id="xwebdSvcList">
+              <div class="empty-state">等待连接设备...</div>
+            </div>
             <div id="xwebdDiagContainer" class="diag-container" style="display:none;margin-top:12px"></div>
             <div class="section-overlay" id="xwebdOverlay" style="display:none"><div class="spinner"></div></div>
           </section>
@@ -257,8 +261,8 @@
           </section>
         </div>
 
-        <!-- 第三排: 进程管理(宽) + 服务状态 -->
-        <div class="grid-2-1">
+        <!-- 第三排: 进程管理 + 文件管理 -->
+        <div class="grid-2col">
           <section class="card">
             <div class="card-header"><h2>进程管理</h2><span id="processSummary" class="process-summary"></span><div class="card-actions"><button class="btn btn-ghost btn-sm" onclick="refreshProcesses()">刷新</button></div></div>
             <div id="processContainer" class="process-container">
@@ -268,11 +272,17 @@
           </section>
 
           <section class="card">
-            <div class="card-header"><h2>服务状态</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" id="btnRefreshSvc" onclick="refreshServicesWithFlash()">刷新</button></div></div>
-            <div class="svc-list" id="svcList">
+            <div class="card-header">
+              <h2>文件管理</h2>
+              <div class="card-actions">
+                <button class="btn btn-ghost btn-sm" onclick="refreshFilesWithFlash()">刷新</button>
+                <button class="btn btn-accent btn-sm" onclick="triggerUpload()">上传</button>
+                <input type="file" id="uploadFile" class="file-input" onchange="doUpload()" multiple>
+              </div>
+            </div>
+            <div id="fileContainer" class="file-container">
               <div class="empty-state">等待连接设备...</div>
             </div>
-            <div class="section-overlay" id="serviceOverlay" style="display:none"><div class="spinner"></div></div>
           </section>
         </div>
 
@@ -329,6 +339,13 @@
                   <div class="timeout-item"><span class="stat-label">唤醒冷却</span><input type="number" id="cfgWakeupCooldown" class="input-text" value="" placeholder="3" min="1" step="1"></div>
                   <div class="timeout-item"><span class="stat-label">WS心跳间隔</span><input type="number" id="cfgWsPingInterval" class="input-text" value="" placeholder="25" min="5" step="5"></div>
                 </div>
+              </div>
+              <div class="use-limit-row">
+                <label class="svc-toggle use-limit-switch">
+                  <input type="checkbox" id="cfgPrecache" onchange="togglePrecache(this.checked)">
+                  <span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>
+                </label>
+                <span class="use-limit-label">音频预缓存 <span class="form-hint">（唤醒后提前缓存应答音频，加快首句响应）</span></span>
               </div>
 
               <div class="settings-group-title">每日使用时长</div>
@@ -423,20 +440,6 @@
           </div>
           <div class="section-overlay" id="assistantOverlay" style="display:none"><div class="spinner"></div><div class="overlay-text" id="assistantOverlayText"></div></div>
           <div class="section-overlay not-installed-overlay" id="assistantNotInstalledOverlay" style="display:none"><div class="overlay-text" id="notInstalledText">未安装语音助手</div><button class="btn btn-primary" onclick="doDeploy()" style="margin-top:12px">部署语音助手</button></div>
-        </section>
-
-        <section class="card" style="margin-bottom:16px">
-          <div class="card-header">
-            <h2>文件管理</h2>
-            <div class="card-actions">
-              <button class="btn btn-ghost btn-sm" onclick="refreshFilesWithFlash()">刷新</button>
-              <button class="btn btn-accent btn-sm" onclick="triggerUpload()">上传</button>
-              <input type="file" id="uploadFile" class="file-input" onchange="doUpload()" multiple>
-            </div>
-          </div>
-          <div id="fileContainer" class="file-container">
-            <div class="empty-state">等待连接设备...</div>
-          </div>
         </section>
 
         <section class="card">
@@ -601,6 +604,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=31"></script>
+<script src="/app.js?v=32"></script>
 </body>
 </html>

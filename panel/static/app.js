@@ -828,7 +828,9 @@ function resetWirelessUI() {
     $('logXwebd').innerHTML = '<div class="empty-state">等待连接设备...</div>';
     $('logAssistant').innerHTML = '<div class="empty-state">等待连接设备...</div>';
     $('logPanel').innerHTML = '<div class="empty-state">暂无日志</div>';
-    $('svcList').innerHTML = '<div class="empty-state">等待连接设备...</div>';
+    $('xwebdSvcList').innerHTML = '<div class="empty-state">等待连接设备...</div>';
+    $('cfgPrecache').checked = false;
+    S.svcData = null;
     $('processContainer').innerHTML = '<div class="empty-state">等待连接设备...</div>';
     $('processSummary').textContent = '';
     _procCache = [];
@@ -923,7 +925,7 @@ function refreshAll() {
     refreshStatus();
     refreshAssistantStatus();
     refreshXwebdStatus();
-    refreshServices();
+    refreshXwebdServices();
     refreshPlugins();
     refreshProcesses();
     refreshFiles();
@@ -1197,55 +1199,42 @@ async function refreshXwebdStatus() {
     } catch(e) {}
 }
 
-async function refreshServices() {
+/* ==================== xwebd 服务与功能（原服务状态卡拆解并入各卡） ====================
+ * 自启动/看门狗为必开安全机制(关掉=重启失联/崩溃循环无回退), 只显示状态不给开关;
+ * telnet/呼吸灯/按键背光为 xwebd 域可选项, 渲染在面板内核管理卡;
+ * usb_lun 渲染在插件管理卡 usb 条目; 音频预缓存(sair 域)在语音助手管理卡。 */
+async function refreshXwebdServices() {
     if (!S.wl.connected) return;
     var r = await api('/api/services');
     if (r.error) return;
     var d = r.data || r;
-
-    var items = [
-        { name: '面板内核', key: 'xwebd_running', status: d.xwebd && d.xwebd.running, toggle: false,
-          statusText: d.xwebd && d.xwebd.running ? '运行中' : '已停止' },
-        { name: '面板内核自启动', key: 'autostart', status: d.xwebd && d.xwebd.autostart, toggle: true, service: 'autostart',
-          statusText: d.xwebd && d.xwebd.autostart ? '已启用' : '未启用', hint: '重启保留' },
-        { name: '语音助手', key: 'sair', status: d.sair && d.sair.running, toggle: false,
-          statusText: d.sair ? (d.sair.running ? '运行中' : (d.sair.installed ? '已停止' : '未安装')) : '未知' },
-        { name: '看门狗脚本', key: 'watchdog', status: d.boot_watchdog && (d.boot_watchdog.deployed || d.boot_watchdog.running), toggle: true, service: 'boot_watchdog',
-          statusText: d.boot_watchdog ? (d.boot_watchdog.running ? '运行中' : (d.boot_watchdog.deployed ? '已部署' : '未部署')) : '未知', hint: '重启保留' },
-        { name: 'Telnet 终端', key: 'telnet', status: d.telnet && d.telnet.running, toggle: true, service: 'telnet',
-          statusText: d.telnet && d.telnet.running ? '运行中' : '已停止', hint: '重启保留' },
-        { name: 'USB存储卡', key: 'usb_lun', status: d.usb_lun && d.usb_lun.enabled, toggle: true, service: 'usb_lun',
-          statusText: d.usb_lun && d.usb_lun.enabled ? '已开启' : '已关闭', hint: '重启保留' },
-        { name: '呼吸灯', key: 'led', status: d.led && d.led.enabled, toggle: true, service: 'led',
-          statusText: d.led && d.led.enabled ? '已开启' : '已关闭', hint: '重启保留' },
-        { name: '按键背光', key: 'key_backlight', status: d.key_backlight && d.key_backlight.enabled === true, toggle: true, service: 'key_backlight',
-          statusText: d.key_backlight ? (d.key_backlight.enabled === true ? '已开启' : (d.key_backlight.enabled === false ? '已关闭' : '不支持')) : '未知', hint: '重启保留' },
-        { name: '音频预缓存', key: 'audio_precache', status: d.audio_precache && d.audio_precache.enabled, toggle: true, service: 'audio_precache',
-          statusText: d.audio_precache && d.audio_precache.enabled ? '已开启' : '已关闭', hint: '重启保留' }
-    ];
+    S.svcData = d;
 
     var html = '';
-    items.forEach(function(item) {
-        var statusCls = item.status ? 'svc-on' : 'svc-off';
+    /* 必开项: 状态徽标 */
+    var autoOk = d.xwebd && d.xwebd.autostart;
+    html += '<div class="svc-item"><span class="svc-name">开机自启动</span><span class="svc-status ' + (autoOk ? 'svc-on' : 'svc-off') + '">' + (autoOk ? '已启用' : '未启用') + '</span><span class="svc-hint">核心机制</span></div>';
+    var wd = d.boot_watchdog || {};
+    var wdOk = wd.running || wd.deployed;
+    html += '<div class="svc-item"><span class="svc-name">启动看门狗</span><span class="svc-status ' + (wdOk ? 'svc-on' : 'svc-off') + '">' + (wd.running ? '运行中' : (wd.deployed ? '已部署' : '未部署')) + '</span><span class="svc-hint">崩溃回退保护</span></div>';
+    /* 可选项: 开关 */
+    var togglable = [
+        { name: 'Telnet 终端', service: 'telnet', on: d.telnet && d.telnet.running, hint: '调试用' },
+        { name: '呼吸灯', service: 'led', on: d.led && d.led.enabled, hint: '重启保留' },
+        { name: '按键背光', service: 'key_backlight', on: d.key_backlight && d.key_backlight.enabled === true, hint: '重启保留' }
+    ];
+    togglable.forEach(function(item) {
         html += '<div class="svc-item">';
         html += '<span class="svc-name">' + item.name + '</span>';
-        if (item.toggle) {
-            html += '<label class="svc-toggle">';
-            html += '<input type="checkbox"' + (item.status ? ' checked' : '') + ' onchange="toggleService(\'' + item.service + '\', this.checked)">';
-            html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
-            html += '</label>';
-            if (item.hint) html += '<span class="svc-hint">' + item.hint + '</span>';
-        } else {
-            html += '<span class="svc-status ' + statusCls + '">' + item.statusText + '</span>';
-        }
+        html += '<label class="svc-toggle">';
+        html += '<input type="checkbox"' + (item.on ? ' checked' : '') + ' onchange="toggleService(\'' + item.service + '\', this.checked)">';
+        html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
+        html += '</label>';
+        if (item.hint) html += '<span class="svc-hint">' + item.hint + '</span>';
         html += '</div>';
     });
-    $('svcList').innerHTML = html;
-}
-
-async function refreshServicesAndPlugins() {
-    await refreshServices();
-    await refreshPlugins();
+    var container = $('xwebdSvcList');
+    if (container) container.innerHTML = html;
 }
 
 async function toggleService(service, enable) {
@@ -1258,12 +1247,13 @@ async function toggleService(service, enable) {
     });
     if (r.ok) {
         toast(service + ' 已' + (enable ? '开启' : '关闭'), 'success');
-        await new Promise(function(resolve) { setTimeout(resolve, 500); });
-        await refreshServices();
     } else {
         toast('操作失败: ' + (r.error || ''), 'error');
-        await refreshServices();
     }
+    await new Promise(function(resolve) { setTimeout(resolve, 500); });
+    await refreshXwebdServices();
+    await refreshPlugins(); /* usb_lun 开关嵌在 usb 插件条目 */
+    if (service === 'usb_lun') refreshUsbMode();
 }
 
 async function setCustomWsUrl(url) {
@@ -1276,10 +1266,9 @@ async function setCustomWsUrl(url) {
     if (r.ok) {
         toast('自定义WS URL已保存', 'success');
         await new Promise(function(resolve) { setTimeout(resolve, 500); });
-        await refreshServices();
+        await refreshConfig();
     } else {
         toast('设置失败: ' + (r.error || ''), 'error');
-        await refreshServices();
     }
 }
 
@@ -1291,6 +1280,14 @@ async function refreshPlugins() {
     if (r.error) return;
     var d = r.data || r;
     var plugs = (d.plugins || []);
+    /* usb_lun 开关状态: 优先用 refreshXwebdServices 缓存, 无则拉一次 */
+    var svc = S.svcData;
+    if (!svc) {
+        var sr = await api('/api/services');
+        if (!sr.error) svc = sr.data || sr;
+        S.svcData = svc;
+    }
+    var usbLunOn = svc && svc.usb_lun && svc.usb_lun.enabled;
     var html = '';
     if (!plugs.length) {
         html = '<div class="empty-state">暂无插件，点击右上角「安装插件」</div>';
@@ -1311,6 +1308,14 @@ async function refreshPlugins() {
             if (p.mem_kb) html += '<span class="svc-hint">内存 ' + p.mem_kb + 'KB</span>';
             if (p.restarts) html += '<span class="svc-hint">重启 ' + p.restarts + ' 次</span>';
             html += '<span class="svc-hint">pid ' + (p.pid || '--') + '</span>';
+            if (p.name === 'usb') {
+                /* USB 存储卡开关随 usb 插件条目展示(服务状态卡已拆解) */
+                html += '<label class="svc-toggle" title="数据传输模式下暴露存储卡">';
+                html += '<input type="checkbox"' + (usbLunOn ? ' checked' : '') + ' onchange="toggleService(\'usb_lun\', this.checked)">';
+                html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
+                html += '</label>';
+                html += '<span class="svc-hint">存储卡</span>';
+            }
             if (!meta.must) {
                 html += '<span class="plugin-btns">';
                 html += '<button class="btn btn-ghost btn-sm" onclick="pluginRestart(\'' + p.name + '\')">重启</button>';
@@ -1382,12 +1387,6 @@ async function showPluginInstall() {
         } catch (e) { toast('安装失败: ' + e.message, 'error'); }
     };
     input.click();
-}
-
-async function refreshServicesWithFlash() {
-    await refreshServices();
-    var svcList = document.querySelector('.svc-list');
-    if (svcList) flashEl(svcList);
 }
 
 var _procFilterCategory = '';
@@ -1613,7 +1612,26 @@ async function refreshConfig() {
     var r3 = await api('/api/services');
     if (!r3.error) {
         var sd = r3.data || r3;
+        S.svcData = sd;
         if (sd.custom_ws_url !== undefined) $('cfgCustomWsUrl').value = sd.custom_ws_url;
+        if (sd.audio_precache) $('cfgPrecache').checked = !!sd.audio_precache.enabled;
+    }
+}
+
+/* 音频预缓存开关(sair 域, 经 xwebd services/toggle) */
+async function togglePrecache(enable) {
+    if (!S.wl.connected) { $('cfgPrecache').checked = !enable; return; }
+    var action = enable ? 'enable' : 'disable';
+    var r = await api('/api/services/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: 'audio_precache', action: action }),
+    });
+    if (r.ok || !r.error) {
+        toast('音频预缓存已' + (enable ? '开启' : '关闭') + '（下次唤醒生效）', 'success');
+    } else {
+        toast('设置失败: ' + (r.error || ''), 'error');
+        $('cfgPrecache').checked = !enable;
     }
 }
 
