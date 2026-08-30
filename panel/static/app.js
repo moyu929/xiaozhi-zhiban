@@ -90,8 +90,10 @@ function flashEl(el) {
     setTimeout(function() { el.classList.remove('flash'); }, 400);
 }
 
-function showOverlay(id) { document.getElementById(id).style.display = 'flex'; }
-function hideOverlay(id) { document.getElementById(id).style.display = 'none'; }
+/* null 防御(2026-08-31): 重构删卡后 overlay id 失配曾致 connectDevice 直接
+ * TypeError 中断——连接请求都发不出, 表现为"点连接转圈无超时" */
+function showOverlay(id) { var el = document.getElementById(id); if (el) el.style.display = 'flex'; }
+function hideOverlay(id) { var el = document.getElementById(id); if (el) el.style.display = 'none'; }
 
 async function api(path, opts) {
     opts = opts || {};
@@ -2234,14 +2236,12 @@ function showWirelessOverlays() {
     showOverlay('deviceOverlay');
     showOverlay('xwebdOverlay');
     showOverlay('processOverlay');
-    showOverlay('serviceOverlay');
     showOverlay('assistantOverlay');
 }
 function hideWirelessOverlays() {
     hideOverlay('deviceOverlay');
     hideOverlay('xwebdOverlay');
     hideOverlay('processOverlay');
-    hideOverlay('serviceOverlay');
     hideOverlay('assistantOverlay');
 }
 
