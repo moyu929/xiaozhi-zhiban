@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>小智 · 智伴</title>
-<link rel="stylesheet" href="/style.css?v=25">
+<link rel="stylesheet" href="/style.css?v=26">
 </head>
 <body>
 <canvas id="particles"></canvas>
@@ -217,10 +217,34 @@
           </section>
         </div>
 
+        <!-- 第二排: 插件管理 + 助手环境自检 -->
+        <div class="grid-2col">
+          <section class="card">
+            <div class="card-header"><h2>插件管理</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" onclick="refreshPlugins()">刷新</button><button class="btn btn-primary btn-sm" onclick="showPluginInstall()">安装插件</button></div></div>
+            <div class="plugin-list" id="plugList">
+              <div class="empty-state">等待连接设备...</div>
+            </div>
+            <div class="plugin-tip">插件按需安装、独立进程运行：单个插件崩溃不影响系统，卸载后相关面板功能自动回落到内置实现</div>
+          </section>
+
+          <section class="card">
+            <div class="card-header">
+              <h2>助手环境自检</h2>
+              <div class="card-actions">
+                <button class="btn btn-primary btn-sm" onclick="runDiag()" id="btnDiag">运行自检</button>
+              </div>
+            </div>
+            <div id="diagContainer" class="diag-container">
+              <div class="empty-state">点击「运行自检」检测设备是否满足语音助手运行环境</div>
+            </div>
+          </section>
+        </div>
+
+        <!-- 第三排: 进程管理(宽) + 服务状态 -->
         <div class="grid-2-1">
           <section class="card">
             <div class="card-header"><h2>进程管理</h2><span id="processSummary" class="process-summary"></span><div class="card-actions"><button class="btn btn-ghost btn-sm" onclick="refreshProcesses()">刷新</button></div></div>
-<div id="processContainer" class="process-container">
+            <div id="processContainer" class="process-container">
               <div class="empty-state">等待连接设备...</div>
             </div>
             <div class="section-overlay" id="processOverlay" style="display:none"><div class="spinner"></div></div>
@@ -232,12 +256,6 @@
               <div class="empty-state">等待连接设备...</div>
             </div>
             <div class="section-overlay" id="serviceOverlay" style="display:none"><div class="spinner"></div></div>
-          </section>
-          <section class="card">
-            <div class="card-header"><h2>插件管理</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" onclick="refreshPlugins()">刷新</button><button class="btn btn-primary btn-sm" onclick="showPluginInstall()">安装插件</button></div></div>
-            <div class="svc-list" id="plugList">
-              <div class="empty-state">等待连接设备...</div>
-            </div>
           </section>
         </div>
 
@@ -252,6 +270,22 @@
                 <span class="stat-label">激活码：</span><span id="assistantActivation" class="stat-value value-mono">--</span>
                 <span class="stat-label">状态：</span><span id="assistantState" class="status-pill state-idle">空闲</span>
               </div>
+
+              <div class="settings-group-title">基本设置</div>
+              <div class="form-group">
+                <label class="form-label">监听模式 <span class="form-hint">（AutoStop：一问一答；Realtime：可随时打断）</span></label>
+                <select id="cfgListeningMode" class="select">
+                  <option value="autostop" selected>AutoStop（一问一答，推荐）</option>
+                  <option value="realtime">Realtime（实时打断）</option>
+                </select>
+              </div>
+              <div class="form-group" id="aecModeGroup">
+                <label class="form-label">AEC 回声消除 <span class="form-hint">（仅 Realtime 模式下起效：设备端 NLMS 本地消除，保障打断灵敏度）</span></label>
+                <select id="cfgAecMode" class="select">
+                  <option value="local">本地 AEC（默认）</option>
+                  <option value="cloud" disabled>云端 AEC（官方网关暂未开放）</option>
+                </select>
+              </div>
               <div class="form-group">
                 <label class="form-label">日志级别 <span class="form-hint">（助手进程的日志输出级别）</span></label>
                 <select id="cfgSairLogLevel" class="select">
@@ -263,6 +297,10 @@
                 </select>
               </div>
               <div class="form-group">
+                <label class="form-label">MCP 接入点 <span class="form-hint">（从 xiaozhi.me 控制台获取的智能体专属端点）</span></label>
+                <input type="text" id="cfgMcpEndpoint" class="input-text" value="" placeholder="wss://api.xiaozhi.me/mcp/?token=...">
+              </div>
+              <div class="form-group">
                 <label class="form-label">超时参数 <span class="form-hint">（单位：秒）</span></label>
                 <div class="timeout-row">
                   <div class="timeout-item"><span class="stat-label">监听超时</span><input type="number" id="cfgListenTimeout" class="input-text" value="" placeholder="120" min="10" step="10"></div>
@@ -271,29 +309,73 @@
                   <div class="timeout-item"><span class="stat-label">WS心跳间隔</span><input type="number" id="cfgWsPingInterval" class="input-text" value="" placeholder="25" min="5" step="5"></div>
                 </div>
               </div>
-              <div class="form-group">
-                <label class="form-label">MCP 接入点 <span class="form-hint">（从 xiaozhi.me 控制台获取的智能体专属端点）</span></label>
-                <input type="text" id="cfgMcpEndpoint" class="input-text" value="" placeholder="wss://api.xiaozhi.me/mcp/?token=...">
+
+              <div class="settings-group-title">每日使用时长</div>
+              <div class="use-limit-box">
+                <div class="use-limit-row">
+                  <label class="svc-toggle use-limit-switch">
+                    <input type="checkbox" id="cfgLimitEnable">
+                    <span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>
+                  </label>
+                  <span class="use-limit-label">启用每日使用时长限制</span>
+                  <div class="use-limit-minutes"><span class="stat-label">每日上限(分钟)</span>
+                    <input type="number" id="cfgLimitMinutes" class="input-text" value="" placeholder="60" min="0" max="1440" step="10"></div>
+                </div>
+                <div class="use-limit-stat" id="limitStat">今日已用 -- 分钟（未启用）</div>
+                <div class="use-limit-row">
+                  <label class="svc-toggle use-limit-switch">
+                    <input type="checkbox" id="cfgLimitDelayTool">
+                    <span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>
+                  </label>
+                  <span class="use-limit-label">允许语音「再玩 N 分钟」延长</span>
+                  <button class="btn btn-ghost btn-sm" onclick="limitDelayNow(15)" id="btnLimitDelay">临时延长15分钟</button>
+                </div>
+                <div class="use-limit-sched">
+                  <div class="use-limit-row">
+                    <label class="svc-toggle use-limit-switch">
+                      <input type="checkbox" id="cfgLimitSched">
+                      <span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>
+                    </label>
+                    <span class="use-limit-label">使用时段限制 <span class="form-hint">（时段外禁止唤醒）</span></span>
+                  </div>
+                  <div class="sched-days" id="schedDays">
+                    <label class="sched-day"><input type="checkbox" value="1"><span>日</span></label>
+                    <label class="sched-day"><input type="checkbox" value="2"><span>一</span></label>
+                    <label class="sched-day"><input type="checkbox" value="4"><span>二</span></label>
+                    <label class="sched-day"><input type="checkbox" value="8"><span>三</span></label>
+                    <label class="sched-day"><input type="checkbox" value="16"><span>四</span></label>
+                    <label class="sched-day"><input type="checkbox" value="32"><span>五</span></label>
+                    <label class="sched-day"><input type="checkbox" value="64"><span>六</span></label>
+                  </div>
+                  <div class="timeout-row">
+                    <div class="timeout-item"><span class="stat-label">时段1</span><input type="text" id="cfgLimitSpan1" class="input-text" value="" placeholder="1600-2000"></div>
+                    <div class="timeout-item"><span class="stat-label">时段2(可选)</span><input type="text" id="cfgLimitSpan2" class="input-text" value="" placeholder="0900-1100"></div>
+                  </div>
+                </div>
               </div>
-              <div class="form-group">
-                <label class="form-label">监听模式 <span class="form-hint">（AutoStop：一问一答；Realtime：可随时打断）</span></label>
-                <select id="cfgListeningMode" class="select">
-                  <option value="autostop" selected>AutoStop（自动停止，推荐）</option>
-                  <option value="realtime">Realtime（实时模式，AEC 效果有限）</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label class="form-label">AEC 回声消除方案 <span class="form-hint">（本地：设备端NLMS，当前可用；云端：服务器端消除，需服务器支持，当前网关未开放，留作备用；下次会话生效）</span></label>
-                <select id="cfgAecMode" class="select">
-                  <option value="local">本地 AEC（默认）</option>
-                  <option value="cloud">云端 AEC</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label class="form-label">自定义 WS URL <span class="form-hint">（使用自定义服务端地址，留空则使用官方地址）</span></label>
-                <input type="text" id="cfgCustomWsUrl" class="input-text" value="" placeholder="wss://your-server.com/xiaozhi/v1/">
-              </div>
-              <div style="display:flex;gap:8px;margin-bottom:12px">
+
+              <details class="advanced-fold" id="advancedFold">
+                <summary>更多选项（进阶）</summary>
+                <div class="fold-body">
+                  <div class="form-group">
+                    <label class="form-label">当前服务地址 <span class="form-hint">（助手实际连接的 WebSocket 地址，来自官方激活配置）</span></label>
+                    <input type="text" id="curWsUrl" class="input-text value-mono" value="--" readonly>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">自定义 WS URL <span class="form-hint">（使用自建服务端时填写，留空使用官方地址）</span></label>
+                    <input type="text" id="cfgCustomWsUrl" class="input-text" value="" placeholder="wss://your-server.com/xiaozhi/v1/">
+                  </div>
+                  <div class="use-limit-row">
+                    <label class="svc-toggle use-limit-switch">
+                      <input type="checkbox" id="cfgBootPushDisable">
+                      <span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>
+                    </label>
+                    <span class="use-limit-label">开机不打扰 <span class="form-hint">（禁用开机主动播报问候）</span></span>
+                  </div>
+                </div>
+              </details>
+
+              <div style="display:flex;gap:8px;margin-bottom:12px;margin-top:4px">
                 <button class="btn btn-accent" onclick="saveAssistantConfig()" style="flex:1">保存配置</button>
                 <button class="btn btn-ghost" onclick="restoreAssistantDefaults()" style="flex:1">恢复默认值</button>
               </div>
@@ -314,7 +396,7 @@
               </div>
             </div>
             <div class="assistant-right">
-              <div class="form-label-row"><label class="form-label">MCP 工具列表</label><button class="btn btn-accent btn-xs" onclick="mcpToolAdd()">+ 新建</button></div>
+              <div class="form-label-row"><label class="form-label">MCP 工具 <span class="form-hint">（助手固件内置，语音可调用）</span></label></div>
               <div id="mcpToolsList" class="mcp-tools-list"></div>
             </div>
           </div>
@@ -322,33 +404,19 @@
           <div class="section-overlay not-installed-overlay" id="assistantNotInstalledOverlay" style="display:none"><div class="overlay-text" id="notInstalledText">未安装语音助手</div><button class="btn btn-primary" onclick="doDeploy()" style="margin-top:12px">部署语音助手</button></div>
         </section>
 
-        <div class="grid-2col">
-          <section class="card">
-            <div class="card-header">
-              <h2>助手环境自检</h2>
-              <div class="card-actions">
-                <button class="btn btn-primary btn-sm" onclick="runDiag()" id="btnDiag">运行自检</button>
-              </div>
+        <section class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <h2>文件管理</h2>
+            <div class="card-actions">
+              <button class="btn btn-ghost btn-sm" onclick="refreshFilesWithFlash()">刷新</button>
+              <button class="btn btn-accent btn-sm" onclick="triggerUpload()">上传</button>
+              <input type="file" id="uploadFile" class="file-input" onchange="doUpload()" multiple>
             </div>
-            <div id="diagContainer" class="diag-container">
-              <div class="empty-state">点击「运行自检」检测设备是否满足语音助手运行环境</div>
-            </div>
-          </section>
-
-          <section class="card">
-            <div class="card-header">
-              <h2>文件管理</h2>
-              <div class="card-actions">
-                <button class="btn btn-ghost btn-sm" onclick="refreshFilesWithFlash()">刷新</button>
-                <button class="btn btn-accent btn-sm" onclick="triggerUpload()">上传</button>
-                <input type="file" id="uploadFile" class="file-input" onchange="doUpload()" multiple>
-              </div>
-            </div>
-            <div id="fileContainer" class="file-container">
-              <div class="empty-state">等待连接设备...</div>
-            </div>
-          </section>
-        </div>
+          </div>
+          <div id="fileContainer" class="file-container">
+            <div class="empty-state">等待连接设备...</div>
+          </div>
+        </section>
 
         <section class="card">
           <div class="card-header"><h2>日志</h2></div>
@@ -512,6 +580,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=29"></script>
+<script src="/app.js?v=30"></script>
 </body>
 </html>

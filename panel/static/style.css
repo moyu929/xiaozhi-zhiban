@@ -1455,3 +1455,178 @@ body {
   background: rgba(50,240,140,0.3);
   color: #fff;
 }
+
+/* ==================== v26: 助手设置分组 / 使用时长 / 进阶折叠 / 插件卡 ==================== */
+
+.settings-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.settings-group-title::before {
+  content: '';
+  width: 3px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--accent-gradient);
+}
+
+.use-limit-box {
+  padding: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.use-limit-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.use-limit-label {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.use-limit-minutes {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.use-limit-minutes .input-text { width: 84px; }
+.use-limit-stat {
+  padding: 8px 10px;
+  background: rgba(50,240,140,0.06);
+  border: 1px solid rgba(50,240,140,0.15);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.use-limit-sched {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-color);
+}
+.sched-days {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.sched-day {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 28px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+}
+.sched-day input { display: none; }
+.sched-day:has(input:checked) {
+  border-color: rgba(50,240,140,0.5);
+  background: rgba(50,240,140,0.1);
+  color: var(--accent);
+}
+
+.advanced-fold {
+  margin: 12px 0 4px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+.advanced-fold summary {
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.advanced-fold summary::before {
+  content: '▸ ';
+  color: var(--text-muted);
+}
+.advanced-fold[open] summary::before { content: '▾ '; }
+.advanced-fold summary:hover { color: var(--text-primary); }
+.advanced-fold .fold-body {
+  padding: 4px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.advanced-fold .form-group { margin-bottom: 0; }
+
+/* 插件卡片 */
+.plugin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.plugin-item {
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.plugin-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.plugin-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.plugin-id {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: "SF Mono", "Consolas", monospace;
+  padding: 1px 6px;
+  background: var(--bg-input);
+  border-radius: 4px;
+}
+.plugin-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.plugin-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.plugin-btns {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.plugin-tip {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}

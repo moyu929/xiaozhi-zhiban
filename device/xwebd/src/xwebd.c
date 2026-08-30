@@ -2345,7 +2345,8 @@ static int handle_get_assistant_config(int fd, const char *body, const char *que
     if (access(XWEBD_SAIR_BIN, F_OK) != 0)
         return send_json(fd, 200, "{\"ws_url\":\"\",\"ws_token\":\"\",\"log_level\":\"\",\"mcp_endpoint\":\"\",\"listening_mode\":\"\"}");
 
-    char buf[2048] = "";
+    /* sair_config.json 含 use_limit 全块(~700B)且随字段增加膨胀, 8192 防截断 */
+    char buf[8192] = "";
     int cfd = open("/tmp/sair_config.json", O_RDONLY);
     if (cfd >= 0) {
         int n = read(cfd, buf, sizeof(buf) - 1);
