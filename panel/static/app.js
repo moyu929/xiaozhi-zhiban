@@ -808,6 +808,7 @@ function resetWirelessUI() {
     $('cfgLimitSpan2').value = '';
     document.querySelectorAll('#schedDays input[type=checkbox]').forEach(function(cb) { cb.checked = false; });
     $('limitStat').textContent = '今日已用 -- 分钟（未启用）';
+    $('cfgScreenOffSec').value = '';
     $('blSlider').value = 150;
     $('blValue').textContent = '--';
     $('blPersist').checked = false;
@@ -1461,6 +1462,7 @@ async function refreshConfig() {
         if (r.ws_ping_interval) $('cfgWsPingInterval').value = Math.round(r.ws_ping_interval / 1000);
         if (r.ws_url) $('curWsUrl').value = r.ws_url;
         if (r.boot_push_disable !== undefined) $('cfgBootPushDisable').checked = !!r.boot_push_disable;
+        if (r.screen_off_idle_sec !== undefined) $('cfgScreenOffSec').value = r.screen_off_idle_sec;
         updateAecVisibility();
         var ul = r.use_limit;
         if (ul) {
@@ -1638,6 +1640,8 @@ async function saveAssistantConfig() {
     if (sessionTimeout > 0) config.session_timeout = sessionTimeout * 1000;
     if (wakeupCooldown > 0) config.wakeup_cooldown = wakeupCooldown * 1000;
     if (wsPingInterval > 0) config.ws_ping_interval = wsPingInterval * 1000;
+    var screenOffSec = parseInt($('cfgScreenOffSec').value);
+    if (!isNaN(screenOffSec) && screenOffSec >= 0) config.screen_off_idle_sec = screenOffSec;
     /* 每日使用时长限制 */
     config.use_limit_enable = $('cfgLimitEnable').checked ? 1 : 0;
     var limitMinutes = parseInt($('cfgLimitMinutes').value);
@@ -1691,6 +1695,7 @@ async function restoreAssistantDefaults() {
     $('cfgSessionTimeout').value = '300';
     $('cfgWakeupCooldown').value = '3';
     $('cfgWsPingInterval').value = '25';
+    $('cfgScreenOffSec').value = '0';
     $('cfgCustomWsUrl').value = '';
     $('cfgBootPushDisable').checked = false;
     $('cfgLimitEnable').checked = false;
@@ -1712,6 +1717,7 @@ async function restoreAssistantDefaults() {
             session_timeout: 300000,
             wakeup_cooldown: 3000,
             ws_ping_interval: 25000,
+            screen_off_idle_sec: 0,
             custom_ws_url: '',
             boot_push_disable: 0,
             use_limit_enable: 0,

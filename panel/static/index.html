@@ -311,6 +311,10 @@
                 <input type="text" id="cfgMcpEndpoint" class="input-text" value="" placeholder="wss://api.xiaozhi.me/mcp/?token=...">
               </div>
               <div class="form-group">
+                <label class="form-label">空闲息屏 <span class="form-hint">（对话中无输出 N 秒后自动息屏，语音继续；0 = 不息屏）</span></label>
+                <input type="number" id="cfgScreenOffSec" class="input-text" value="" placeholder="30" min="0" max="3600" step="5">
+              </div>
+              <div class="form-group">
                 <label class="form-label">超时参数 <span class="form-hint">（单位：秒）</span></label>
                 <div class="timeout-row">
                   <div class="timeout-item"><span class="stat-label">监听超时</span><input type="number" id="cfgListenTimeout" class="input-text" value="" placeholder="120" min="10" step="10"></div>

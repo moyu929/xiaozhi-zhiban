@@ -18,6 +18,8 @@
 #include "config_manager.h"
 #include "diag_module.h"
 #include "use_limit.h"
+#include "display_ctrl.h"
+#include "applib_api.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -118,13 +120,17 @@ void api_server_write_config(void)
     json_escape(g_app.config.ws_url, esc_ws_url, sizeof(esc_ws_url));
     json_escape(g_app.config.ws_token, esc_ws_token, sizeof(esc_ws_token));
     json_escape(g_app.config.mcp_endpoint, esc_mcp, sizeof(esc_mcp));
+    /* 会话息屏秒数(display_ctrl 域, libapconfig 持久) */
+    char so_buf[16] = "0";
+    if (get_config("SCREEN_OFF_IDLE_SEC", so_buf, sizeof(so_buf)) <= 0 || !so_buf[0])
+        snprintf(so_buf, sizeof(so_buf), "0");
     char buf[4096];
     int len = snprintf(buf, sizeof(buf),
         "{\"ws_url\":\"%s\",\"ws_token\":\"%s\",\"log_level\":\"%s\","
         "\"listen_timeout\":%llu,\"session_timeout\":%llu,"
         "\"wakeup_cooldown\":%llu,\"ws_ping_interval\":%llu,"
         "\"mcp_endpoint\":\"%s\",\"listening_mode\":\"%s\",\"aec_mode\":\"%s\","
-        "\"boot_push_disable\":%d,"
+        "\"boot_push_disable\":%d,\"screen_off_idle_sec\":%d,"
         "\"use_limit\":{\"enable\":%d,\"minutes\":%d,\"spent_sec\":%ld,"
         "\"remain_sec\":%ld,\"locked\":%d,\"delay_until\":%ld,\"delay_tool\":%d,"
         "\"sched\":{\"enable\":%d,\"days\":%d,\"span1\":\"%s\",\"span2\":\"%s\",\"in_span\":%d}}}\n",
@@ -141,6 +147,7 @@ void api_server_write_config(void)
         g_app.listening_mode == LISTENING_MODE_REALTIME ? "realtime" : "autostop",
         g_app.aec_mode ? "cloud" : "local",
         boot_push_disable_enabled(),
+        atoi(so_buf),
         use_limit_get_enable(),
         use_limit_get_minutes(),
         use_limit_spent_sec(),
@@ -430,6 +437,20 @@ void api_server_check_commands(void)
                     fclose(bfp);
                 }
                 PLOG_I(TAG, "boot_push_disable=%d 已持久化 (60s内或重启后生效)", val);
+                api_server_write_config();
+            }
+        }
+        {
+            /* 会话息屏秒数(display_ctrl 域): 与语音 self.screen_off_set 同款持久化 */
+            int val = -1;
+            if (parse_json_int(buf, "screen_off_idle_sec", &val) == 0 && val >= 0 && val <= 3600)
+            {
+                char sv[16];
+                snprintf(sv, sizeof(sv), "%d", val);
+                set_config("SCREEN_OFF_IDLE_SEC", sv, strlen(sv));
+                sync_config();
+                display_ctrl_reload_config();
+                PLOG_I(TAG, "screen_off_idle_sec=%d 已设置(0=不息屏)", val);
                 api_server_write_config();
             }
         }
