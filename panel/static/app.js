@@ -260,7 +260,13 @@ function updateViewportHeight() {
     var pageId = S.mode === 'wired' ? 'wiredPage' : 'wirelessPage';
     var page = $(pageId);
     if (viewport && page) {
-        viewport.style.height = page.scrollHeight + 'px';
+        var h = page.scrollHeight;
+        var cur = parseInt(viewport.style.height, 10) || 0;
+        /* 死区(2026-08-31): scrollHeight 整数舍入在高 DPI 缩放下 ±1px 震荡,
+         * ResizeObserver 回调写高度又触发 RO, 无限循环刷死主线程——
+         * 表现为无线连接后整页转圈卡死、无任何后续请求(实测教训) */
+        if (Math.abs(h - cur) <= 2) return;
+        viewport.style.height = h + 'px';
     }
 }
 
