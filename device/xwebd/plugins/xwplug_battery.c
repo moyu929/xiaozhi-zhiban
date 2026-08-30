@@ -204,6 +204,10 @@ static void install_poweroff_guard(void)
 static void sampler_child(void)
 {
     prctl(PR_SET_NAME, "xwplug-bat-c");
+    /* 插件进程被网关重启/卸载时随之终止, 防采样进程泄漏
+     * (2026-08-31 实测: 插件 reinstall 后旧子进程变孤儿继续跑, 双份 charge_log) */
+    prctl(PR_SET_PDEATHSIG, SIGKILL);
+    if (getppid() == 1) _exit(0); /* fork 后父已死的竞态兜底 */
     int last_flagged = -1;
     int low_streak = 0, fired = 0, fired_rounds = 0;
     int cycle = 0;

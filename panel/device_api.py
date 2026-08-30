@@ -15,6 +15,7 @@ import time
 import logging
 import threading
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 from urllib.error import URLError, HTTPError
 from config import DEFAULT_DEVICE_HOST, DEFAULT_XWEBD_PORT
 
@@ -104,6 +105,18 @@ class XwebdAPI:
                 result = json.loads(resp.read().decode("utf-8"))
                 logger.debug("<- %s %s: ok", method, path)
                 return result
+        except HTTPError as e:
+            # 设备端 4xx/5xx: 解析错误应答并带上状态码(供路由层透传)
+            logger.warning("<- %s %s: HTTP %s", method, path, e.code)
+            try:
+                result = json.loads(e.read().decode("utf-8"))
+                if not isinstance(result, dict):
+                    result = {}
+            except Exception:
+                result = {}
+            result.setdefault("error", f"HTTP {e.code}")
+            result["status"] = e.code
+            return result
         except Exception as e:
             logger.warning("<- %s %s: %s", method, path, e)
             return {"error": str(e)}

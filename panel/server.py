@@ -22,6 +22,7 @@ import time
 from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote as url_quote
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 import webbrowser
 import threading
 import subprocess
@@ -745,6 +746,16 @@ def _api_files_download(handler, xwebd, body, query):
             handler.send_header("Content-Length", str(len(data)))
             handler.end_headers()
             handler.wfile.write(data)
+    except HTTPError as e:
+        # 设备端拒绝(如 400 越权路径): 透传状态码
+        try:
+            err = json.loads(e.read().decode("utf-8"))
+            if not isinstance(err, dict):
+                err = {}
+        except Exception:
+            err = {}
+        err.setdefault("error", f"HTTP {e.code}")
+        return err, e.code
     except Exception as e:
         return {"error": str(e)}, 500
     return _STREAM_SENTINEL
@@ -1324,11 +1335,16 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         """读取并解析 HTTP 请求体中的 JSON 数据
 
         Returns:
-            dict: 解析后的 JSON 数据，无请求体时返回空字典
+            dict: 解析后的 JSON 数据，无请求体时返回空字典；
+            None: 请求体存在但不是合法 JSON（调用处应回 400）
         """
         length = int(self.headers.get("Content-Length", 0))
         if length > 0:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                return None
         return {}
 
     def do_GET(self):
@@ -1373,6 +1389,9 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
                 self._handle_api("POST", path, None, query)
             else:
                 data = self._read_body()
+                if data is None:
+                    self._send_json({"error": "Invalid JSON body"}, 400)
+                    return
                 self._handle_api("POST", path, data, query)
         else:
             self.send_error(404)
@@ -1389,6 +1408,9 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         if path.startswith("/api/"):
             data = self._read_body()
+            if data is None:
+                self._send_json({"error": "Invalid JSON body"}, 400)
+                return
             self._handle_api("PUT", path, data, query)
         else:
             self.send_error(404)
@@ -1537,6 +1559,10 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
                 data, status = result
             else:
                 data, status = result, 200
+            # 代理层设备端错误(dict 含 error+status)透传原状态码, 如 400 越权路径
+            if (status == 200 and isinstance(data, dict)
+                    and "error" in data and isinstance(data.get("status"), int)):
+                status = data["status"]
             self._send_json(data, status)
             return
         if not xwebd and (path.startswith("/api/assistant/") or path.startswith("/api/files/") or path == "/api/upload-progress"):
