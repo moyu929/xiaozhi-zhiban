@@ -827,7 +827,7 @@ function resetWirelessUI() {
     document.querySelectorAll('#schedDays input[type=checkbox]').forEach(function(cb) { cb.checked = false; });
     $('limitStat').textContent = '今日已用 -- 分钟（未启用）';
     $('cfgScreenOffSec').value = '';
-    $('blSlider').value = 150;
+    $('blSlider').value = 400;
     $('blValue').textContent = '--';
     $('blPersist').checked = false;
     $('volSlider').value = 20;

@@ -923,13 +923,36 @@ static int handle_get_services(int fd, const char *body, const char *query) {
             }
         }
     }
+    /* 灯控聚合插件(2026-08-31): led/key_backlight 状态插件在线时取插件(含其
+     * 自有持久化), 离线回落内置读法; 屏幕背光状态不经此接口(panel 走 /api/backlight) */
     int led_enabled = (g_persist_led < 0) ? 1 : g_persist_led;
     int precache_enabled = g_persist_precache;
     int key_backlight_enabled = -1;
     {
-        char bl_buf[8] = {0};
-        if (read_file_string("/sys/class/input/input2/bl_onoff", bl_buf, sizeof(bl_buf)) > 0) {
-            key_backlight_enabled = (bl_buf[0] == '1') ? 1 : 0;
+        char pr[512];
+        if (xwplug_is_online("lights") &&
+            xwplug_request("lights", "GET", "state", NULL, 0, pr, sizeof(pr)) == 200) {
+            const char *led_p = strstr(pr, "\"led\":");
+            if (led_p) {
+                const char *end = strchr(led_p, '}');
+                if (end) {
+                    if (strstr(led_p, "null") && strstr(led_p, "null") < end) led_enabled = 1;
+                    else led_enabled = (strstr(led_p, "true") && strstr(led_p, "true") < end) ? 1 : 0;
+                }
+            }
+            const char *kb_p = strstr(pr, "\"key_backlight\":");
+            if (kb_p) {
+                const char *end = strchr(kb_p, '}');
+                if (end) {
+                    if (strstr(kb_p, "null") && strstr(kb_p, "null") < end) key_backlight_enabled = -1;
+                    else key_backlight_enabled = (strstr(kb_p, "true") && strstr(kb_p, "true") < end) ? 1 : 0;
+                }
+            }
+        } else {
+            char bl_buf[8] = {0};
+            if (read_file_string("/sys/class/input/input2/bl_onoff", bl_buf, sizeof(bl_buf)) > 0) {
+                key_backlight_enabled = (bl_buf[0] == '1') ? 1 : 0;
+            }
         }
     }
 
@@ -1039,7 +1062,9 @@ static void apply_persist_conf(void) {
             XLOG_I(TAG, "恢复Telnet: 开启(开机自启)");
         }
     }
-    if (g_persist_led >= 0) {
+    /* 灯控插件已装则呼吸灯恢复由插件自管(自有 conf + fork 重试), xwebd 跳过
+     * 避免双写; 插件卸载后本逻辑自动接管(09 条件改写模式) */
+    if (g_persist_led >= 0 && !xwplug_is_installed("lights")) {
         int retries = 3;
         while (retries > 0) {
             if (send_led_cmd(g_persist_led) == 0) break;
@@ -1129,6 +1154,14 @@ static int handle_post_service_toggle(int fd, const char *body, const char *quer
         }
         XLOG_I(TAG, "Boot watchdog: %s", enable ? "enabled" : "disabled");
     } else if (strcmp(service, "led") == 0) {
+        /* 灯控插件在线则代调(持久化由插件自管), 失败/离线回落内置 */
+        if (xwplug_is_online("lights")) {
+            char pb[32], pr[256];
+            snprintf(pb, sizeof(pb), "{\"enable\":%d}", enable);
+            if (xwplug_request("lights", "PUT", "led", pb, (int)strlen(pb), pr, sizeof(pr)) == 200)
+                return send_json(fd, 200, "{\"ok\":true}");
+            XLOG_W(TAG, "灯控插件呼吸灯调用失败, 回落内置");
+        }
         if (send_led_cmd(enable) != 0) {
             XLOG_W(TAG, "呼吸灯: 发送控制消息失败");
         }
@@ -1137,6 +1170,13 @@ static int handle_post_service_toggle(int fd, const char *body, const char *quer
         save_persist_conf();
         XLOG_I(TAG, "呼吸灯: %s", enable ? "enabled" : "disabled");
     } else if (strcmp(service, "key_backlight") == 0) {
+        if (xwplug_is_online("lights")) {
+            char pb[32], pr[256];
+            snprintf(pb, sizeof(pb), "{\"enable\":%d}", enable);
+            if (xwplug_request("lights", "PUT", "key_backlight", pb, (int)strlen(pb), pr, sizeof(pr)) == 200)
+                return send_json(fd, 200, "{\"ok\":true}");
+            XLOG_W(TAG, "灯控插件按键背光调用失败, 回落内置");
+        }
         int bl_fd = open("/sys/class/input/input2/bl_onoff", O_WRONLY);
         if (bl_fd >= 0) {
             write(bl_fd, enable ? "1" : "0", 1);
@@ -2426,10 +2466,11 @@ static int handle_request(int client_fd) {
         return xwplug_forward(client_fd, "GET", "usb/mode", query, NULL, 0);
     if (strcmp(method, "POST") == 0 && strcmp(path, "/api/usb/mode") == 0)
         return xwplug_forward(client_fd, "POST", "usb/mode", query, body, body_received);
+    /* 灯控聚合插件(2026-08-31): 屏幕背光并入 xwplug-lights */
     if (strcmp(method, "GET") == 0 && strcmp(path, "/api/backlight") == 0)
-        return xwplug_forward(client_fd, "GET", "backlight/state", query, NULL, 0);
+        return xwplug_forward(client_fd, "GET", "lights/backlight", query, NULL, 0);
     if (strcmp(method, "PUT") == 0 && strcmp(path, "/api/backlight") == 0)
-        return xwplug_forward(client_fd, "PUT", "backlight/state", query, body, body_received);
+        return xwplug_forward(client_fd, "PUT", "lights/backlight", query, body, body_received);
 
     /* 路由表查找 */
     for (int i = 0; g_routes[i].handler; i++) {

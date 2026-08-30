@@ -38,6 +38,11 @@ int xwplug_handle_install(int fd, const char *body, const char *query);
 /* 查询某插件是否在线(旧路径改写判定用) */
 int xwplug_is_online(const char *name);
 
+/* 内部插件请求(不走 client socket): xwebd 内部功能代调插件;
+ * 返回 HTTP 码, resp 收响应体; 失败 -1(调用方回落内置实现) */
+int xwplug_request(const char *name, const char *method, const char *sub,
+                   const char *body, int body_len, char *resp, int resp_size);
+
 /* 查询某插件是否已安装(不看运行状态; xwebd 职责交接判定用) */
 int xwplug_is_installed(const char *name);
 

@@ -361,6 +361,57 @@ fwd_fail:
     return send_json(client_fd, 502, "{\"error\":\"plugin write fail\"}"), 1;
 }
 
+/* ---- 内部插件请求(2026-08-31, 灯控三灯聚合用): 不走 client socket ----
+ * 收响应体进调用方缓冲, 返回 HTTP 码; 连接失败/响应不可解析返回 -1。
+ * xwebd 内部功能(toggle/状态聚合)在插件在线时代为执行, 离线回落内置。 */
+int xwplug_request(const char *name, const char *method, const char *sub,
+                   const char *body, int body_len, char *resp, int resp_size)
+{
+    if (!xwplug_is_online(name)) return -1;
+    char sock_path[72];
+    sock_path_of(name, sock_path, sizeof(sock_path));
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) { close(fd); return -1; }
+
+    char req_head[512];
+    int rh = snprintf(req_head, sizeof(req_head), "%s /%s HTTP/1.0\r\nContent-Length: %d\r\n\r\n",
+                      method, sub, body ? body_len : 0);
+    struct timeval tv = {XWEBD_REQUEST_TIMEOUT, 0};
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    if (write(fd, req_head, rh) != rh) { close(fd); return -1; }
+    if (body && body_len > 0 && write(fd, body, body_len) != body_len) { close(fd); return -1; }
+
+    char rbuf[1024];
+    int total = 0;
+    while (total < (int)sizeof(rbuf) - 1) {
+        struct pollfd pfd = {fd, POLLIN, 0};
+        if (poll(&pfd, 1, 1000) <= 0) continue;
+        int n = read(fd, rbuf + total, sizeof(rbuf) - 1 - total);
+        if (n <= 0) break;
+        total += n;
+        rbuf[total] = '\0';
+        int code, body_off, blen;
+        if (parse_plug_response(rbuf, total, &code, &body_off, &blen) == 0 && total >= body_off + blen)
+            break;
+    }
+    close(fd);
+
+    int code, body_off, blen;
+    if (total == 0 || parse_plug_response(rbuf, total, &code, &body_off, &blen) != 0) return -1;
+    int avail = total - body_off;
+    if (blen > avail) blen = avail;
+    if (blen > resp_size - 1) blen = resp_size - 1;
+    memcpy(resp, rbuf + body_off, blen);
+    resp[blen] = '\0';
+    return code;
+}
+
 int xwplug_is_online(const char *name)
 {
     xwplug_t *p = find_plug(name);
