@@ -380,10 +380,10 @@ static void subtitle_typing_tick(void)
 #define BOT_PUSH_PATH "/tmp/bot_push.swf"
 #define BOT_PUSH_DISABLE_CFG "/var/upgrade/.boot_push_disable"
 
-/* 372(MSG_POWER_ON_PUSH)广播到达时刻与注入进度: 每日动画场景切换锚点
- * (2026-08-30 实测: WiFi连上(0x12C)后~1.7s 0x174 到达 sair) */
+/* 372(MSG_POWER_ON_PUSH)广播到达时刻: 背光误关核查锚点
+ * (2026-08-30 实测: WiFi连上(0x12C)后~1.7s 0x174 到达 sair,
+ *  372 处理路径关背光, 插件被 bind 拦截后无人恢复) */
 static uint64_t g_push_372_ms = 0;
-static int g_push_372_stage = 0;
 
 /* boot_push_tick 内用, main.c 前向引用(定义在下方) */
 extern app_context_t g_app;
@@ -438,7 +438,59 @@ static int find_pid_by_comm_prefix(const char *prefix)
     return found;
 }
 
-/* 幂等: enabled=1 → 普通文件删除后 mkdir 占位; enabled=0 → 空占位目录移除 */
+/* boot_push.so 的 bind 覆盖状态(/proc/mounts 查询) */
+static int boot_push_bind_active(void)
+{
+    FILE *f = fopen("/proc/mounts", "r");
+    if (!f)
+        return 0;
+    char line[256];
+    int found = 0;
+    while (fgets(line, sizeof(line), f))
+    {
+        if (strstr(line, "/usr/lib/boot_push.so"))
+        {
+            found = 1;
+            break;
+        }
+    }
+    fclose(f);
+    return found;
+}
+
+/* 终极拦截: 用坏文件 bind mount 盖住 /usr/lib/boot_push.so —— launcher 懒加载
+ * 时 dlopen 读到非 ELF 垃圾即失败, 每日动画场景代码根本不执行(黑屏无从发生).
+ * rootfs 只读无法改名, bind 是唯一无损覆盖手段; 解除=umount 即回原生.
+ * 时序: sair 主循环首 tick(~开机12s) bind 就位, 早于 372(~开机16s). */
+static void boot_push_bind(int enable)
+{
+    if (enable)
+    {
+        if (boot_push_bind_active())
+            return;
+        int fd = open("/var/upgrade/.bad_so_stub", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0)
+        {
+            write(fd, "NOTELF", 6);
+            close(fd);
+        }
+        if (system("mount --bind /var/upgrade/.bad_so_stub /usr/lib/boot_push.so 2>/dev/null") == 0)
+            PLOG_I("PUSH", "boot_push.so 已被坏文件 bind 覆盖(launcher dlopen 将失败)");
+        else
+            PLOG_W("PUSH", "boot_push.so bind 失败: %s", strerror(errno));
+    }
+    else
+    {
+        if (boot_push_bind_active())
+        {
+            if (system("umount /usr/lib/boot_push.so 2>/dev/null") == 0)
+                PLOG_I("PUSH", "boot_push.so bind 已解除");
+        }
+    }
+}
+
+/* 幂等: enabled=1 → 普通文件删除后 mkdir 占位 + bind 覆盖 so;
+ *       enabled=0 → 空占位目录移除 + bind 解除 */
 static void boot_push_apply(int enabled)
 {
     struct stat st;
@@ -464,6 +516,7 @@ static void boot_push_apply(int enabled)
                 PLOG_I("PUSH", "每日动画已恢复: 占位目录移除, 下次联网重新下载");
         }
     }
+    boot_push_bind(enabled);
 }
 
 static void boot_push_tick(void)
@@ -483,30 +536,32 @@ static void boot_push_tick(void)
     if (!enabled)
         return;
 
-    /* 372 广播锚定的黑屏退出(事件驱动, 仅开机联网后一次): launcher 收 372
-     * 后切换每日动画场景, swf 被占位挡住 → 黑帧+关背光(bl_power=4)残留.
-     * 场景切换完成后注入 HOME 退回主页: +2s 首注, +5s 双保险再注一次.
-     * HOME 对正常主页幂等; 全程最多 2 次注入, 不骚扰正常使用. */
-    if (g_push_372_ms)
+    /* 开机窗口背光误关自愈(直接状态修复, 非按键注入): 开机链中背光被关
+     * (bl_power=4)且无人恢复——实测与 372 相关但非严格伴随(21:28 轮无 372
+     * 仍被关), 故不锚定广播, 直接监测状态. 启动后 5 分钟窗口内: 背光被关
+     * 且非自研 display_ctrl 息屏态(屏保已被 forbid 不会自发关闭)则复原;
+     * 自研息屏(display_ctrl)与 MCP 手动息屏均置 self_off, 不会被误开. */
     {
-        uint64_t since = now - g_push_372_ms;
-        extern int mcp_inject_key(int key_code);
-        if (g_push_372_stage == 0 && since >= 2000)
+        static uint64_t last_chk_ms = 0;
+        uint64_t up_ms = now - g_app.boot_time_ms;
+        if (up_ms <= 300000 && now - last_chk_ms >= 2000)
         {
-            if (mcp_inject_key(GOODIX_KEY_HOME) == 0)
+            last_chk_ms = now;
+            int blp = -1;
+            int bfd = open("/sys/class/backlight/owl_backlight/bl_power", O_RDONLY);
+            if (bfd >= 0)
             {
-                g_push_372_stage = 1;
-                PLOG_I("PUSH", "372后%llums: 注入HOME退出每日动画黑场景(1/2)",
-                       (unsigned long long)since);
+                char bb[16] = {0};
+                if (read(bfd, bb, sizeof(bb) - 1) > 0)
+                    blp = atoi(bb);
+                close(bfd);
             }
-        }
-        else if (g_push_372_stage == 1 && since >= 5000)
-        {
-            if (mcp_inject_key(GOODIX_KEY_HOME) == 0)
+            extern int display_ctrl_is_off(void);
+            if (blp == 4 && !display_ctrl_is_off())
             {
-                g_push_372_stage = 2;
-                PLOG_I("PUSH", "372后%llums: 注入HOME双保险(2/2)",
-                       (unsigned long long)since);
+                if (system("/etc/backlight.sh open 2>/dev/null") == 0)
+                    PLOG_I("PUSH", "开机+%llums: 背光被误关(bl_power=4), 已复原",
+                           (unsigned long long)up_ms);
             }
         }
     }
@@ -1854,8 +1909,7 @@ static void proc_sys_msg(void *msg_ptr)
         if (boot_push_disable_enabled())
         {
             g_push_372_ms = get_time_ms();
-            g_push_372_stage = 0;
-            PLOG_I("IPC", "0x174 每日推送广播(抑制中): 锚定HOME注入退出黑场景");
+            PLOG_I("IPC", "0x174 每日推送广播(抑制中): 插件已被bind拦截, 背光自愈兜底中");
         }
         else
         {

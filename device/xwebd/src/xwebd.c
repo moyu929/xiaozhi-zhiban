@@ -1033,6 +1033,10 @@ static void apply_persist_conf(void) {
         if (!g_persist_telnet) {
             system("killall telnetd 2>/dev/null");
             XLOG_I(TAG, "恢复Telnet: 关闭");
+        } else if (find_pid_by_name("telnetd") <= 0) {
+            /* 持久开启态开机自启(原版仅 test.sh 拉起, test.sh 缺失时开机无 telnet) */
+            system("busybox telnetd -p 23 -l /bin/sh 2>/dev/null &");
+            XLOG_I(TAG, "恢复Telnet: 开启(开机自启)");
         }
     }
     if (g_persist_led >= 0) {
