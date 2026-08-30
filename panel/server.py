@@ -304,6 +304,18 @@ def _api_services_toggle(handler, xwebd, body, query):
     return xwebd._request("POST", "/api/services/toggle", data=body)
 
 
+@_api_route("GET", "/api/backlight")
+@_requires_xwebd
+def _api_backlight_get(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/backlight")
+
+
+@_api_route("PUT", "/api/backlight")
+@_requires_xwebd
+def _api_backlight_put(handler, xwebd, body, query):
+    return xwebd._request("PUT", "/api/backlight", data=body)
+
+
 @_api_route("GET", "/api/plugins")
 @_requires_xwebd
 def _api_plugins(handler, xwebd, body, query):

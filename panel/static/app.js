@@ -808,6 +808,9 @@ function resetWirelessUI() {
     $('cfgLimitSpan2').value = '';
     document.querySelectorAll('#schedDays input[type=checkbox]').forEach(function(cb) { cb.checked = false; });
     $('limitStat').textContent = '今日已用 -- 分钟（未启用）';
+    $('blSlider').value = 150;
+    $('blValue').textContent = '--';
+    $('blPersist').checked = false;
     $('cfgListenTimeout').value = '';
     $('cfgSessionTimeout').value = '';
     $('cfgWakeupCooldown').value = '';
@@ -918,10 +921,62 @@ function refreshAll() {
     refreshPlugins();
     refreshProcesses();
     refreshFiles();
+    refreshBacklight();
     refreshLogPanel('panel', false);
     refreshLogPanel('xwebd', false);
     refreshLogPanel('assistant', false);
     refreshConfig();
+}
+
+// ==================== 屏幕背光（xwplug-backlight / 内置回落） ====================
+
+async function refreshBacklight() {
+    if (!S.wl.connected) return;
+    var r = await api('/api/backlight');
+    if (r.error) return;
+    var d = r.data || r;
+    if (d.brightness) {
+        $('blSlider').value = d.brightness;
+        $('blValue').textContent = d.brightness;
+    }
+    $('blPersist').checked = !!d.enable;
+}
+
+function blOnInput() {
+    var s = $('blSlider');
+    $('blValue').textContent = s.value;
+    var pct = (s.value - s.min) / (s.max - s.min) * 100;
+    s.style.setProperty('--fill', pct + '%');
+}
+
+async function blSave() {
+    if (!S.wl.connected) return;
+    var v = parseInt($('blSlider').value, 10);
+    var r = await api('/api/backlight', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brightness: v }),
+    });
+    if (r.ok || !r.error) toast('背光已设置为 ' + v, 'success');
+    else toast('背光设置失败: ' + (r.error || ''), 'error');
+}
+
+async function blSavePersist() {
+    if (!S.wl.connected) return;
+    var en = $('blPersist').checked ? 1 : 0;
+    var r = await api('/api/backlight', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enable: en }),
+    });
+    if (r.ok || !r.error) {
+        toast(en ? '已开启开机恢复（重启后恢复当前亮度）' : '已关闭开机恢复', 'success');
+        var d = r.data || r;
+        if (d.brightness) { $('blSlider').value = d.brightness; $('blValue').textContent = d.brightness; }
+    } else {
+        toast('设置失败: ' + (r.error || ''), 'error');
+        $('blPersist').checked = !en;
+    }
 }
 
 async function refreshStatus() {

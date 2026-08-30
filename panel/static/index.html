@@ -168,6 +168,16 @@
               <div class="stat-item"><span class="stat-label">内存</span><span id="devMem" class="stat-value">--</span></div>
               <div class="stat-item"><span class="stat-label">磁盘</span><span id="devDisk" class="stat-value">--</span></div>
             </div>
+            <div class="backlight-row">
+              <span class="stat-label">屏幕背光</span>
+              <input type="range" id="blSlider" class="bl-slider" min="10" max="255" step="1" value="150" oninput="blOnInput()" onchange="blSave()">
+              <span id="blValue" class="bl-value">--</span>
+              <label class="svc-toggle" title="开机后自动恢复此亮度">
+                <input type="checkbox" id="blPersist" onchange="blSavePersist()">
+                <span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>
+              </label>
+              <span class="stat-label bl-persist-label">开机恢复</span>
+            </div>
             <div class="btn-row-even" style="margin-top:14px">
               <button class="btn btn-danger" onclick="wirelessRebootAndReconnect()">重启</button>
               <button class="btn btn-danger btn-outline" onclick="doPoweroff()">关机</button>
