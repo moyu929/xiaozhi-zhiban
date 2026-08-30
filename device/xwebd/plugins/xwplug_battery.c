@@ -8,6 +8,10 @@
  * - 伪低电守卫: 30s 检查, 换电池后查表 cap<=15% 但真实电压>=3.4V 且未充电
  *   时写 /tmp/.fake_low_power 标记(配合 poweroff 守卫脚本拦截误关机)
  * - poweroff 守卫脚本: 启动幂等安装 /var/upgrade/poweroff(PATH 优先级拦截)
+ * - 低电自护关机: 2026-08-30 实测原生低电链不触发(查表 cap 38->0 跳变,
+ *   深放至 3.12V 硬断电)。连续 2 轮(60s) 电压<=3.35V 且未充电 -> 写
+ *   /tmp/sair_cmd.json 走 sair 优雅关机链; 150s 后仍未关机则兜底
+ *   system("poweroff")。留痕 /var/upgrade/lowbattery.log
  *
  * 端点: GET /status -> 当前电池采样(兼作网关健康探测)
  */
@@ -23,6 +27,9 @@
 #define FAKE_LOW_FLAG   "/tmp/.fake_low_power"
 #define GUARD_VOLT_UV   3400000
 #define GUARD_LOW_CAP   15
+#define LOWBAT_VOLT_UV  3350000
+#define LOWBAT_LOG      "/var/upgrade/lowbattery.log"
+#define SAIR_CMD_PATH   "/tmp/sair_cmd.json"
 
 static int node_int(const char *path)
 {
@@ -96,6 +103,58 @@ static void battery_guard_once(int *last_flagged)
     }
 }
 
+/* ---- 低电自护关机 ---- */
+
+static void lowbattery_guard_once(int *low_streak, int *fired, int *fired_rounds)
+{
+    int volt = node_int(BATT_SYS "/voltage_now");
+    if (volt < 0) return;
+
+    int usb_on = node_int("/sys/class/power_supply/atc260x-usb/online");
+    int wall_on = node_int("/sys/class/power_supply/atc260x-wall/online");
+    if (usb_on > 0 || wall_on > 0) {
+        *low_streak = 0; /* 充电即解除, 插线瞬间不关机 */
+        return;
+    }
+
+    if (volt <= LOWBAT_VOLT_UV) (*low_streak)++; else *low_streak = 0;
+    if (*low_streak < 2) return;
+
+    if (!*fired) {
+        *fired = 1;
+        int cur = node_int(BATT_SYS "/current_now");
+        int cap = node_int(BATT_SYS "/capacity");
+        int fd = open(LOWBAT_LOG, O_WRONLY | O_APPEND | O_CREAT, 0644);
+        if (fd >= 0) {
+            char line[96];
+            int len = snprintf(line, sizeof(line), "LOWBAT v=%d i=%d cap=%d -> sair poweroff\n", volt, cur, cap);
+            if (len > 0) write(fd, line, len);
+            close(fd);
+        }
+    }
+
+    /* 命令不在位则补写(sair 读取后删除, panel 命令可能覆盖) */
+    if (access(SAIR_CMD_PATH, F_OK) != 0) {
+        int fd = open(SAIR_CMD_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+            write(fd, "{\"cmd\":\"poweroff\"}", 19);
+            close(fd);
+        }
+    }
+
+    /* 5 轮(150s)后仍在运行 = sair 未执行(崩溃/丢命令), 兜底裸关机 */
+    if (++*fired_rounds >= 5) {
+        int fd = open(LOWBAT_LOG, O_WRONLY | O_APPEND | O_CREAT, 0644);
+        if (fd >= 0) {
+            write(fd, "FALLBACK poweroff (sair not responsive)\n", 40);
+            close(fd);
+        }
+        system("poweroff");
+        sleep(60); /* poweroff 生效前不再重复触发 */
+        *fired_rounds = 0;
+    }
+}
+
 /* ---- poweroff 守卫脚本 (原 main.c install_poweroff_guard) ---- */
 
 static void install_poweroff_guard(void)
@@ -146,9 +205,11 @@ static void sampler_child(void)
 {
     prctl(PR_SET_NAME, "xwplug-bat-c");
     int last_flagged = -1;
+    int low_streak = 0, fired = 0, fired_rounds = 0;
     int cycle = 0;
     while (1) {
         battery_guard_once(&last_flagged);
+        lowbattery_guard_once(&low_streak, &fired, &fired_rounds);
         if (++cycle % 2 == 1) charge_log_once(); /* 60s 一点 */
         sleep(30);
     }

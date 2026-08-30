@@ -553,6 +553,14 @@ void api_server_check_commands(void)
         g_hot_update_pending = 1;
         PLOG_I(TAG, "热更新命令已排队 (g_hot_update_pending=1)");
     }
+    else if (strcmp(cmd, "poweroff") == 0)
+    {
+        /* 电池插件低电自护: 原生低电链实测不触发(2026-08-30 深放3.12V硬断电),
+         * 由插件检测低电后经此命令走优雅关机链(动画+提示音) */
+        PLOG_W(TAG, "收到低电关机命令, 走优雅关机链");
+        extern int platform_power_shutdown_elegant(void);
+        platform_power_shutdown_elegant();
+    }
     else
     {
         PLOG_W(TAG, "未知命令: %s", cmd);
