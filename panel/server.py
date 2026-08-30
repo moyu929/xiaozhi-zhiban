@@ -316,6 +316,24 @@ def _api_backlight_put(handler, xwebd, body, query):
     return xwebd._request("PUT", "/api/backlight", data=body)
 
 
+@_api_route("GET", "/api/usb/mode")
+@_requires_xwebd
+def _api_usb_mode_get(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/usb/mode")
+
+
+@_api_route("GET", "/api/plugin/battery/status")
+@_requires_xwebd
+def _api_battery_status(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/plugin/battery/status")
+
+
+@_api_route("GET", "/api/diag")
+@_requires_xwebd
+def _api_xwebd_diag(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/diag")
+
+
 @_api_route("GET", "/api/plugins")
 @_requires_xwebd
 def _api_plugins(handler, xwebd, body, query):

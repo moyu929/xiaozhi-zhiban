@@ -167,6 +167,12 @@
               <div class="stat-item"><span class="stat-label">运行时间</span><span id="devUptime" class="stat-value">--</span></div>
               <div class="stat-item"><span class="stat-label">内存</span><span id="devMem" class="stat-value">--</span></div>
               <div class="stat-item"><span class="stat-label">磁盘</span><span id="devDisk" class="stat-value">--</span></div>
+              <div class="stat-item"><span class="stat-label">USB 模式</span><span id="devUsbMode" class="stat-value">--</span></div>
+            </div>
+            <div class="backlight-row">
+              <span class="stat-label">音量</span>
+              <input type="range" id="volSlider" class="bl-slider" min="0" max="40" step="2" value="20" oninput="volOnInput()" onchange="volSave()">
+              <span id="volValue" class="bl-value">--</span>
             </div>
             <div class="backlight-row">
               <span class="stat-label">屏幕背光</span>
@@ -195,7 +201,7 @@
           </section>
 
           <section class="card" id="xwebdSection">
-            <div class="card-header"><h2>面板内核管理</h2><div class="card-actions"><span class="conn-status" id="xwebdConnStatus"><span class="conn-dot disconnected"></span>未连接</span></div></div>
+            <div class="card-header"><h2>面板内核管理</h2><div class="card-actions"><button class="btn btn-primary btn-sm" onclick="runXwebdDiag()" id="btnXwebdDiag">运行自检</button><span class="conn-status" id="xwebdConnStatus"><span class="conn-dot disconnected"></span>未连接</span></div></div>
             <div class="service-status">
               <span id="xwebdStatus" class="stat-value">--</span>
               <span id="xwebdVersion" class="badge">--</span>
@@ -223,6 +229,7 @@
               <button id="btnXwebdRestart" class="btn btn-ghost" onclick="doXwebdRestart()">重启</button>
               <button id="btnXwebdRemove" class="btn btn-danger" onclick="doXwebdRemove()">卸载</button>
             </div>
+            <div id="xwebdDiagContainer" class="diag-container" style="display:none;margin-top:12px"></div>
             <div class="section-overlay" id="xwebdOverlay" style="display:none"><div class="spinner"></div></div>
           </section>
         </div>
@@ -594,6 +601,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=30"></script>
+<script src="/app.js?v=31"></script>
 </body>
 </html>

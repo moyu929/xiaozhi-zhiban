@@ -812,6 +812,11 @@ function resetWirelessUI() {
     $('blSlider').value = 150;
     $('blValue').textContent = '--';
     $('blPersist').checked = false;
+    $('volSlider').value = 20;
+    $('volValue').textContent = '--';
+    $('devUsbMode').textContent = '--';
+    var xdiag = $('xwebdDiagContainer');
+    if (xdiag) { xdiag.style.display = 'none'; xdiag.innerHTML = ''; }
     $('cfgListenTimeout').value = '';
     $('cfgSessionTimeout').value = '';
     $('cfgWakeupCooldown').value = '';
@@ -923,10 +928,116 @@ function refreshAll() {
     refreshProcesses();
     refreshFiles();
     refreshBacklight();
+    refreshUsbMode();
+    refreshBatteryDetail();
     refreshLogPanel('panel', false);
     refreshLogPanel('xwebd', false);
     refreshLogPanel('assistant', false);
     refreshConfig();
+}
+
+// ==================== 音量 / USB 模式 / 电池详情（sair 原生 sound + battery 插件） ====================
+
+function volOnInput() {
+    var s = $('volSlider');
+    $('volValue').textContent = s.value;
+    var pct = (s.value - s.min) / (s.max - s.min) * 100;
+    s.style.setProperty('--fill', pct + '%');
+}
+
+async function volSave() {
+    if (!S.wl.connected) return;
+    var v = parseInt($('volSlider').value, 10);
+    var r = await api('/api/assistant/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ volume: v }),
+    });
+    if (r.ok || !r.error) toast('音量已设置为 ' + v + '/40', 'success');
+    else toast('音量设置失败: ' + (r.error || ''), 'error');
+}
+
+/* 低频同步音量滑条(语音 volume_up/down 或设备物理按键改过) */
+async function refreshVolumeOnly() {
+    if (!S.wl.connected) return;
+    var r = await api('/api/assistant/config');
+    if (r.error || r.volume === undefined || r.volume < 0) return;
+    if (parseInt($('volSlider').value, 10) !== r.volume) {
+        $('volSlider').value = r.volume;
+        volOnInput();
+    }
+}
+
+var USB_MODE_MAP = {
+    adb: 'ADB 调试',
+    mass_adb: '存储+ADB',
+    charge: '仅充电',
+    disabled: '已关闭'
+};
+
+async function refreshUsbMode() {
+    if (!S.wl.connected) return;
+    var r = await api('/api/usb/mode');
+    if (r.error) return;
+    var d = r.data || r;
+    if (d.mode) $('devUsbMode').textContent = USB_MODE_MAP[d.mode] || d.mode;
+}
+
+async function refreshBatteryDetail() {
+    if (!S.wl.connected) return;
+    /* battery 插件在线才可读; 未装/离线保持 /api/status 的纯百分比 */
+    var r = await api('/api/plugin/battery/status');
+    if (r.error) return;
+    var d = r.data || r;
+    var base = $('devBattery').textContent.replace(/\s*·.*$/, '');
+    var txt = base;
+    if (d.voltage_uv > 0) txt += ' · ' + (d.voltage_uv / 1000000).toFixed(2) + 'V';
+    if (d.charging) txt += ' · 充电中';
+    else if (d.status === 'Full') txt += ' · 已充满';
+    if (d.fake_low_flag) txt += ' · 伪低电标记';
+    $('devBattery').textContent = txt;
+}
+
+async function runXwebdDiag() {
+    var container = $('xwebdDiagContainer');
+    var btn = $('btnXwebdDiag');
+    if (!S.wl.connected) { toast('请先连接设备', 'error'); return; }
+    btn.disabled = true;
+    btn.textContent = '检测中...';
+    var result = null;
+    try {
+        var r = await api('/api/diag');
+        result = r.items ? r : (r.data ? r.data : null);
+    } catch(e) {}
+    if (!result || !result.items || !result.items.length) {
+        toast('自检失败: 未获取到结果', 'error');
+        btn.disabled = false;
+        btn.textContent = '运行自检';
+        return;
+    }
+    container.style.display = '';
+    var items = result.items;
+    var html = '<div class="diag-items">';
+    for (var i = 0; i < items.length; i++) {
+        html += '<div class="diag-item diag-item-pending" data-xdiag-idx="' + i + '">';
+        html += '<span class="diag-item-icon diag-icon-spinner"></span>';
+        html += '<span class="diag-item-name">' + escapeHtml(items[i].name || '') + '</span>';
+        html += '<span class="diag-item-msg">检测中...</span>';
+        html += '</div>';
+    }
+    html += '</div>';
+    container.innerHTML = html;
+    for (var m = 0; m < items.length; m++) {
+        await new Promise(function(resolve) { setTimeout(resolve, 80 + Math.random() * 120); });
+        var el = container.querySelector('[data-xdiag-idx="' + m + '"]');
+        if (!el) continue;
+        el.className = 'diag-item ' + (items[m].ok ? 'diag-item-ok' : 'diag-item-fail');
+        el.querySelector('.diag-item-icon').className = 'diag-item-icon';
+        el.querySelector('.diag-item-icon').innerHTML = items[m].ok ? '&#10003;' : '&#10007;';
+        el.querySelector('.diag-item-msg').textContent = items[m].message || '';
+    }
+    btn.disabled = false;
+    btn.textContent = '运行自检';
 }
 
 // ==================== 屏幕背光（xwplug-backlight / 内置回落） ====================
@@ -1000,6 +1111,9 @@ async function refreshStatus() {
         $('devUptime').textContent = formatUptime(d.uptime_s);
         $('devMem').textContent = formatMem(d.mem_free_kb, d.mem_total_kb, d.mem_cached_kb);
         $('devDisk').textContent = formatDisk(d.disk_used_kb, d.disk_total_kb);
+        refreshBatteryDetail();
+        S._tick = (S._tick || 0) + 1;
+        if (S._tick % 6 === 0) refreshVolumeOnly(); /* 30s 拉一次音量(语音调音量后同步) */
         if (d.state) {
             var stateEl = $('assistantState');
             if (stateEl) {
@@ -1463,6 +1577,10 @@ async function refreshConfig() {
         if (r.ws_url) $('curWsUrl').value = r.ws_url;
         if (r.boot_push_disable !== undefined) $('cfgBootPushDisable').checked = !!r.boot_push_disable;
         if (r.screen_off_idle_sec !== undefined) $('cfgScreenOffSec').value = r.screen_off_idle_sec;
+        if (r.volume !== undefined && r.volume >= 0) {
+            $('volSlider').value = r.volume;
+            volOnInput();
+        }
         updateAecVisibility();
         var ul = r.use_limit;
         if (ul) {

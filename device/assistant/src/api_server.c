@@ -124,13 +124,15 @@ void api_server_write_config(void)
     char so_buf[16] = "0";
     if (get_config("SCREEN_OFF_IDLE_SEC", so_buf, sizeof(so_buf)) <= 0 || !so_buf[0])
         snprintf(so_buf, sizeof(so_buf), "0");
+    /* 当前系统音量(原生 sound 库, 0-40; -1=原生库未加载) */
+    int vol = (g_app.mcp.sound_get_sys_volume) ? g_app.mcp.sound_get_sys_volume() : -1;
     char buf[4096];
     int len = snprintf(buf, sizeof(buf),
         "{\"ws_url\":\"%s\",\"ws_token\":\"%s\",\"log_level\":\"%s\","
         "\"listen_timeout\":%llu,\"session_timeout\":%llu,"
         "\"wakeup_cooldown\":%llu,\"ws_ping_interval\":%llu,"
         "\"mcp_endpoint\":\"%s\",\"listening_mode\":\"%s\",\"aec_mode\":\"%s\","
-        "\"boot_push_disable\":%d,\"screen_off_idle_sec\":%d,"
+        "\"boot_push_disable\":%d,\"screen_off_idle_sec\":%d,\"volume\":%d,"
         "\"use_limit\":{\"enable\":%d,\"minutes\":%d,\"spent_sec\":%ld,"
         "\"remain_sec\":%ld,\"locked\":%d,\"delay_until\":%ld,\"delay_tool\":%d,"
         "\"sched\":{\"enable\":%d,\"days\":%d,\"span1\":\"%s\",\"span2\":\"%s\",\"in_span\":%d}}}\n",
@@ -148,6 +150,7 @@ void api_server_write_config(void)
         g_app.aec_mode ? "cloud" : "local",
         boot_push_disable_enabled(),
         atoi(so_buf),
+        vol,
         use_limit_get_enable(),
         use_limit_get_minutes(),
         use_limit_spent_sec(),
@@ -438,6 +441,23 @@ void api_server_check_commands(void)
                 }
                 PLOG_I(TAG, "boot_push_disable=%d 已持久化 (60s内或重启后生效)", val);
                 api_server_write_config();
+            }
+        }
+        {
+            /* 系统音量(原生 sound 库, 0-40): 与语音 volume_up/down 同一通道, 立即生效 */
+            int val = -1;
+            if (parse_json_int(buf, "volume", &val) == 0 && val >= 0 && val <= 40)
+            {
+                if (g_app.mcp.sound_set_sys_volume)
+                {
+                    g_app.mcp.sound_set_sys_volume(val);
+                    PLOG_I(TAG, "volume=%d 已设置(原生音量)", val);
+                    api_server_write_config();
+                }
+                else
+                {
+                    PLOG_W(TAG, "volume 设置失败: 原生 sound 库未加载");
+                }
             }
         }
         {
