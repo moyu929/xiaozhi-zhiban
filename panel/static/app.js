@@ -3042,6 +3042,20 @@ document.addEventListener('DOMContentLoaded', function() {
     updateSairLocks();
     renderMcpTools();
 
+    /* 后台标签页暂停设备轮询(2026-08-31 性能优化):
+     * EventSource 挂后台不会断, 每条SSE流驱动 panel server 每5s全量拉设备
+     * /api/logs + 前端 5s 状态轮询——面板忘在后台也持续打设备。切走即停,
+     * 切回即恢复, 页面可见时行为不变 */
+    document.addEventListener('visibilitychange', function() {
+        if (S.mode !== 'wireless' || !S.wl.connected) return;
+        if (document.hidden) {
+            stopPolling();
+        } else {
+            startPolling();
+            refreshStatus();
+        }
+    });
+
     document.querySelectorAll('.svc-list,.plugin-list,.file-container,.log-container,.diag-container,.mcp-tools-list,.adb-device-list,.modal').forEach(function(el) {
         el.addEventListener('wheel', function(e) {
             /* 内容未溢出(无滚动条)时放行, 滚轮冒泡滚动整页(2026-08-31 用户要求) */

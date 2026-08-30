@@ -336,27 +336,11 @@ void audio_player_release_track(audio_player_t *player)
  *
  * 流程：Opus解码 → int16转int32 → 写入AudioTrack
  */
-/* Q7 诊断: 播放链统计(定位后移除) */
-static long s_diag_pkts, s_diag_samples, s_diag_fail;
-static time_t s_diag_t0;
-
+/* Q7 诊断播放链统计已移除(2026-08-31): 会话期每5s一条日志写NAND, 问题已定论 */
 int audio_player_write_opus(audio_player_t *player, const uint8_t *opus_data, size_t opus_len, uint32_t timestamp)
 {
     if (!player || !opus_data)
         return -1;
-
-    /* Q7 诊断: 播放链统计(每5秒汇总, 定位后移除) */
-    {
-        s_diag_pkts++;
-        time_t now = time(NULL);
-        if (now - s_diag_t0 >= 5)
-        {
-            PLOG_I("PLAYER", "[诊断] 收包%ld 写样本%ld 失败%ld",
-                   s_diag_pkts, s_diag_samples, s_diag_fail);
-            s_diag_pkts = s_diag_samples = s_diag_fail = 0;
-            s_diag_t0 = now;
-        }
-    }
 
     pthread_mutex_lock(&player->mutex);
 
@@ -419,12 +403,10 @@ int audio_player_write_opus(audio_player_t *player, const uint8_t *opus_data, si
         int ret = audio_track_write_data(player->track_handle, &params);
         if (ret != 0)
         {
-            s_diag_fail++;
             PLOG_W("PLAYER", "audio_track_write_data 写入失败: %d", ret);
             pthread_mutex_unlock(&player->mutex);
             return ret;
         }
-        s_diag_samples += chunk;
 
         offset += chunk;
     }

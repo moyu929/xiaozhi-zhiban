@@ -164,7 +164,7 @@ __attribute__((unused)) static int xwplug_json_int(const char *hay, const char *
             if (cfd < 0) continue;                                                \
                                                                                   \
             alarm(XWPLUG_REQ_TIMEOUT_SEC); /* 请求处理限时 */                       \
-            char buf[XWPLUG_REQ_MAX + 64];                                        \
+            char buf[XWPLUG_REQ_MAX + 64] = {0};                                  \
             int total = 0;                                                        \
             while (total < (int)sizeof(buf) - 1) {                                \
                 struct pollfd pfd = {cfd, POLLIN, 0};                             \
@@ -181,6 +181,11 @@ __attribute__((unused)) static int xwplug_json_int(const char *hay, const char *
                     if (got >= want) break; /* 头体收齐 */                         \
                 }                                                                 \
             }                                                                     \
+            /* total==0 = 网关 connect 探测(连上不发数据即关)或2s 无字节的僵尸连接  \
+             * (2026-08-31 修复: 此前未初始化栈缓冲被 sscanf/strstr 解析垃圾数据,  \
+             * 每5s×每插件跑一遍假请求+向已关socket写响应)。直接关闭, 真实转发     \
+             * 必先发请求头, 不受影响 */                                            \
+            if (total == 0) { close(cfd); alarm(0); continue; }                    \
                                                                                   \
             xwplug_req_t req;                                                     \
             memset(&req, 0, sizeof(req));                                         \

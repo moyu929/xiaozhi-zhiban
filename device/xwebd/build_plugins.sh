@@ -6,6 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build/plugins"
 mkdir -p "$BUILD_DIR"
 
+# 清掉已下架插件的残留二进制(backlight 已并入 lights, 旧文件会被网关当第7个插件spawn)
+rm -f "$BUILD_DIR"/xwplug-*
+
 SDK_PATH="${SDK_PATH:-$SCRIPT_DIR/../../toolchain/arm-buildroot-linux-uclibcgnueabi_sdk-buildroot}"
 CC=${CC:-arm-buildroot-linux-uclibcgnueabi-gcc}
 export PATH="$SDK_PATH/bin:$PATH"

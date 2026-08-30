@@ -107,7 +107,10 @@ static void *dc_thread_func(void *arg)
 
     while (g_dc.running)
     {
-        usleep(POLL_INTERVAL_MS * 1000);
+        /* 无事可做(未开限时限屏/无会话)时 5s 一轮(2026-08-31:
+         * 原 500ms 常驻空转=每秒2次无谓唤醒, 7x24 打断深睡驻留) */
+        int idle = (g_dc.interval_sec <= 0 || !g_dc.session_active || g_dc.screen_off);
+        usleep((idle ? 5000 : POLL_INTERVAL_MS) * 1000);
         if (g_dc.interval_sec > 0 && g_dc.session_active && !g_dc.screen_off &&
             now_ms() - g_dc.last_activity_ms >= (uint64_t)g_dc.interval_sec * 1000u)
         {

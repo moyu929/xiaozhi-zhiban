@@ -225,15 +225,9 @@ static void *send_thread_func(void *arg)
 
         while (proto->send_queue_count == 0 && proto->send_thread_running)
         {
-            struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
-            ts.tv_nsec += 100000000;
-            if (ts.tv_nsec >= 1000000000)
-            {
-                ts.tv_sec++;
-                ts.tv_nsec -= 1000000000;
-            }
-            pthread_cond_timedwait(&proto->send_queue_cond, &proto->send_queue_mutex, &ts);
+            /* 无限期等待(2026-08-31: 原100ms超时=会话期每秒10次空唤醒;
+             * 入队547行/destroy 344行/disconnect 477行均有 signal, 唤醒不缺) */
+            pthread_cond_wait(&proto->send_queue_cond, &proto->send_queue_mutex);
         }
 
         if (!proto->send_thread_running)

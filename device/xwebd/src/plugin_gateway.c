@@ -193,7 +193,7 @@ void xwplug_tick(void)
 {
     time_t now = time(NULL);
 
-    if (now - g_last_scan >= XWPLUG_PROBE_SEC) {
+    if (now - g_last_scan >= XWPLUG_SCAN_SEC) {
         g_last_scan = now;
         scan_plugins();
     }

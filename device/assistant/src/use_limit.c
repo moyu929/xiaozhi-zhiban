@@ -52,6 +52,7 @@ typedef struct {
     char sched_spans[UL_MAX_SPANS][12]; /* "HHMM-HHMM", 空=不限(多时段 2026-08-31) */
     uint64_t break_pending_ms;  /* 会话中断延迟窗到期时刻(MONO ms), 0=无 */
     uint64_t persist_last_ms;
+    long persisted_min;     /* 上次落盘时的 spent 整分(整分对齐节流) */
 } ul_ctx_t;
 
 /* 前向声明: 加载迁移在函数定义前使用 */
@@ -181,10 +182,15 @@ void use_limit_init(void)
 
 static void persist_if_needed(uint64_t now_ms)
 {
-    /* 打点节流：30s 或由 speaking 结束强制触发 */
+    /* 打点节流：30s 且 spent 已跨整分才落盘(2026-08-31: 每次落盘=
+     * cfg_set_int+sync_config 的 NAND 写, 会话期30s一次持续磨损闪存;
+     * 分钟级限额语义下 60s 粒度无感知差异, 跨重启误差≤60s) */
     if (now_ms - g_ul.persist_last_ms < 30000)
         return;
+    if ((long)(g_ul.spent_sec / 60) == (long)(g_ul.persisted_min))
+        return;
     g_ul.persist_last_ms = now_ms;
+    g_ul.persisted_min = (long)(g_ul.spent_sec / 60);
     cfg_set_int(UL_KEY_SPENT, (int)g_ul.spent_sec);
     sync_config();
 }

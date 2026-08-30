@@ -479,12 +479,15 @@ static void boot_push_tick(void)
 {
     static uint64_t last_ms = 0;
     uint64_t now = get_time_ms();
-    int enabled = boot_push_disable_enabled();
 
     /* bind 幂等维护, 60s 足够 */
     if (now - last_ms < 60000)
         return;
     last_ms = now;
+
+    /* (2026-08-31 挪到节流后: 每圈 open/read/close NAND 配置文件,
+     * 主循环 Idle 5圈/s 每天40万+次读; 60s 节流本就注释允许延迟生效) */
+    int enabled = boot_push_disable_enabled();
 
     boot_push_apply(enabled);
     if (!enabled)
@@ -1039,32 +1042,19 @@ static void *recorder_thread_func(void *arg)
 
     char buf[6144];
 
-    /* Q7 诊断: 采集层统计(每5秒汇总, 定位后移除) */
-    long r_batches = 0, r_bytes = 0, r_zero = 0;
-    time_t r_t0 = time(NULL);
-
-    /* 持续读取录音数据并分发 */
+    /* 持续读取录音数据并分发
+     * (Q7 诊断统计已移除, 2026-08-31: 每5s一条 INFO 常驻写 NAND, 30s fsync,
+     * 空闲期闪存永不静默, 设备发烫贡献源; 问题已定论不再需要) */
     while (app->recorder_running && g_running)
     {
         int n = audio_recorder_read(handle, buf, sizeof(buf));
         if (n <= 0)
         {
-            r_zero++;
             usleep(10000);
         }
         else
         {
-            r_batches++;
-            r_bytes += n;
             audio_dispatcher_dispatch(&app->audio_disp, (const int16_t *)buf, n / 2);
-        }
-        time_t r_now = time(NULL);
-        if (r_now - r_t0 >= 5)
-        {
-            PLOG_I("REC", "[诊断] read: %ld批/%ldB/零返回%ld次",
-                   r_batches, r_bytes, r_zero);
-            r_batches = r_bytes = r_zero = 0;
-            r_t0 = r_now;
         }
     }
 

@@ -13,7 +13,12 @@
 #define XWPLUG_DIR      "/var/upgrade/plugins"       /* 安装目录(jffs2 可写持久; /usr/local 在只读 rootfs 不可用) */
 #define XWPLUG_SOCK_DIR "/tmp/xwplug"                /* 套接字目录(tmpfs) */
 #define XWPLUG_MAX      8
-#define XWPLUG_PROBE_SEC    5                        /* 健康探测周期 */
+#define XWPLUG_PROBE_SEC    30                       /* 健康探测周期(2026-08-31 5->30:
+                                                        * 每5s connect 探测会唤醒全部插件进程+
+                                                        * jffs2 目录扫描, 抬底功耗; 掉线检测延迟
+                                                        * 5s->30s, 重spawn退避本就 5/15/60s, 端到端
+                                                        * 恢复时间几乎不变) */
+#define XWPLUG_SCAN_SEC     60                       /* 插件目录扫描周期(新增插件发现延迟) */
 #define XWPLUG_BACKOFF_1    5                        /* 退避: 5s/15s/60s/放弃 */
 #define XWPLUG_BACKOFF_2    15
 #define XWPLUG_BACKOFF_3    60

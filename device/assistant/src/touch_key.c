@@ -99,7 +99,7 @@ static void *touchkey_thread_func(void *arg)
                 strncpy(devpath, probed, sizeof(devpath) - 1);
                 devpath[sizeof(devpath) - 1] = '\0';
             }
-            tk->fd = open(devpath, O_RDONLY | O_NONBLOCK);
+            tk->fd = open(devpath, O_RDONLY);
         }
         if (tk->fd >= 0)
         {
@@ -114,19 +114,17 @@ static void *touchkey_thread_func(void *arg)
         }
     }
 
-    /* 主事件循环：读取并处理按键事件 */
+    /* 主事件循环：读取并处理按键事件
+     * (2026-08-31 改阻塞读: 原 O_NONBLOCK+10ms 轮询=每秒100次空唤醒,
+     * 持续打断内核深睡驻留, 设备空闲发烫贡献源; 阻塞读事件到达即返回,
+     * 按键延迟反而更低。destroy 经 close(fd) 使 read 返回错误退出) */
     while (tk->running)
     {
         int n = read(tk->fd, &ev, sizeof(ev));
         if (n < 0)
         {
-            /* 非阻塞模式下无数据可读，正常情况 */
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-            {
-                usleep(10000);
-                continue;
-            }
-            PLOG_E("KEY", "读取错误: %d", errno);
+            if (tk->running)
+                PLOG_E("KEY", "读取错误: %d", errno);
             break;
         }
         /* 数据不完整，跳过 */

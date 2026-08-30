@@ -109,13 +109,16 @@ int16_t audioproc_process_sample(int16_t mic, int16_t ref)
         return mic;
     }
 
-    /* ---- 远端估计 y = Σ w_i · x(i) ------------------------------------- */
+    /* ---- 远端估计 y = Σ w_i · x(i) -------------------------------------
+     * (2026-08-31 零权重跳过: 与更新循环的 if(x) 守卫对称; 旁路复位后权重
+     * 全零、多数 tap 收敛后接近零时, 估计循环退化成空遍历, 会话期省大笔CPU;
+     * 乘法次数减少, 数值结果不变——w[i]==0 的乘积本就贡献 0) */
     int32_t acc = 0;
     uint16_t k = a->x_idx;
     for (int i = 0; i < AP_TAPS; i++)
     {
-        int32_t x = a->x_hist[k];              /* Q15 */
-        acc += ((int32_t)x * a->w[i]) >> AP_W_Q; /* Q15*Q13>>13 = Q15 级 */
+        if (a->w[i])
+            acc += ((int32_t)a->x_hist[k] * a->w[i]) >> AP_W_Q; /* Q15*Q13>>13 = Q15 级 */
         k = (uint16_t)((k + 1) & (AP_TAPS - 1));
     }
     if (acc > 32767)  acc = 32767;

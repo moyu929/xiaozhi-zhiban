@@ -80,26 +80,8 @@ static void on_audio_data(const int16_t *data, int len, void *user_data)
     if (!rec)
         return;
 
-    /* Q7 诊断: 分发层到达统计(每5秒汇总, 定位后移除) */
-    {
-        static long s_calls, s_early, s_samples;
-        static time_t s_t0;
-        s_calls++;
-        if (!rec->sending && !audio_precache_is_active(&rec->precache))
-            s_early++;
-        s_samples += len / 3;
-        time_t now = time(NULL);
-        if (now - s_t0 >= 5)
-        {
-            PLOG_I("REC", "[诊断] cb到达%ld次(早退%ld) 样本%ld len=%d sending=%d",
-                   s_calls, s_early, s_samples, len, rec->sending);
-            s_calls = s_early = s_samples = 0;
-            s_t0 = now;
-        }
-    }
-
     if (!rec->sending && !audio_precache_is_active(&rec->precache))
-        return;
+        return; /* (Q7 诊断统计已移除, 2026-08-31: 每5s一条常驻日志写NAND, 发烫贡献源) */
 
     pthread_mutex_lock(&rec->mutex);
 

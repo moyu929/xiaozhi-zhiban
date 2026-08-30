@@ -244,7 +244,7 @@ static void cpu_sample_update(void) {
 
 /* ===== 进程查找(替代popen pidof) ===== */
 
-static pid_t find_pid_by_name(const char *name) {
+static pid_t find_pid_by_name_scan(const char *name) {
     DIR *d = opendir("/proc");
     if (!d) return 0;
     struct dirent *ent;
@@ -267,6 +267,32 @@ static pid_t find_pid_by_name(const char *name) {
     }
     closedir(d);
     return 0;
+}
+
+/* find_pid_by_name 2s TTL 缓存(2026-08-31 性能优化):
+ * /api/system 被面板 5s 轮询, 每次双调用全扫 /proc(逐 pid open/read comm);
+ * 2s 内进程增删对状态展示无感知差异。worker 单线程, 无需加锁。 */
+#define PID_CACHE_TTL 2
+static pid_t find_pid_by_name(const char *name) {
+    static struct { char name[32]; pid_t pid; time_t ts; int used; } cache[8];
+    time_t now = time(NULL);
+    for (int i = 0; i < 8; i++) {
+        if (cache[i].used && strcmp(cache[i].name, name) == 0 &&
+            now - cache[i].ts < PID_CACHE_TTL)
+            return cache[i].pid;
+    }
+    pid_t pid = find_pid_by_name_scan(name);
+    int slot = 0;
+    time_t oldest = now + PID_CACHE_TTL + 1;
+    for (int i = 0; i < 8; i++) {
+        if (!cache[i].used) { slot = i; break; }
+        if (cache[i].ts < oldest) { oldest = cache[i].ts; slot = i; }
+    }
+    snprintf(cache[slot].name, sizeof(cache[slot].name), "%s", name);
+    cache[slot].pid = pid;
+    cache[slot].ts = now;
+    cache[slot].used = 1;
+    return pid;
 }
 
 static pid_t find_pid_by_cmdline(const char *substr) {
@@ -660,14 +686,32 @@ static int handle_get_system(int fd, const char *body, const char *query) {
         }
     }
     {
+        /* 电池 sysfs 固定路径启动时探测一次(2026-08-31 性能优化):
+         * 三个路径在本机都存在时短路 popen——popen=fork+exec busybox cat/head,
+         * /api/system 被 5s 轮询, 每5秒 fork 一次是大开销 */
+        static int s_batt_checked = 0;
+        static const char *s_batt_path = NULL;
+        static const char *batt_paths[] = {
+            "/sys/class/power_supply/battery/capacity",
+            "/sys/class/power_supply/bq27520/capacity",
+            "/sys/class/power_supply/max170xx_battery/capacity"
+        };
+        if (!s_batt_checked) {
+            s_batt_checked = 1;
+            for (int i = 0; i < 3; i++)
+                if (access(batt_paths[i], R_OK) == 0) { s_batt_path = batt_paths[i]; break; }
+        }
         char buf2[16];
-        if (read_file_string("/sys/class/power_supply/battery/capacity", buf2, sizeof(buf2)) > 0)
+        int got = 0;
+        if (s_batt_path) {
+            got = read_file_string(s_batt_path, buf2, sizeof(buf2)) > 0;
+        } else {
+            got = 0;
+        }
+        if (got) {
             battery = atoi(buf2);
-        else if (read_file_string("/sys/class/power_supply/bq27520/capacity", buf2, sizeof(buf2)) > 0)
-            battery = atoi(buf2);
-        else if (read_file_string("/sys/class/power_supply/max170xx_battery/capacity", buf2, sizeof(buf2)) > 0)
-            battery = atoi(buf2);
-        else {
+        } else if (!s_batt_path) {
+            /* 固定路径全部缺失: 维持 popen 通配回退(行为不变) */
             FILE *pf = popen("cat /sys/class/power_supply/*/capacity 2>/dev/null | head -1", "r");
             if (pf) {
                 if (fgets(buf2, sizeof(buf2), pf)) {
@@ -695,6 +739,18 @@ static int handle_get_system(int fd, const char *body, const char *query) {
             close(sock);
         }
         if (!wifi_connected) {
+            /* popen 回退短路(2026-08-31): 启动时探测一次 ioctl 是否可用;
+             * 可用而未连=wifi 真断了, popen 再跑结果一样(浪费 fork+exec) */
+            static int s_ioctl_ok = -1;
+            if (s_ioctl_ok < 0) {
+                int probe = socket(AF_INET, SOCK_DGRAM, 0);
+                struct ifreq ifr;
+                memset(&ifr, 0, sizeof(ifr));
+                strncpy(ifr.ifr_name, "wlan0", IFNAMSIZ - 1);
+                s_ioctl_ok = (probe >= 0 && ioctl(probe, SIOCGIFFLAGS, &ifr) == 0) ? 1 : 0;
+                if (probe >= 0) close(probe);
+            }
+            if (!s_ioctl_ok) {
             FILE *fp = popen("ifconfig wlan0 2>/dev/null | grep -qE 'inet addr:|inet [0-9]' && echo yes || echo no", "r");
             if (fp) {
                 char tmp[8];
@@ -715,16 +771,26 @@ static int handle_get_system(int fd, const char *body, const char *query) {
                 }
                 if (fp) pclose(fp);
             }
+            }
         }
     }
 
     {
-        struct statvfs st;
-        if (statvfs(XWEBD_BASE_DIR, &st) == 0) {
-            disk_total = (long)((long long)st.f_blocks * st.f_bsize / 1024);
-            disk_free = (long)((long long)st.f_bavail * st.f_bsize / 1024);
-            disk_used = disk_total - disk_free;
+        /* statvfs 5s 缓存: jffs2 上有额外开销, 5s 内磁盘变化对状态展示无感知差异 */
+        static time_t s_sv_ts = 0;
+        static long s_total = 0, s_free = 0;
+        time_t now = time(NULL);
+        if (s_sv_ts == 0 || now - s_sv_ts >= 5) {
+            struct statvfs st;
+            if (statvfs(XWEBD_BASE_DIR, &st) == 0) {
+                s_total = (long)((long long)st.f_blocks * st.f_bsize / 1024);
+                s_free = (long)((long long)st.f_bavail * st.f_bsize / 1024);
+                s_sv_ts = now;
+            }
         }
+        disk_total = s_total;
+        disk_free = s_free;
+        disk_used = disk_total - disk_free;
     }
 
     if (access(XWEBD_SAIR_BIN, X_OK) == 0) {
@@ -768,6 +834,22 @@ static int handle_get_system(int fd, const char *body, const char *query) {
     return send_response(fd, 200, "application/json", buf, len);
 }
 
+/* /api/logs 响应缓存(2026-08-31 性能优化):
+ * 面板SSE每5s拉一次全量日志, 空闲时日志无新增也要走 jffs2 尾部64KB读取
+ * +解压+逐行JSON重建(单核A5上持续3-8%CPU, 设备空闲发烫主因之一)。
+ * worker单线程, 以 (source,lines,level)+两日志文件 size/mtime 为键缓存
+ * 响应体, 文件未变直接复用——空闲时成本降为两次 stat。 */
+typedef struct {
+    int valid;
+    int source;
+    int lines;
+    char level;
+    long sz[2];
+    long mt[2];
+    char *body;   /* malloc 的完整 JSON 体 */
+} logs_cache_t;
+static logs_cache_t s_logs_cache[2];
+
 static int handle_get_logs(int fd, const char *body, const char *query) {
     int lines = 100;
     char level_filter = 0;
@@ -792,6 +874,26 @@ static int handle_get_logs(int fd, const char *body, const char *query) {
     const char *log_names[] = {"sair", "xwebd"};
     int log_count = (source >= 1 && source <= 2) ? 1 : 2;
     int start_idx = (source >= 1 && source <= 2) ? source - 1 : 0;
+
+    /* 键比对: 两文件(本请求涉及部分)的 size/mtime 均未变即命中 */
+    long key_sz[2] = {-1, -1}, key_mt[2] = {-1, -1};
+    {
+        struct stat st;
+        for (int i = 0; i < log_count; i++) {
+            int idx = start_idx + i;
+            if (stat(log_paths[idx], &st) == 0) {
+                key_sz[idx] = st.st_size;
+                key_mt[idx] = st.st_mtime;
+            }
+        }
+    }
+    logs_cache_t *slot = &s_logs_cache[(source >= 1 && source <= 2) ? source - 1 : 0];
+    if (slot->valid && slot->source == source && slot->lines == lines &&
+        slot->level == level_filter &&
+        slot->sz[0] == key_sz[0] && slot->mt[0] == key_mt[0] &&
+        slot->sz[1] == key_sz[1] && slot->mt[1] == key_mt[1]) {
+        return send_json(fd, 200, slot->body);
+    }
 
     char *buf = malloc(XWEBD_RESP_BUF_SIZE * 4);
     if (!buf) return send_error(fd, 500, "Out of memory");
@@ -892,7 +994,16 @@ static int handle_get_logs(int fd, const char *body, const char *query) {
 
     APPEND_PRINTF(buf, buf_pos, buf_size, "],\"count\":%d}", total_lines);
     int ret = send_json(fd, 200, buf);
-    free(buf);
+
+    /* 存入缓存槽(替换旧体) */
+    if (slot->body) free(slot->body);
+    slot->body = buf;
+    slot->valid = 1;
+    slot->source = source;
+    slot->lines = lines;
+    slot->level = level_filter;
+    slot->sz[0] = key_sz[0]; slot->mt[0] = key_mt[0];
+    slot->sz[1] = key_sz[1]; slot->mt[1] = key_mt[1];
     return ret;
 }
 
