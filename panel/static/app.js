@@ -260,12 +260,13 @@ function updateViewportHeight() {
     var pageId = S.mode === 'wired' ? 'wiredPage' : 'wirelessPage';
     var page = $(pageId);
     if (viewport && page) {
-        var h = page.scrollHeight;
-        var cur = parseInt(viewport.style.height, 10) || 0;
-        /* 死区(2026-08-31): scrollHeight 整数舍入在高 DPI 缩放下 ±1px 震荡,
-         * ResizeObserver 回调写高度又触发 RO, 无限循环刷死主线程——
-         * 表现为无线连接后整页转圈卡死、无任何后续请求(实测教训) */
-        if (Math.abs(h - cur) <= 2) return;
+        /* 浮点高度方案(2026-08-31 v3): 整数 scrollHeight 舍入在 DPI 缩放下
+         * 会 RO<->写高度 震荡循环刷死主线程(页面加载后零请求、连接后转圈
+         * 卡死, 2px 死区仍挡不住). 改用 getBoundingClientRect 浮点值:
+         * 写浮点读浮点, 往返稳定, 循环断根; 0.5px 死区仅防噪声 */
+        var h = page.getBoundingClientRect().height;
+        var cur = parseFloat(viewport.style.height) || 0;
+        if (Math.abs(h - cur) < 0.5) return;
         viewport.style.height = h + 'px';
     }
 }
