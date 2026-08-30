@@ -394,13 +394,17 @@ int boot_push_disable_enabled(void)
     return (n > 0 && buf[0] == '1');
 }
 
-static int find_pid_by_comm_simple(const char *name)
+/* 前缀匹配 comm: boot_push 实际 comm 为 "boot_push.so"(launcher 应用插件
+ * exec 全路径, .so 后缀截入 comm, 2026-08-30 黑屏残留事故根因:
+ * 精确匹配 "boot_push" 从未命中, 退出消息从未发出) */
+static int find_pid_by_comm_prefix(const char *prefix)
 {
     DIR *d = opendir("/proc");
     if (!d)
         return -1;
     struct dirent *e;
     int found = -1;
+    size_t plen = strlen(prefix);
     while ((e = readdir(d)) != NULL)
     {
         if (e->d_name[0] < '0' || e->d_name[0] > '9')
@@ -418,7 +422,7 @@ static int find_pid_by_comm_simple(const char *name)
             char *nl = strchr(buf, '\n');
             if (nl)
                 *nl = '\0';
-            if (strcmp(buf, name) == 0)
+            if (strncmp(buf, prefix, plen) == 0)
             {
                 found = atoi(e->d_name);
                 break;
@@ -461,6 +465,7 @@ static void boot_push_tick(void)
 {
     static uint64_t last_ms = 0;
     static uint64_t last_send_ms = 0;
+    static int attempts = 0; /* 已发退出轮次(进程消失复位) */
     uint64_t now = get_time_ms();
     int enabled = boot_push_disable_enabled();
 
@@ -475,15 +480,21 @@ static void boot_push_tick(void)
 
     /* 抑制期残留处理: 372 广播不依赖下载成败(实测), boot_push.so 仍会被
      * exec, swf 内容缺失时停在黑场景等按键.
-     * v3.1.7 重构(前一版实测失效): 年龄判定改 /proc/PID/stat 第22字段
-     * starttime(时钟滴答, 内核标准)——proc 目录 mtime 在老内核上不可靠,
-     * 曾致 age 恒>30s 永不发送. 退出改双保险:
-     *   a) 直发 boot_push 通用退出消息 type=1(manager 广播退出同款,
-     *      applib 消息循环处理 → applib_quit 自愿退出)
-     *   b) MSG_RESUME_LAST(24) 给 manager 恢复调用链(兜底)
-     * 安全边界: 年龄<90s 且助手非对话态; 5s 重发节流. */
-    int pid = find_pid_by_comm_simple("boot_push");
-    if (pid <= 0 || now - last_send_ms < 5000)
+     * v3.4.6 重构: comm 改前缀匹配("boot_push.so" 截入 comm 导致旧精确
+     * 匹配从未命中, 退出消息一次都没发出去过——黑屏残留根因).
+     * 年龄判定 /proc/PID/stat 第22字段 starttime(内核标准滴答).
+     * 退出策略四级递进(绝不 kill: M1 证实子进程被信号终止会触发整机重启):
+     *   L0 消息退出: type=1 通用退出 + MSG_RESUME_LAST(24) 恢复 launcher
+     *   L1/L2 消息 + 注入 HOME 键(102): 等效用户按主页, 实测可退黑场景
+     *   L3 消息 + 注入 BACK 键(30): 等效用户按返回
+     *   L4+ 消息 + HOME 每 5s 重发(进程可能换驻, 持续压制)
+     * 进程消失即复位状态机; 安全边界: 年龄<300s 且助手非对话态. */
+    int pid = find_pid_by_comm_prefix("boot_push");
+    if (pid <= 0) {
+        attempts = 0;
+        return;
+    }
+    if (now - last_send_ms < 5000)
         return;
 
     /* 读 /proc/PID/stat 第22字段 starttime(单位: 滴答, 一般100/s) */
@@ -538,7 +549,7 @@ static void boot_push_tick(void)
         }
     }
     long age = (long)(uptime - start_ticks / 100.0);
-    if (age < 0 || age > 90)
+    if (age < 0 || age > 300)
         return;
 
     xiaozhi_state_t st = state_machine_get_state(&g_app.sm);
@@ -559,8 +570,26 @@ static void boot_push_tick(void)
     *(int *)rmsg = 24; /* MSG_RESUME_LAST */
     send_async_msg("manager", rmsg);
 
+    /* c) 按键注入分级兜底: 消息无响应时等效用户按 HOME/BACK
+     * (用户实测物理按键可退黑场景; 注入走同一 input 通道) */
+    int key = -1;
+    if (attempts >= 1 && attempts <= 2)
+        key = GOODIX_KEY_HOME;
+    else if (attempts == 3)
+        key = GOODIX_KEY_BACK;
+    else if (attempts >= 4)
+        key = GOODIX_KEY_HOME;
+    if (key > 0)
+    {
+        extern int mcp_inject_key(int key_code);
+        if (mcp_inject_key(key) == 0)
+            PLOG_I("PUSH", "boot_push 黑屏注入按键 %d (第%d轮)", key, attempts);
+    }
+    attempts++;
+
     last_send_ms = now;
-    PLOG_I("PUSH", "boot_push(pid=%d, age=%lds) 黑屏残留, 已发退出+RESUME_LAST", pid, age);
+    PLOG_I("PUSH", "boot_push(pid=%d, age=%lds) 黑屏残留, 已发退出+RESUME_LAST (轮次%d)",
+           pid, age, attempts);
 }
 
 

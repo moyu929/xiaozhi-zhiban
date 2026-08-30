@@ -308,6 +308,12 @@ static int inject_key_repeat(int key_code, int count)
     return 0;
 }
 
+/* 供 main.c boot_push 黑屏兜底使用(等效用户按 HOME/BACK 退出黑场景) */
+int mcp_inject_key(int key_code)
+{
+    return inject_key_event(key_code);
+}
+
 static int exec_tool(mcp_handler_t *mcp, const char *name, const char *args_json, size_t args_len, char *result, int result_size)
 {
     /* 获取设备状态：音量、亮度、充电状态、电池、CPU负载、内存 */
