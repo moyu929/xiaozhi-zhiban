@@ -481,8 +481,8 @@ static void boot_push_tick(void)
     uint64_t now = get_time_ms();
     int enabled = boot_push_disable_enabled();
 
-    /* 抑制期 1s 粒度(bind 维护+背光自愈), 非抑制 60s 维护 */
-    if (now - last_ms < (enabled ? 1000 : 60000))
+    /* bind 幂等维护, 60s 足够 */
+    if (now - last_ms < 60000)
         return;
     last_ms = now;
 
@@ -490,42 +490,9 @@ static void boot_push_tick(void)
     if (!enabled)
         return;
 
-    /* 开机窗口背光误关自愈(直接状态修复, 非按键注入): 开机链中背光被关
-     * (bl_power=4)且无人恢复——实测与 372 相关但非严格伴随(21:28 轮无 372
-     * 仍被关), 故不锚定广播, 直接监测状态. 启动后 5 分钟窗口内: 背光被关
-     * 且非自研 display_ctrl 息屏态则复原; 自研息屏(display_ctrl)与 MCP
-     * 手动息屏均置 self_off, 不会被误开.
-     * 注意: 原生屏保关背光也是 bl_power=4, 窗口内若屏保先关会被复原
-     * (开机 5 分钟内不息屏), 窗口过后屏保正常接管——可接受的边界. */
-    {
-        static uint64_t last_chk_ms = 0;
-        uint64_t up_ms = now - g_app.boot_time_ms;
-        if (up_ms <= 300000 && now - last_chk_ms >= 2000)
-        {
-            last_chk_ms = now;
-            int blp = -1;
-            int bfd = open("/sys/class/backlight/owl_backlight/bl_power", O_RDONLY);
-            if (bfd >= 0)
-            {
-                char bb[16] = {0};
-                if (read(bfd, bb, sizeof(bb) - 1) > 0)
-                    blp = atoi(bb);
-                close(bfd);
-            }
-            extern int display_ctrl_is_off(void);
-            if (blp == 4 && !display_ctrl_is_off())
-            {
-                if (system("/etc/backlight.sh open 2>/dev/null") == 0)
-                    PLOG_I("PUSH", "开机+%llums: 背光被误关(bl_power=4), 已复原",
-                           (unsigned long long)up_ms);
-            }
-        }
-    }
-
-    /* 抑制期残留处理已废弃(2026-08-30): bind mount 拦截后 launcher
-     * dlopen boot_push.so 直接失败, 进程根本不会存在, 无需监控/退出
-     * 消息/按键注入(注入方案已被用户否决). 保留三层: 占位目录挡下载,
-     * bind 挡 dlopen, 背光自愈挡黑屏残留. */
+    /* 自愈已删(2026-08-31): 自愈把屏保关的背光也顶开, 等于拦截息屏,
+     * 用户指正删除. 只留两层: 占位目录挡下载, bind 挡 dlopen.
+     * 开机背光残留由用户按键退出(接受缺陷特性). */
 }
 
 
@@ -1756,7 +1723,7 @@ static void proc_sys_msg(void *msg_ptr)
     case 0x174: /* MSG_POWER_ON_PUSH: WiFi连上后每日动画推送广播(olmedia触发) */
         if (boot_push_disable_enabled())
         {
-            PLOG_I("IPC", "0x174 每日推送广播(抑制中): 插件已被bind拦截, 背光自愈兜底中");
+            PLOG_I("IPC", "0x174 每日推送广播(抑制中): 插件已被bind拦截");
         }
         else
         {
