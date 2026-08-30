@@ -2950,4 +2950,14 @@ document.addEventListener('DOMContentLoaded', function() {
     connectPanelSSE();
     refreshLogPanel('panel', false);
     window.addEventListener('resize', updateViewportHeight);
+
+    // 滚动 bug 修复: viewport 高度此前只在模式切换/个别数据回调时重算,
+    // 无线页内容异步加载晚于量高时底部被 overflow:hidden 裁掉(滚不动),
+    // 切换模式再切回才恢复。ResizeObserver 盯住两页, 内容变高自动跟随。
+    // (page 宽度恒为 50% 与 viewport 高度无关, 不会造成回调循环)
+    if (window.ResizeObserver) {
+        var ro = new ResizeObserver(function () { updateViewportHeight(); });
+        ro.observe($('wiredPage'));
+        ro.observe($('wirelessPage'));
+    }
 });
