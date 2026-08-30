@@ -35,6 +35,9 @@ extern "C" {
 #define UL_KEY_SCHED_DAYS   "USE_LIMIT_SCHED_DAYS"   /* 允许星期位图 bit0=周日..bit6=周六, 127=每天 */
 #define UL_KEY_SCHED_SPAN1  "USE_LIMIT_SCHED_SPAN1"  /* 时段1 "HHMM-HHMM", 如 "1600-2000" */
 #define UL_KEY_SCHED_SPAN2  "USE_LIMIT_SCHED_SPAN2"  /* 时段2(可选, 空=无) */
+#define UL_KEY_SCHED_SPANS  "USE_LIMIT_SPANS"  /* 多时段CSV(2026-08-31), "1600-2000,2100-2200", 优先于SPAN1/2.
+                                                * 坑: 键名>21字符实测触发 apconfig 内存破坏(ASR线程随机SIGSEGV,
+                                                * fault=字符串前4字节被当指针), 故用短键 */
 
 void use_limit_init(void);
 
@@ -84,14 +87,21 @@ int use_limit_get_enable(void);
 int use_limit_delay_tool_enabled(void);
 /** 设语音延迟工具开关 */
 void use_limit_set_delay_tool(int on);
-/** 设使用时段: enable/days位图/span1/span2("HHMM-HHMM", span2可空串) */
+#define UL_MAX_SPANS 4
+/** 设使用时段: enable/days位图/span1/span2(旧接口, 映射为前两段) */
 void use_limit_set_schedule(int enable, int days, const char *span1, const char *span2);
+/** 设使用时段(多段): spans_csv 形如 "1600-2000,2100-2200"(HHMM-HHMM 逗号分隔, 最多4段) */
+void use_limit_set_spans(int enable, int days, const char *spans_csv);
 /** 时段限制开关状态 */
 int use_limit_get_sched_enable(void);
 /** 允许星期位图 */
 int use_limit_get_days(void);
-/** 取时段串(idx=1/2), 未设返回空串 */
+/** 取时段串(idx=0..UL_MAX_SPANS-1), 未设返回空串 */
 const char *use_limit_get_span(int idx);
+/** 有效时段数 */
+int use_limit_get_span_count(void);
+/** 取全部时段的 CSV 串(静态缓冲, "1600-2000,2100-2200") */
+const char *use_limit_get_spans_csv(void);
 
 #ifdef __cplusplus
 }

@@ -35,8 +35,8 @@ var PLUGIN_META = {
     files:     { cn: '文件管理',   desc: '文件列表/删除/批量清理（上传下载为核心功能，装插件才有列表管理）' },
     procs:     { cn: '进程管理',   desc: '进程清单查看与启停控制（不装则无进程管理）' },
     usb:       { cn: 'USB 模式',   desc: 'USB 存储模式查询与重选、存储卡开关（不装则无 USB 控制）' },
-    backlight: { cn: '背光控制',   desc: '屏幕背光调节与开机恢复（不装则设备状态卡的背光滑条不可用）' },
-    battery:   { cn: '电池守护',   desc: '电池采样记录 + 伪低电关机守卫（建议常驻）', must: true },
+    lights:    { cn: '灯控',       desc: '屏幕背光/呼吸灯/按键背光三灯合一（不装则背光滑条与灯开关回落内置）' },
+    battery:   { cn: '电池守护',   desc: '电池采样记录 + 低电关机守护（卸载后失去低电保护与电池详情，建议常驻）' },
     demo:      { cn: '框架演示',   desc: '插件框架演示与崩溃隔离测试，可安全卸载' }
 };
 
@@ -822,8 +822,6 @@ function resetWirelessUI() {
     $('cfgLimitMinutes').value = '';
     $('cfgLimitDelayTool').checked = false;
     $('cfgLimitSched').checked = false;
-    $('cfgLimitSpan1').value = '';
-    $('cfgLimitSpan2').value = '';
     document.querySelectorAll('#schedDays input[type=checkbox]').forEach(function(cb) { cb.checked = false; });
     $('limitStat').textContent = '今日已用 -- 分钟（未启用）';
     $('cfgScreenOffSec').value = '';
@@ -832,7 +830,9 @@ function resetWirelessUI() {
     $('blPersist').checked = false;
     $('volSlider').value = 20;
     $('volValue').textContent = '--';
-    $('devUsbMode').textContent = '--';
+    var usbReset = $('devUsbMode'); /* USB 模式已迁插件卡, 元素可能不存在 */
+    if (usbReset) usbReset.textContent = '--';
+    S.usbMode = '';
     var xdiag = $('xwebdDiagContainer');
     if (xdiag) { xdiag.style.display = 'none'; xdiag.innerHTML = ''; }
     $('cfgListenTimeout').value = '';
@@ -995,19 +995,25 @@ var USB_MODE_MAP = {
     disabled: '已关闭'
 };
 
+var S_USB_MODE = { mode: '' }; /* refreshUsbMode 缓存, 插件卡显示用 */
+
 async function refreshUsbMode() {
     if (!S.wl.connected) return;
     var r = await api('/api/usb/mode');
     if (r.error) return;
     var d = r.data || r;
-    if (d.mode) $('devUsbMode').textContent = USB_MODE_MAP[d.mode] || d.mode;
+    if (d.mode) {
+        S.usbMode = d.mode;
+        var usbEl = $('devUsbMode');
+        if (usbEl) usbEl.textContent = USB_MODE_MAP[d.mode] || d.mode;
+    }
 }
 
 async function refreshBatteryDetail() {
     if (!S.wl.connected) return;
     /* battery 插件在线才可读; 未装/离线保持 /api/status 的纯百分比 */
     var r = await api('/api/plugin/battery/status');
-    if (r.error) return;
+    if (r.error) { var oldEl = $('batteryDetail'); if (oldEl) oldEl.style.display = 'none'; return; }
     var d = r.data || r;
     var base = $('devBattery').textContent.replace(/\s*·.*$/, '');
     var txt = base;
@@ -1016,6 +1022,28 @@ async function refreshBatteryDetail() {
     else if (d.status === 'Full') txt += ' · 已充满';
     if (d.fake_low_flag) txt += ' · 伪低电标记';
     $('devBattery').textContent = txt;
+
+    /* 详情块(2026-08-31): 预测时长/容量 + 充放电压电流 */
+    var box = $('batteryDetail');
+    if (!box) return;
+    if (d.voltage_uv <= 0) { box.style.display = 'none'; return; }
+    var rows = [];
+    var v = (d.voltage_uv / 1000000).toFixed(3) + ' V';
+    var iMa = Math.abs(d.current_ua || 0) / 1000;
+    var i = iMa.toFixed(0) + ' mA';
+    if (d.charging) {
+        rows.push(['充电电压', v]); rows.push(['充电电流', i]);
+        if (d.est_charge_min > 0) rows.push(['预计充满', Math.floor(d.est_charge_min / 60) + ' 时 ' + (d.est_charge_min % 60) + ' 分']);
+    } else {
+        rows.push(['放电电压', v]); rows.push(['放电电流', i]);
+        if (d.est_remain_min > 0) rows.push(['预计可用', Math.floor(d.est_remain_min / 60) + ' 时 ' + (d.est_remain_min % 60) + ' 分（按当前放电速率）']);
+    }
+    if (d.est_full_mah > 0) rows.push(['电池容量', d.est_full_mah + ' mAh（实测等效满容）']);
+    var html = rows.map(function(x) {
+        return '<div class="stat-item"><span class="stat-label">' + x[0] + '</span><span class="stat-value">' + x[1] + '</span></div>';
+    }).join('');
+    box.innerHTML = '<div class="stat-grid">' + html + '</div>';
+    box.style.display = '';
 }
 
 async function runXwebdDiag() {
@@ -1315,13 +1343,17 @@ async function refreshPlugins() {
             html += '<span class="plugin-name">' + escapeHtml(meta.cn || p.name) + '</span>';
             html += '<span class="plugin-id">' + escapeHtml(p.name) + '</span>';
             html += status;
+            /* pid/内存放第一行(状态后, 2026-08-31 用户要求) */
+            html += '<span class="svc-hint">pid ' + (p.pid || '--') + '</span>';
+            if (p.mem_kb) html += '<span class="svc-hint">内存 ' + p.mem_kb + 'KB</span>';
             html += '</div>';
             html += '<div class="plugin-desc">' + escapeHtml(meta.desc || '未知插件，无描述') + '</div>';
             html += '<div class="plugin-foot">';
-            if (p.mem_kb) html += '<span class="svc-hint">内存 ' + p.mem_kb + 'KB</span>';
             if (p.restarts) html += '<span class="svc-hint">重启 ' + p.restarts + ' 次</span>';
-            html += '<span class="svc-hint">pid ' + (p.pid || '--') + '</span>';
             if (p.name === 'usb') {
+                /* USB 模式显示+重选按钮随 usb 插件条目展示(2026-08-31 自设备状态卡迁入) */
+                html += '<span class="svc-hint">当前 ' + escapeHtml(USB_MODE_MAP[S.usbMode] || S.usbMode || '--') + '</span>';
+                html += '<button class="btn btn-ghost btn-sm" onclick="reselectUsbMode()">重选模式</button>';
                 /* USB 存储卡开关随 usb 插件条目展示(服务状态卡已拆解) */
                 html += '<label class="svc-toggle" title="数据传输模式下暴露存储卡">';
                 html += '<input type="checkbox"' + (usbLunOn ? ' checked' : '') + ' onchange="toggleService(\'usb_lun\', this.checked)">';
@@ -1604,9 +1636,8 @@ async function refreshConfig() {
             $('cfgLimitDelayTool').checked = !!ul.delay_tool;
             var sc = ul.sched || {};
             $('cfgLimitSched').checked = !!sc.enable;
-            $('cfgLimitSpan1').value = sc.span1 || '';
-            $('cfgLimitSpan2').value = sc.span2 || '';
             renderSchedDays(sc.days || 0);
+            renderSchedSpans(sc.spans || '');
             var spent = Math.floor((ul.spent_sec || 0) / 60);
             var statText;
             if (!ul.enable) {
@@ -1665,6 +1696,78 @@ function readSchedDays() {
         if (cb.checked) days |= parseInt(cb.value, 10);
     });
     return days;
+}
+
+/* ---- 多时段行(2026-08-31): HH:mm 输入, 存取转 HHMM ----
+ * spans csv: "1600-2000,2100-2200"; 行数 1..4, 可增删 */
+function schedSpanRows() { return document.querySelectorAll('#schedSpans .sched-span-row'); }
+
+function hhmmToDisplay(v) {
+    /* "1600" -> "16:00"; 容错原样返回 */
+    if (/^\d{4}$/.test(v)) return v.slice(0, 2) + ':' + v.slice(2);
+    return v || '';
+}
+function displayToHhmm(v) {
+    /* "16:00" -> "1600"; 非法返回 '' */
+    v = (v || '').replace(/\s/g, '');
+    var m = v.match(/^(\d{1,2}):(\d{2})$/);
+    if (m) return ('0' + m[1]).slice(-2) + m[2];
+    if (/^\d{4}$/.test(v)) return v;
+    return '';
+}
+
+function renderSchedSpans(csv) {
+    var box = $('schedSpans');
+    if (!box) return;
+    var spans = (csv || '').split(',').map(function(x) { return x.trim(); }).filter(Boolean);
+    if (!spans.length) spans = [''];
+    var html = '';
+    spans.forEach(function(sp, i) {
+        var parts = sp.split('-');
+        var a = hhmmToDisplay(parts[0] || '');
+        var b = hhmmToDisplay(parts[1] || '');
+        html += '<div class="sched-span-row">'
+            + '<span class="stat-label">时段</span>'
+            + '<input type="time" class="input-text sched-span-in" value="' + a + '">'
+            + '<span class="stat-label">至</span>'
+            + '<input type="time" class="input-text sched-span-in" value="' + b + '">'
+            + '<button type="button" class="btn btn-ghost btn-sm" onclick="removeSchedSpan(this)">删除</button>'
+            + '</div>';
+    });
+    box.innerHTML = html;
+}
+
+function addSchedSpan() {
+    if (schedSpanRows().length >= 4) { toast('最多 4 个时段', 'info'); return; }
+    var box = $('schedSpans');
+    var div = document.createElement('div');
+    div.className = 'sched-span-row';
+    div.innerHTML = '<span class="stat-label">时段</span>'
+        + '<input type="time" class="input-text sched-span-in">'
+        + '<span class="stat-label">至</span>'
+        + '<input type="time" class="input-text sched-span-in">'
+        + '<button type="button" class="btn btn-ghost btn-sm" onclick="removeSchedSpan(this)">删除</button>';
+    box.appendChild(div);
+}
+
+function removeSchedSpan(btn) {
+    var row = btn.closest('.sched-span-row');
+    if (schedSpanRows().length <= 1) { /* 只剩一行时清空而非删除 */ 
+        row.querySelectorAll('input').forEach(function(x) { x.value = ''; });
+        return;
+    }
+    row.remove();
+}
+
+function readSchedSpans() {
+    var out = [];
+    schedSpanRows().forEach(function(row) {
+        var ins = row.querySelectorAll('input.sched-span-in');
+        var a = displayToHhmm(ins[0] ? ins[0].value : '');
+        var b = displayToHhmm(ins[1] ? ins[1].value : '');
+        if (a && b) out.push(a + '-' + b);
+    });
+    return out;
 }
 
 /* AEC 选项仅 Realtime 模式有意义（AutoStop 一问一答、播放与收音不并行） */
@@ -1800,12 +1903,11 @@ async function saveAssistantConfig() {
     var limitMinutes = parseInt($('cfgLimitMinutes').value);
     if (!isNaN(limitMinutes)) config.use_limit_minutes = limitMinutes;
     config.use_limit_delay_tool = $('cfgLimitDelayTool').checked ? 1 : 0;
-    config.use_limit_sched = [
+    /* 多时段: "enable,days,1600-2000,2100-2200"(sair use_limit_spans 解析) */
+    config.use_limit_spans = [
         $('cfgLimitSched').checked ? 1 : 0,
-        readSchedDays(),
-        $('cfgLimitSpan1').value.trim(),
-        $('cfgLimitSpan2').value.trim()
-    ].join(',');
+        readSchedDays()
+    ].concat(readSchedSpans()).join(',');
     /* 进阶选项 */
     var customWsUrl = $('cfgCustomWsUrl').value.trim();
     config.custom_ws_url = customWsUrl;
@@ -1855,8 +1957,7 @@ async function restoreAssistantDefaults() {
     $('cfgLimitMinutes').value = '60';
     $('cfgLimitDelayTool').checked = false;
     $('cfgLimitSched').checked = false;
-    $('cfgLimitSpan1').value = '';
-    $('cfgLimitSpan2').value = '';
+    renderSchedSpans('');
     renderSchedDays(127);
     var r = await api('/api/assistant/config', {
         method: 'PUT',
@@ -2930,6 +3031,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     document.querySelectorAll('.svc-list,.file-container,.log-container,.diag-container,.mcp-tools-list,.adb-device-list,.modal').forEach(function(el) {
         el.addEventListener('wheel', function(e) {
+            /* 内容未溢出(无滚动条)时放行, 滚轮冒泡滚动整页(2026-08-31 用户要求) */
+            if (el.scrollHeight <= el.clientHeight + 1) return;
             var st = el.scrollTop;
             var atTop = st <= 0;
             var atBottom = st + el.clientHeight >= el.scrollHeight;
@@ -2942,6 +3045,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.addEventListener('wheel', function(e) {
         var el = e.target.closest('.process-table-scroll');
         if (!el) return;
+        if (el.scrollHeight <= el.clientHeight + 1) return; /* 无滚动条放行 */
         var st = el.scrollTop;
         var atTop = st <= 0;
         var atBottom = st + el.clientHeight >= el.scrollHeight;

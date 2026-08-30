@@ -1689,3 +1689,10 @@ body {
 /* 每日动画拦截开关灰态(死锁缺陷禁用, 2026-08-31) */
 .svc-toggle-track.svc-toggle-disabled { opacity: 0.4; }
 .svc-toggle input:disabled + .svc-toggle-track { cursor: not-allowed; }
+
+/* 时段行 + 临时延长行 + 电池详情(2026-08-31) */
+.sched-span-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.sched-span-row .sched-span-in { width: 100px; }
+.delay-now-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.delay-min-input { width: 70px; }
+.battery-detail .stat-grid { margin-top: 4px; }

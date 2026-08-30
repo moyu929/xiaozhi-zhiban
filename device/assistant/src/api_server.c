@@ -135,7 +135,7 @@ void api_server_write_config(void)
         "\"boot_push_disable\":%d,\"screen_off_idle_sec\":%d,\"volume\":%d,"
         "\"use_limit\":{\"enable\":%d,\"minutes\":%d,\"spent_sec\":%ld,"
         "\"remain_sec\":%ld,\"locked\":%d,\"delay_until\":%ld,\"delay_tool\":%d,"
-        "\"sched\":{\"enable\":%d,\"days\":%d,\"span1\":\"%s\",\"span2\":\"%s\",\"in_span\":%d}}}\n",
+        "\"sched\":{\"enable\":%d,\"days\":%d,\"spans\":\"%s\",\"in_span\":%d}}}\n",
         esc_ws_url,
         esc_ws_token,
         plog_lvl == PLOG_LEVEL_DEBUG ? "DEBUG" :
@@ -162,8 +162,7 @@ void api_server_write_config(void)
         use_limit_delay_tool_enabled(),
         use_limit_get_sched_enable(),
         use_limit_get_days(),
-        use_limit_get_span(1),
-        use_limit_get_span(2),
+        use_limit_get_spans_csv(),
         use_limit_out_of_span() ? 0 : 1);
     write_file_atomic("/tmp/sair_config.json", buf, len);
 }
@@ -503,10 +502,9 @@ void api_server_check_commands(void)
             }
             if (parse_json_int(buf, "use_limit_sched_days", &val) == 0)
             {
-                /* 星期位图与时段一起生效(保持 enable/span 原值) */
-                use_limit_set_schedule(use_limit_get_sched_enable(),
-                                       val,
-                                       use_limit_get_span(1), use_limit_get_span(2));
+                /* 星期位图与时段一起生效(保持 enable/spans 原值) */
+                use_limit_set_spans(use_limit_get_sched_enable(), val,
+                                    use_limit_get_spans_csv());
                 PLOG_I(TAG, "use_limit_sched_days=0x%x 已设置", val);
                 api_server_write_config();
             }
@@ -522,6 +520,21 @@ void api_server_check_commands(void)
                     {
                         use_limit_set_schedule(en, dys, s1, s2);
                         PLOG_I(TAG, "use_limit_sched='%s' 已设置", sv);
+                        api_server_write_config();
+                    }
+                }
+                char svs[64] = {0};
+                if (parse_json_str(buf, "use_limit_spans", svs, sizeof(svs)) == 0)
+                {
+                    /* 新格式(2026-08-31) enable,days,多时段CSV */
+                    int en = 0, dys = 127;
+                    if (sscanf(svs, "%d,%d", &en, &dys) >= 1)
+                    {
+                        /* csv = 第二个逗号之后(enable,days 已占前两段) */
+                        const char *csvp = strchr(svs, ',');
+                        if (csvp) csvp = strchr(csvp + 1, ',');
+                        use_limit_set_spans(en, dys, csvp ? csvp + 1 : "");
+                        PLOG_I(TAG, "use_limit_spans='%s' 已设置", svs);
                         api_server_write_config();
                     }
                 }

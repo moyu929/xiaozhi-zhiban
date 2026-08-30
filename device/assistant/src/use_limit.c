@@ -49,11 +49,13 @@ typedef struct {
     int delay_tool;         /* 语音延迟工具开关(家长面板), 默认 0 */
     int sched_enable;       /* 使用时段限制开关 */
     int sched_days;         /* 允许星期位图 bit0=周日..bit6=周六 */
-    char sched_span1[12];   /* "HHMM-HHMM", 空=不限 */
-    char sched_span2[12];
+    char sched_spans[UL_MAX_SPANS][12]; /* "HHMM-HHMM", 空=不限(多时段 2026-08-31) */
     uint64_t break_pending_ms;  /* 会话中断延迟窗到期时刻(MONO ms), 0=无 */
     uint64_t persist_last_ms;
 } ul_ctx_t;
+
+/* 前向声明: 加载迁移在函数定义前使用 */
+static void ul_parse_spans(const char *csv);
 
 /* 会话中断延迟: 播提示后给提示音留的播放时间 */
 #define UL_BREAK_DELAY_MS 2500
@@ -115,8 +117,21 @@ void use_limit_init(void)
     g_ul.delay_tool = cfg_get_int(UL_KEY_DELAY_TOOL, 0);          /* 默认关闭 */
     g_ul.sched_enable = cfg_get_int(UL_KEY_SCHED_ENABLE, 0);
     g_ul.sched_days = cfg_get_int(UL_KEY_SCHED_DAYS, 127);        /* 默认每天 */
-    get_config(UL_KEY_SCHED_SPAN1, g_ul.sched_span1, sizeof(g_ul.sched_span1));
-    get_config(UL_KEY_SCHED_SPAN2, g_ul.sched_span2, sizeof(g_ul.sched_span2));
+    /* 多时段(2026-08-31): CSV 键优先; 未写过时迁移旧 SPAN1/SPAN2.
+     * 坑(实测): 此处若用块作用域局部缓冲 { char csv[64]; ... }, ASR 线程
+     * 启动后随机 SIGSEGV(fault=栈上字符串前4字节被当指针, PC 落 libc rw 页)——
+     * 块作用域变量在此编译环境(uClibc+本函数体量)下栈帧布局异常.
+     * 静态缓冲彻底绕开(加载路径仅启动时执行一次, 无并发) */
+    static char s_csv[64];
+    if (get_config(UL_KEY_SCHED_SPANS, s_csv, sizeof(s_csv)) <= 0)
+    {
+        get_config(UL_KEY_SCHED_SPAN1, g_ul.sched_spans[0], sizeof(g_ul.sched_spans[0]));
+        get_config(UL_KEY_SCHED_SPAN2, g_ul.sched_spans[1], sizeof(g_ul.sched_spans[1]));
+    }
+    else
+    {
+        ul_parse_spans(s_csv);
+    }
 
     /* config.bin 脏数据自愈(2026-08-30): 历史解析器 bug 曾把 epoch 秒串进
      * 各配置键并落盘(sched_enable=788064597 之类), 跨重启复活导致时段锁
@@ -160,7 +175,7 @@ void use_limit_init(void)
     PLOG_I("UL", "init: enable=%d minutes=%ld spent=%ld delay_until=%ld delay_tool=%d "
            "sched=%d days=0x%x span1='%s' span2='%s'%s",
            g_ul.enable, minutes, g_ul.spent_sec, g_ul.delay_until, g_ul.delay_tool,
-           g_ul.sched_enable, g_ul.sched_days, g_ul.sched_span1, g_ul.sched_span2,
+           g_ul.sched_enable, g_ul.sched_days, use_limit_get_spans_csv(),
            g_ul.locked ? " [LOCKED]" : "");
 }
 
@@ -259,13 +274,18 @@ int use_limit_out_of_span(void)
         return 0; /* RTC 未对时(默认2018), 时段判定不可靠, 不误锁 */
     if (!(g_ul.sched_days & (1 << tmv.tm_wday)))
         return 1; /* 今天不在允许星期 */
-    if (!g_ul.sched_span1[0] && !g_ul.sched_span2[0])
-        return 0; /* 未设时段=全天允许 */
     int hhmm = tmv.tm_hour * 100 + tmv.tm_min;
-    if (span_hit(g_ul.sched_span1, hhmm))
-        return 0;
-    if (span_hit(g_ul.sched_span2, hhmm))
-        return 0;
+    int any = 0;
+    for (int i = 0; i < UL_MAX_SPANS; i++)
+    {
+        if (!g_ul.sched_spans[i][0])
+            continue;
+        any = 1;
+        if (span_hit(g_ul.sched_spans[i], hhmm))
+            return 0;
+    }
+    if (!any)
+        return 0; /* 未设时段=全天允许 */
     return 1;
 }
 
@@ -339,27 +359,65 @@ void use_limit_set_delay_tool(int on)
     PLOG_I("UL", "语音延迟工具=%d", g_ul.delay_tool);
 }
 
+/* CSV 拆到 spans 数组: "1600-2000,2100-2200" */
+static void ul_parse_spans(const char *csv)
+{
+    memset(g_ul.sched_spans, 0, sizeof(g_ul.sched_spans));
+    if (!csv)
+        return;
+    char tmp[64];
+    snprintf(tmp, sizeof(tmp), "%s", csv);
+    char *save = NULL;
+    char *tok = strtok_r(tmp, ",", &save);
+    int n = 0;
+    while (tok && n < UL_MAX_SPANS)
+    {
+        while (*tok == ' ')
+            tok++;
+        if (tok[0])
+            snprintf(g_ul.sched_spans[n], sizeof(g_ul.sched_spans[n]), "%s", tok);
+        n++;
+        tok = strtok_r(NULL, ",", &save);
+    }
+}
+
+/* 全部时段落盘(CSV 单键) */
+static void ul_save_spans(void)
+{
+    char csv[64] = "";
+    int off = 0;
+    for (int i = 0; i < UL_MAX_SPANS && g_ul.sched_spans[i][0]; i++)
+    {
+        int n = snprintf(csv + off, sizeof(csv) - off, "%s%s",
+                         off ? "," : "", g_ul.sched_spans[i]);
+        if (n < 0)
+            break;
+        off += n;
+    }
+    set_config(UL_KEY_SCHED_SPANS, csv, strlen(csv));
+}
+
 void use_limit_set_schedule(int enable, int days, const char *span1, const char *span2)
+{
+    char csv[32] = "";
+    snprintf(csv, sizeof(csv), "%s%s%s",
+             span1 ? span1 : "", (span2 && span2[0]) ? "," : "", span2 ? span2 : "");
+    use_limit_set_spans(enable, days, csv);
+}
+
+void use_limit_set_spans(int enable, int days, const char *spans_csv)
 {
     g_ul.sched_enable = enable ? 1 : 0;
     if (days < 0 || days > 127)
         days = 127;
     g_ul.sched_days = days;
-    if (span1)
-        snprintf(g_ul.sched_span1, sizeof(g_ul.sched_span1), "%s", span1);
-    else
-        g_ul.sched_span1[0] = '\0';
-    if (span2)
-        snprintf(g_ul.sched_span2, sizeof(g_ul.sched_span2), "%s", span2);
-    else
-        g_ul.sched_span2[0] = '\0';
+    ul_parse_spans(spans_csv);
     cfg_set_int(UL_KEY_SCHED_ENABLE, g_ul.sched_enable);
     cfg_set_int(UL_KEY_SCHED_DAYS, g_ul.sched_days);
-    set_config(UL_KEY_SCHED_SPAN1, g_ul.sched_span1, strlen(g_ul.sched_span1));
-    set_config(UL_KEY_SCHED_SPAN2, g_ul.sched_span2, strlen(g_ul.sched_span2));
+    ul_save_spans();
     sync_config();
-    PLOG_I("UL", "时段设置: enable=%d days=0x%x span1='%s' span2='%s'",
-           g_ul.sched_enable, g_ul.sched_days, g_ul.sched_span1, g_ul.sched_span2);
+    PLOG_I("UL", "时段设置: enable=%d days=0x%x spans='%s'",
+           g_ul.sched_enable, g_ul.sched_days, use_limit_get_spans_csv());
 }
 
 int use_limit_get_sched_enable(void)
@@ -374,7 +432,34 @@ int use_limit_get_days(void)
 
 const char *use_limit_get_span(int idx)
 {
-    return idx == 2 ? g_ul.sched_span2 : g_ul.sched_span1;
+    if (idx < 0 || idx >= UL_MAX_SPANS)
+        return "";
+    return g_ul.sched_spans[idx];
+}
+
+int use_limit_get_span_count(void)
+{
+    int n = 0;
+    for (int i = 0; i < UL_MAX_SPANS; i++)
+        if (g_ul.sched_spans[i][0])
+            n++;
+    return n;
+}
+
+const char *use_limit_get_spans_csv(void)
+{
+    static char csv[64];
+    int off = 0;
+    csv[0] = '\0';
+    for (int i = 0; i < UL_MAX_SPANS && g_ul.sched_spans[i][0]; i++)
+    {
+        int n = snprintf(csv + off, sizeof(csv) - off, "%s%s",
+                         off ? "," : "", g_ul.sched_spans[i]);
+        if (n < 0)
+            break;
+        off += n;
+    }
+    return csv;
 }
 
 int use_limit_should_block_wakeup(void)

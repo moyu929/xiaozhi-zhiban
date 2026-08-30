@@ -35,6 +35,15 @@ static const process_info_t k_known[] = {
     {"olmedia_service",  "在线媒体服务(原版sair依赖)",          1, "可选"},
     {"mqtt_handle",      "MQTT消息处理(原版sair依赖)",          1, "可选"},
     {"mqtt_custom_server","MQTT自定义服务(原版sair依赖)",       1, "可选"},
+    {"xwplug-battery",   "电池守护插件",                        0, "插件"},
+    {"xwplug-bat-c",     "电池采样子进程",                      0, "插件"},
+    {"xwplug-files",     "文件管理插件",                        0, "插件"},
+    {"xwplug-procs",     "进程管理插件(自身)",                  0, "插件"},
+    {"xwplug-usb",       "USB模式插件",                         0, "插件"},
+    {"xwplug-demo",      "演示插件",                            0, "插件"},
+    {"xwplug-lights",    "灯控插件(背光/呼吸灯/按键背光)",      0, "插件"},
+    {"xwplug-lights-r",  "灯控插件呼吸灯恢复子进程",            0, "插件"},
+    {"telnetd",          "Telnet终端服务",                      0, "插件"},
     {NULL, NULL, 0, NULL}
 };
 

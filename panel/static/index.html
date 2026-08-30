@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>小智 · 智伴</title>
-<link rel="stylesheet" href="/style.css?v=28">
+<link rel="stylesheet" href="/style.css?v=29">
 </head>
 <body>
 <canvas id="particles"></canvas>
@@ -167,7 +167,9 @@
               <div class="stat-item"><span class="stat-label">运行时间</span><span id="devUptime" class="stat-value">--</span></div>
               <div class="stat-item"><span class="stat-label">内存</span><span id="devMem" class="stat-value">--</span></div>
               <div class="stat-item"><span class="stat-label">磁盘</span><span id="devDisk" class="stat-value">--</span></div>
-              <div class="stat-item"><span class="stat-label">USB 模式</span><span id="devUsbMode" class="stat-value">--</span></div>
+            </div>
+            <div id="batteryDetail" class="battery-detail" style="display:none;margin-top:10px">
+              <!-- 电池详情(JS 渲染): 预测时长/容量 + 充放电压电流 -->
             </div>
             <div class="backlight-row">
               <span class="stat-label">音量</span>
@@ -188,7 +190,6 @@
               <button class="btn btn-danger" onclick="wirelessRebootAndReconnect()">重启</button>
               <button class="btn btn-danger btn-outline" onclick="doPoweroff()">关机</button>
               <button class="btn btn-danger btn-outline" onclick="doCleanup()">清理垃圾</button>
-              <button class="btn btn-ghost" onclick="reselectUsbMode()">重选USB模式</button>
             </div>
             <div style="margin-top:10px">
               <button class="btn btn-danger" onclick="emergencyNuke('http')" style="width:100%;background:linear-gradient(135deg,#dc2626,#991b1b);font-weight:700;letter-spacing:1px">🚨 紧急修复</button>
@@ -314,31 +315,12 @@
                 </select>
               </div>
               <div class="form-group">
-                <label class="form-label">日志级别 <span class="form-hint">（助手进程的日志输出级别）</span></label>
-                <select id="cfgSairLogLevel" class="select">
-                  <option value="">不修改</option>
-                  <option value="DEBUG">调试 (DEBUG)</option>
-                  <option value="INFO">信息 (INFO)</option>
-                  <option value="WARN">警告 (WARN)</option>
-                  <option value="ERROR">错误 (ERROR)</option>
-                </select>
-              </div>
-              <div class="form-group">
                 <label class="form-label">MCP 接入点 <span class="form-hint">（从 xiaozhi.me 控制台获取的智能体专属端点）</span></label>
                 <input type="text" id="cfgMcpEndpoint" class="input-text" value="" placeholder="wss://api.xiaozhi.me/mcp/?token=...">
               </div>
               <div class="form-group">
                 <label class="form-label">空闲息屏 <span class="form-hint">（对话中无输出 N 秒后自动息屏，语音继续；0 = 不息屏）</span></label>
                 <input type="number" id="cfgScreenOffSec" class="input-text" value="" placeholder="30" min="0" max="3600" step="5">
-              </div>
-              <div class="form-group">
-                <label class="form-label">超时参数 <span class="form-hint">（单位：秒）</span></label>
-                <div class="timeout-row">
-                  <div class="timeout-item"><span class="stat-label">监听超时</span><input type="number" id="cfgListenTimeout" class="input-text" value="" placeholder="120" min="10" step="10"></div>
-                  <div class="timeout-item"><span class="stat-label">会话超时</span><input type="number" id="cfgSessionTimeout" class="input-text" value="" placeholder="300" min="30" step="30"></div>
-                  <div class="timeout-item"><span class="stat-label">唤醒冷却</span><input type="number" id="cfgWakeupCooldown" class="input-text" value="" placeholder="3" min="1" step="1"></div>
-                  <div class="timeout-item"><span class="stat-label">WS心跳间隔</span><input type="number" id="cfgWsPingInterval" class="input-text" value="" placeholder="25" min="5" step="5"></div>
-                </div>
               </div>
               <div class="use-limit-row">
                 <label class="svc-toggle use-limit-switch">
@@ -348,53 +330,78 @@
                 <span class="use-limit-label">音频预缓存 <span class="form-hint">（唤醒后提前缓存应答音频，加快首句响应）</span></span>
               </div>
 
-              <div class="settings-group-title">每日使用时长</div>
-              <div class="use-limit-box">
-                <div class="use-limit-row">
-                  <label class="svc-toggle use-limit-switch">
-                    <input type="checkbox" id="cfgLimitEnable">
-                    <span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>
-                  </label>
-                  <span class="use-limit-label">启用每日使用时长限制</span>
-                  <div class="use-limit-minutes"><span class="stat-label">每日上限(分钟)</span>
-                    <input type="number" id="cfgLimitMinutes" class="input-text" value="" placeholder="60" min="0" max="1440" step="10"></div>
-                </div>
-                <div class="use-limit-stat" id="limitStat">今日已用 -- 分钟（未启用）</div>
-                <div class="use-limit-row">
-                  <label class="svc-toggle use-limit-switch">
-                    <input type="checkbox" id="cfgLimitDelayTool">
-                    <span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>
-                  </label>
-                  <span class="use-limit-label">允许语音「再玩 N 分钟」延长</span>
-                  <button class="btn btn-ghost btn-sm" onclick="limitDelayNow(15)" id="btnLimitDelay">临时延长15分钟</button>
-                </div>
-                <div class="use-limit-sched">
-                  <div class="use-limit-row">
-                    <label class="svc-toggle use-limit-switch">
-                      <input type="checkbox" id="cfgLimitSched">
-                      <span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>
-                    </label>
-                    <span class="use-limit-label">使用时段限制 <span class="form-hint">（时段外禁止唤醒）</span></span>
-                  </div>
-                  <div class="sched-days" id="schedDays">
-                    <label class="sched-day"><input type="checkbox" value="1"><span>日</span></label>
-                    <label class="sched-day"><input type="checkbox" value="2"><span>一</span></label>
-                    <label class="sched-day"><input type="checkbox" value="4"><span>二</span></label>
-                    <label class="sched-day"><input type="checkbox" value="8"><span>三</span></label>
-                    <label class="sched-day"><input type="checkbox" value="16"><span>四</span></label>
-                    <label class="sched-day"><input type="checkbox" value="32"><span>五</span></label>
-                    <label class="sched-day"><input type="checkbox" value="64"><span>六</span></label>
-                  </div>
-                  <div class="timeout-row">
-                    <div class="timeout-item"><span class="stat-label">时段1</span><input type="text" id="cfgLimitSpan1" class="input-text" value="" placeholder="1600-2000"></div>
-                    <div class="timeout-item"><span class="stat-label">时段2(可选)</span><input type="text" id="cfgLimitSpan2" class="input-text" value="" placeholder="0900-1100"></div>
-                  </div>
-                </div>
+              <details class="advanced-fold" id="useLimitFold" open>
+              <summary>每日使用时长管理</summary>
+              <div class="fold-body">
+              <div class="use-limit-row">
+                <label class="svc-toggle use-limit-switch">
+                  <input type="checkbox" id="cfgLimitEnable">
+                  <span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>
+                </label>
+                <span class="use-limit-label">启用每日使用时长限制 <span class="form-hint">（当日累计使用达上限后锁定唤醒，次日自动解锁）</span></span>
+                <div class="use-limit-minutes"><span class="stat-label">每日上限(分钟)</span>
+                  <input type="number" id="cfgLimitMinutes" class="input-text" value="" placeholder="60" min="0" max="1440" step="10"></div>
               </div>
+              <div class="use-limit-stat" id="limitStat">今日已用 -- 分钟（未启用）</div>
+              <div class="use-limit-sched">
+                <div class="use-limit-row">
+                  <label class="svc-toggle use-limit-switch">
+                    <input type="checkbox" id="cfgLimitSched">
+                    <span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>
+                  </label>
+                  <span class="use-limit-label">使用时段限制 <span class="form-hint">（北京时间，时段外禁止唤醒）</span></span>
+                </div>
+                <div class="sched-days" id="schedDays">
+                  <label class="sched-day"><input type="checkbox" value="1"><span>日</span></label>
+                  <label class="sched-day"><input type="checkbox" value="2"><span>一</span></label>
+                  <label class="sched-day"><input type="checkbox" value="4"><span>二</span></label>
+                  <label class="sched-day"><input type="checkbox" value="8"><span>三</span></label>
+                  <label class="sched-day"><input type="checkbox" value="16"><span>四</span></label>
+                  <label class="sched-day"><input type="checkbox" value="32"><span>五</span></label>
+                  <label class="sched-day"><input type="checkbox" value="64"><span>六</span></label>
+                </div>
+                <div id="schedSpans"><!-- JS 渲染: 时段行(默认1行,可增删) --></div>
+                <button type="button" class="btn btn-ghost btn-sm" onclick="addSchedSpan()">+ 添加时段</button>
+              </div>
+              <div class="use-limit-row">
+                <label class="svc-toggle use-limit-switch">
+                  <input type="checkbox" id="cfgLimitDelayTool">
+                  <span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>
+                </label>
+                <span class="use-limit-label">允许语音「再玩 N 分钟」 <span class="form-hint">（开启后孩子可对语音助手说"再玩10分钟"，达限锁定时一次性延长当日使用，立即生效无需家长操作）</span></span>
+              </div>
+              <div class="use-limit-row delay-now-row">
+                <span class="stat-label">临时延长</span>
+                <input type="number" id="cfgLimitDelayMin" class="input-text delay-min-input" value="15" min="1" max="240" step="1">
+                <span class="stat-label">分钟</span>
+                <button class="btn btn-accent btn-sm" onclick="limitDelayNow(document.getElementById('cfgLimitDelayMin').value ? parseInt(document.getElementById('cfgLimitDelayMin').value,10) : 15)" id="btnLimitDelay">延长</button>
+                <span class="form-hint">（达限锁定时手动延长当日使用）</span>
+              </div>
+              </div>
+            </details>
 
               <details class="advanced-fold" id="advancedFold">
                 <summary>更多选项（进阶）</summary>
                 <div class="fold-body">
+                  <div class="form-group">
+                    <label class="form-label">日志级别 <span class="form-hint">（助手进程的日志输出级别）</span></label>
+                    <select id="cfgSairLogLevel" class="select">
+                      <option value="">不修改</option>
+                      <option value="DEBUG">调试 (DEBUG)</option>
+                      <option value="INFO">信息 (INFO)</option>
+                      <option value="WARN">警告 (WARN)</option>
+                      <option value="ERROR">错误 (ERROR)</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">超时参数 <span class="form-hint">（单位：秒）</span></label>
+                    <div class="timeout-row">
+                      <div class="timeout-item"><span class="stat-label">监听超时</span><input type="number" id="cfgListenTimeout" class="input-text" value="" placeholder="120" min="10" step="10"></div>
+                      <div class="timeout-item"><span class="stat-label">会话超时</span><input type="number" id="cfgSessionTimeout" class="input-text" value="" placeholder="300" min="30" step="30"></div>
+                      <div class="timeout-item"><span class="stat-label">唤醒冷却</span><input type="number" id="cfgWakeupCooldown" class="input-text" value="" placeholder="3" min="1" step="1"></div>
+                      <div class="timeout-item"><span class="stat-label">WS心跳间隔</span><input type="number" id="cfgWsPingInterval" class="input-text" value="" placeholder="25" min="5" step="5"></div>
+                    </div>
+                  </div>
                   <div class="form-group">
                     <label class="form-label">当前 WS URL <span class="form-hint">（助手实际连接的地址，修改后保存生效；清空则恢复官方地址）</span></label>
                     <input type="text" id="cfgCustomWsUrl" class="input-text value-mono" value="" placeholder="wss://your-server.com/xiaozhi/v1/">
@@ -404,7 +411,7 @@
                       <input type="checkbox" id="cfgBootPushDisable" disabled>
                       <span class="svc-toggle-track svc-toggle-disabled"><span class="svc-toggle-thumb"></span></span>
                     </label>
-                    <span class="use-limit-label">开机不打扰 <span class="form-hint">（禁用开机主动播报问候）</span> <span class="form-hint" style="color:#e67e22">[暂不可用]</span></span>
+                    <span class="use-limit-label">拦截每日动画 <span class="form-hint">（拦截开机联网成功后自动播放的每日推送动画）</span> <span class="form-hint" style="color:#e67e22">[暂不可用]</span></span>
                   </div>
                 </div>
               </details>
@@ -621,6 +628,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=40"></script>
+<script src="/app.js?v=41"></script>
 </body>
 </html>

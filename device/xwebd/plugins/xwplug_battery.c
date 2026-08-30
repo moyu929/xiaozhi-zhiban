@@ -30,6 +30,7 @@
 #define LOWBAT_VOLT_UV  3350000
 #define LOWBAT_LOG      "/var/upgrade/lowbattery.log"
 #define SAIR_CMD_PATH   "/tmp/sair_cmd.json"
+#define EST_FULL_MAH    2864  /* 实测等效满容(2026-08-30 定容) */
 
 static int node_int(const char *path)
 {
@@ -242,12 +243,28 @@ int plug_handle(const xwplug_req_t *req, char *resp, int resp_size)
         node_str(BATT_SYS "/status", status, sizeof(status));
         int usb_on = node_int("/sys/class/power_supply/atc260x-usb/online");
         int wall_on = node_int("/sys/class/power_supply/atc260x-wall/online");
+        int charging = (usb_on > 0 || wall_on > 0);
+
+        /* 预测(2026-08-31): 等效满容为实测校准值(2026-08-30 charge_log ∫I·dt
+         * 定容 2864mAh, 平均放电 596mA); 剩余/充满时长按当前电流线性外推,
+         * 电流过小(<50mA, 深度待机)时预测无意义置 -1 */
+        int cur_ma = cur < 0 ? -cur / 1000 : cur / 1000;
+        int est_remain_min = -1, est_charge_min = -1;
+        if (cur_ma >= 50 && cap >= 0) {
+            if (charging)
+                est_charge_min = (100 - cap) * EST_FULL_MAH / 100 / cur_ma * 60;
+            else
+                est_remain_min = cap * EST_FULL_MAH / 100 / cur_ma * 60;
+        }
+
         snprintf(resp, resp_size,
                  "{\"voltage_uv\":%d,\"current_ua\":%d,\"capacity\":%d,\"status\":\"%s\","
-                 "\"charging\":%s,\"fake_low_flag\":%s}",
+                 "\"charging\":%s,\"fake_low_flag\":%s,"
+                 "\"est_full_mah\":%d,\"est_remain_min\":%d,\"est_charge_min\":%d}",
                  volt, cur, cap, status,
-                 (usb_on > 0 || wall_on > 0) ? "true" : "false",
-                 access(FAKE_LOW_FLAG, F_OK) == 0 ? "true" : "false");
+                 charging ? "true" : "false",
+                 access(FAKE_LOW_FLAG, F_OK) == 0 ? "true" : "false",
+                 EST_FULL_MAH, est_remain_min, est_charge_min);
         return 200;
     }
     snprintf(resp, resp_size, "{\"error\":\"not found\",\"path\":\"%s\"}", req->path);
