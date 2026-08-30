@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>小智 · 智伴</title>
-<link rel="stylesheet" href="/style.css?v=29">
+<link rel="stylesheet" href="/style.css?v=30">
 </head>
 <body>
 <canvas id="particles"></canvas>
@@ -168,23 +168,10 @@
               <div class="stat-item"><span class="stat-label">内存</span><span id="devMem" class="stat-value">--</span></div>
               <div class="stat-item"><span class="stat-label">磁盘</span><span id="devDisk" class="stat-value">--</span></div>
             </div>
-            <div id="batteryDetail" class="battery-detail" style="display:none;margin-top:10px">
-              <!-- 电池详情(JS 渲染): 预测时长/容量 + 充放电压电流 -->
-            </div>
             <div class="backlight-row">
               <span class="stat-label">音量</span>
               <input type="range" id="volSlider" class="bl-slider" min="0" max="40" step="2" value="20" oninput="volOnInput()" onchange="volSave()">
               <span id="volValue" class="bl-value">--</span>
-            </div>
-            <div class="backlight-row">
-              <span class="stat-label">屏幕背光</span>
-              <input type="range" id="blSlider" class="bl-slider" min="10" max="900" step="1" value="400" oninput="blOnInput()" onchange="blSave()">
-              <span id="blValue" class="bl-value">--</span>
-              <label class="svc-toggle" title="开机后自动恢复此亮度">
-                <input type="checkbox" id="blPersist" onchange="blSavePersist()">
-                <span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>
-              </label>
-              <span class="stat-label bl-persist-label">开机恢复</span>
             </div>
             <div class="btn-row-even" style="margin-top:14px">
               <button class="btn btn-danger" onclick="wirelessRebootAndReconnect()">重启</button>
@@ -202,7 +189,7 @@
           </section>
 
           <section class="card" id="xwebdSection">
-            <div class="card-header"><h2>面板内核管理</h2><div class="card-actions"><button class="btn btn-primary btn-sm" onclick="runXwebdDiag()" id="btnXwebdDiag">运行自检</button><span class="conn-status" id="xwebdConnStatus"><span class="conn-dot disconnected"></span>未连接</span></div></div>
+            <div class="card-header"><h2>面板内核管理</h2><div class="card-actions"><span class="conn-status" id="xwebdConnStatus"><span class="conn-dot disconnected"></span>未连接</span></div></div>
             <div class="service-status">
               <span id="xwebdStatus" class="stat-value">--</span>
               <span id="xwebdVersion" class="badge">--</span>
@@ -234,7 +221,6 @@
             <div class="svc-list" id="xwebdSvcList">
               <div class="empty-state">等待连接设备...</div>
             </div>
-            <div id="xwebdDiagContainer" class="diag-container" style="display:none;margin-top:12px"></div>
             <div class="section-overlay" id="xwebdOverlay" style="display:none"><div class="spinner"></div></div>
           </section>
         </div>
@@ -628,6 +614,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=41"></script>
+<script src="/app.js?v=42"></script>
 </body>
 </html>

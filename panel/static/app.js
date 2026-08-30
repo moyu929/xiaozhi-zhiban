@@ -10,7 +10,11 @@ var S = {
     panelSSE: null,
     deviceSSE: {},
     xwebdVersion: '',
-    localVersions: {}
+    localVersions: {},
+    usbMode: '',
+    svcData: null,
+    lightsCtrl: null,
+    batteryDetail: null
 };
 
 /* 设备助手固件内置 MCP 工具（与 sair mcp_handler.c 同步维护，只读参考） */
@@ -35,7 +39,7 @@ var PLUGIN_META = {
     files:     { cn: '文件管理',   desc: '文件列表/删除/批量清理（上传下载为核心功能，装插件才有列表管理）' },
     procs:     { cn: '进程管理',   desc: '进程清单查看与启停控制（不装则无进程管理）' },
     usb:       { cn: 'USB 模式',   desc: 'USB 存储模式查询与重选、存储卡开关（不装则无 USB 控制）' },
-    lights:    { cn: '灯控',       desc: '屏幕背光/呼吸灯/按键背光三灯合一（不装则背光滑条与灯开关回落内置）' },
+    lights:    { cn: '灯控管理',   desc: '屏幕背光/呼吸灯/按键背光三灯合一（不装则背光滑条与灯开关回落内置）' },
     battery:   { cn: '电池守护',   desc: '电池采样记录 + 低电关机守护（卸载后失去低电保护与电池详情，建议常驻）' },
     demo:      { cn: '框架演示',   desc: '插件框架演示与崩溃隔离测试，可安全卸载' }
 };
@@ -825,16 +829,17 @@ function resetWirelessUI() {
     document.querySelectorAll('#schedDays input[type=checkbox]').forEach(function(cb) { cb.checked = false; });
     $('limitStat').textContent = '今日已用 -- 分钟（未启用）';
     $('cfgScreenOffSec').value = '';
-    $('blSlider').value = 400;
-    $('blValue').textContent = '--';
-    $('blPersist').checked = false;
+    var bls = $('blSlider'); /* 背光滑条已迁 lights 插件条目, 元素可能不存在 */
+    if (bls) { bls.value = 400; }
+    var blv = $('blValue');
+    if (blv) blv.textContent = '--';
+    var blp = $('blPersist');
+    if (blp) blp.checked = false;
     $('volSlider').value = 20;
     $('volValue').textContent = '--';
     var usbReset = $('devUsbMode'); /* USB 模式已迁插件卡, 元素可能不存在 */
     if (usbReset) usbReset.textContent = '--';
     S.usbMode = '';
-    var xdiag = $('xwebdDiagContainer');
-    if (xdiag) { xdiag.style.display = 'none'; xdiag.innerHTML = ''; }
     $('cfgListenTimeout').value = '';
     $('cfgSessionTimeout').value = '';
     $('cfgWakeupCooldown').value = '';
@@ -849,6 +854,8 @@ function resetWirelessUI() {
     $('xwebdSvcList').innerHTML = '<div class="empty-state">等待连接设备...</div>';
     $('cfgPrecache').checked = false;
     S.svcData = null;
+    S.lightsCtrl = null;
+    S.batteryDetail = null;
     $('processContainer').innerHTML = '<div class="empty-state">等待连接设备...</div>';
     $('processSummary').textContent = '';
     _procCache = [];
@@ -1013,8 +1020,14 @@ async function refreshBatteryDetail() {
     if (!S.wl.connected) return;
     /* battery 插件在线才可读; 未装/离线保持 /api/status 的纯百分比 */
     var r = await api('/api/plugin/battery/status');
-    if (r.error) { var oldEl = $('batteryDetail'); if (oldEl) oldEl.style.display = 'none'; return; }
+    if (r.error) {
+        S.batteryDetail = null;
+        return;
+    }
     var d = r.data || r;
+    S.batteryDetail = d;
+
+    /* 电量行摘要(设备状态卡): 百分比 + 电压/充电态 */
     var base = $('devBattery').textContent.replace(/\s*·.*$/, '');
     var txt = base;
     if (d.voltage_uv > 0) txt += ' · ' + (d.voltage_uv / 1000000).toFixed(2) + 'V';
@@ -1023,95 +1036,37 @@ async function refreshBatteryDetail() {
     if (d.fake_low_flag) txt += ' · 伪低电标记';
     $('devBattery').textContent = txt;
 
-    /* 详情块(2026-08-31): 预测时长/容量 + 充放电压电流 */
-    var box = $('batteryDetail');
-    if (!box) return;
-    if (d.voltage_uv <= 0) { box.style.display = 'none'; return; }
-    var rows = [];
-    var v = (d.voltage_uv / 1000000).toFixed(3) + ' V';
-    var iMa = Math.abs(d.current_ua || 0) / 1000;
-    var i = iMa.toFixed(0) + ' mA';
-    if (d.charging) {
-        rows.push(['充电电压', v]); rows.push(['充电电流', i]);
-        if (d.est_charge_min > 0) rows.push(['预计充满', Math.floor(d.est_charge_min / 60) + ' 时 ' + (d.est_charge_min % 60) + ' 分']);
-    } else {
-        rows.push(['放电电压', v]); rows.push(['放电电流', i]);
-        if (d.est_remain_min > 0) rows.push(['预计可用', Math.floor(d.est_remain_min / 60) + ' 时 ' + (d.est_remain_min % 60) + ' 分（按当前放电速率）']);
-    }
-    if (d.est_full_mah > 0) rows.push(['电池容量', d.est_full_mah + ' mAh（实测等效满容）']);
-    var html = rows.map(function(x) {
-        return '<div class="stat-item"><span class="stat-label">' + x[0] + '</span><span class="stat-value">' + x[1] + '</span></div>';
-    }).join('');
-    box.innerHTML = '<div class="stat-grid">' + html + '</div>';
-    box.style.display = '';
+    /* 详情数据(预测时长/容量/充放电压电流)渲染进插件管理卡 battery 条目(2026-08-31
+     * 用户指正: 插件数据应显示在对应插件项中, 不在设备状态栏) */
+    refreshPlugins();
 }
 
-async function runXwebdDiag() {
-    var container = $('xwebdDiagContainer');
-    var btn = $('btnXwebdDiag');
-    if (!S.wl.connected) { toast('请先连接设备', 'error'); return; }
-    btn.disabled = true;
-    btn.textContent = '检测中...';
-    var result = null;
-    try {
-        var r = await api('/api/diag');
-        result = r.items ? r : (r.data ? r.data : null);
-    } catch(e) {}
-    if (!result || !result.items || !result.items.length) {
-        toast('自检失败: 未获取到结果', 'error');
-        btn.disabled = false;
-        btn.textContent = '运行自检';
-        return;
-    }
-    container.style.display = '';
-    var items = result.items;
-    var html = '<div class="diag-items">';
-    for (var i = 0; i < items.length; i++) {
-        html += '<div class="diag-item diag-item-pending" data-xdiag-idx="' + i + '">';
-        html += '<span class="diag-item-icon diag-icon-spinner"></span>';
-        html += '<span class="diag-item-name">' + escapeHtml(items[i].name || '') + '</span>';
-        html += '<span class="diag-item-msg">检测中...</span>';
-        html += '</div>';
-    }
-    html += '</div>';
-    container.innerHTML = html;
-    for (var m = 0; m < items.length; m++) {
-        await new Promise(function(resolve) { setTimeout(resolve, 80 + Math.random() * 120); });
-        var el = container.querySelector('[data-xdiag-idx="' + m + '"]');
-        if (!el) continue;
-        el.className = 'diag-item ' + (items[m].ok ? 'diag-item-ok' : 'diag-item-fail');
-        el.querySelector('.diag-item-icon').className = 'diag-item-icon';
-        el.querySelector('.diag-item-icon').innerHTML = items[m].ok ? '&#10003;' : '&#10007;';
-        el.querySelector('.diag-item-msg').textContent = items[m].message || '';
-    }
-    btn.disabled = false;
-    btn.textContent = '运行自检';
-}
-
-// ==================== 屏幕背光（xwplug-backlight / 内置回落） ====================
+// ==================== 屏幕背光（lights 插件 / 内置回落; 控件在插件卡） ====================
 
 async function refreshBacklight() {
     if (!S.wl.connected) return;
     var r = await api('/api/backlight');
     if (r.error) return;
     var d = r.data || r;
-    if (d.brightness) {
-        $('blSlider').value = d.brightness;
-        $('blValue').textContent = d.brightness;
-    }
-    $('blPersist').checked = !!d.enable;
+    /* 控件已迁 lights 插件条目(由 refreshPlugins 渲染), 此处只更新状态缓存 */
+    S.lightsCtrl = { brightness: d.brightness, persist: !!d.enable };
+    refreshPlugins();
 }
 
 function blOnInput() {
     var s = $('blSlider');
-    $('blValue').textContent = s.value;
+    var v = $('blValue');
+    if (!s || !v) return; /* 控件随 lights 插件条目渲染, 断连/未装时不存在 */
+    v.textContent = s.value;
     var pct = (s.value - s.min) / (s.max - s.min) * 100;
     s.style.setProperty('--fill', pct + '%');
 }
 
 async function blSave() {
     if (!S.wl.connected) return;
-    var v = parseInt($('blSlider').value, 10);
+    var s = $('blSlider');
+    if (!s) return;
+    var v = parseInt(s.value, 10);
     var r = await api('/api/backlight', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -1123,7 +1078,9 @@ async function blSave() {
 
 async function blSavePersist() {
     if (!S.wl.connected) return;
-    var en = $('blPersist').checked ? 1 : 0;
+    var p = $('blPersist');
+    if (!p) return;
+    var en = p.checked ? 1 : 0;
     var r = await api('/api/backlight', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -1132,10 +1089,16 @@ async function blSavePersist() {
     if (r.ok || !r.error) {
         toast(en ? '已开启开机恢复（重启后恢复当前亮度）' : '已关闭开机恢复', 'success');
         var d = r.data || r;
-        if (d.brightness) { $('blSlider').value = d.brightness; $('blValue').textContent = d.brightness; }
+        if (d.brightness) {
+            var bs = $('blSlider'), bv = $('blValue');
+            if (bs) bs.value = d.brightness;
+            if (bv) bv.textContent = d.brightness;
+            if (bs) blOnInput();
+        }
     } else {
         toast('设置失败: ' + (r.error || ''), 'error');
-        $('blPersist').checked = !en;
+        var bp = $('blPersist');
+        if (bp) bp.checked = !en;
     }
 }
 
@@ -1247,8 +1210,10 @@ async function refreshXwebdStatus() {
 
 /* ==================== xwebd 服务与功能（原服务状态卡拆解并入各卡） ====================
  * 自启动/看门狗为必开安全机制(关掉=重启失联/崩溃循环无回退), 只显示状态不给开关;
- * telnet/呼吸灯/按键背光为 xwebd 域可选项, 渲染在面板内核管理卡;
- * usb_lun 渲染在插件管理卡 usb 条目; 音频预缓存(sair 域)在语音助手管理卡。 */
+ * telnet 渲染在面板内核管理卡(纯 xwebd 域, 无插件承接);
+ * 呼吸灯/按键背光/usb_lun/背光滑条 渲染在插件管理卡对应插件条目(2026-08-31 用户指正:
+ * 插件提供的功能应显示在插件管理栏对应插件项中, 不应散落其他位置);
+ * 音频预缓存(sair 域)在语音助手管理卡。 */
 async function refreshXwebdServices() {
     if (!S.wl.connected) return;
     var r = await api('/api/services');
@@ -1258,11 +1223,8 @@ async function refreshXwebdServices() {
 
     var html = '';
     /* 必开项(自启动/看门狗)不展示: 用户指正属"废话"信息 */
-    /* 可选项: 开关 */
     var togglable = [
-        { name: 'Telnet 终端', service: 'telnet', on: d.telnet && d.telnet.running, hint: '调试用' },
-        { name: '呼吸灯', service: 'led', on: d.led && d.led.enabled, hint: '重启保留' },
-        { name: '按键背光', service: 'key_backlight', on: d.key_backlight && d.key_backlight.enabled === true, hint: '重启保留' }
+        { name: 'Telnet 终端', service: 'telnet', on: d.telnet && d.telnet.running, hint: '调试用' }
     ];
     togglable.forEach(function(item) {
         html += '<div class="svc-item">';
@@ -1329,6 +1291,9 @@ async function refreshPlugins() {
         S.svcData = svc;
     }
     var usbLunOn = svc && svc.usb_lun && svc.usb_lun.enabled;
+    var ledOn = svc && svc.led && svc.led.enabled;
+    var keyBlOn = svc && svc.key_backlight && svc.key_backlight.enabled === true;
+    var lc = S.lightsCtrl || {};
     var html = '';
     if (!plugs.length) {
         html = '<div class="empty-state">暂无插件，点击右上角「安装插件」</div>';
@@ -1348,6 +1313,53 @@ async function refreshPlugins() {
             if (p.mem_kb) html += '<span class="svc-hint">内存 ' + p.mem_kb + 'KB</span>';
             html += '</div>';
             html += '<div class="plugin-desc">' + escapeHtml(meta.desc || '未知插件，无描述') + '</div>';
+            /* 灯控管理: 三灯控件内嵌插件条目(2026-08-31 自面板内核管理卡/设备状态卡迁入) */
+            if (p.name === 'lights') {
+                html += '<div class="plugin-lights">';
+                html += '<div class="backlight-row">';
+                html += '<span class="stat-label">屏幕背光</span>';
+                html += '<input type="range" id="blSlider" class="bl-slider" min="10" max="900" step="1" value="' + (lc.brightness || 400) + '" oninput="blOnInput()" onchange="blSave()">';
+                html += '<span id="blValue" class="bl-value">' + (lc.brightness || '--') + '</span>';
+                html += '<label class="svc-toggle" title="开机后自动恢复此亮度">';
+                html += '<input type="checkbox" id="blPersist"' + (lc.persist ? ' checked' : '') + ' onchange="blSavePersist()">';
+                html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
+                html += '</label>';
+                html += '<span class="stat-label bl-persist-label">开机恢复</span>';
+                html += '</div>';
+                html += '<div class="plugin-lights-toggles">';
+                html += '<span class="svc-name">呼吸灯</span>';
+                html += '<label class="svc-toggle" title="重启保留">';
+                html += '<input type="checkbox"' + (ledOn ? ' checked' : '') + ' onchange="toggleService(\'led\', this.checked)">';
+                html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
+                html += '</label>';
+                html += '<span class="svc-name">按键背光</span>';
+                html += '<label class="svc-toggle" title="重启保留">';
+                html += '<input type="checkbox"' + (keyBlOn ? ' checked' : '') + ' onchange="toggleService(\'key_backlight\', this.checked)">';
+                html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
+                html += '</label>';
+                html += '</div>';
+                html += '</div>';
+            }
+            /* 电池守护: 详情数据内嵌插件条目(2026-08-31 自设备状态卡迁入) */
+            if (p.name === 'battery' && S.batteryDetail && S.batteryDetail.voltage_uv > 0) {
+                var bd = S.batteryDetail;
+                var brows = [];
+                var v = (bd.voltage_uv / 1000000).toFixed(3) + ' V';
+                var iMa = Math.abs(bd.current_ua || 0) / 1000;
+                var i = iMa.toFixed(0) + ' mA';
+                if (bd.charging) {
+                    brows.push(['充电电压', v]); brows.push(['充电电流', i]);
+                    if (bd.est_charge_min > 0) brows.push(['预计充满', Math.floor(bd.est_charge_min / 60) + ' 时 ' + (bd.est_charge_min % 60) + ' 分']);
+                } else {
+                    brows.push(['放电电压', v]); brows.push(['放电电流', i]);
+                    if (bd.est_remain_min > 0) brows.push(['预计可用', Math.floor(bd.est_remain_min / 60) + ' 时 ' + (bd.est_remain_min % 60) + ' 分（按当前放电速率）']);
+                }
+                if (bd.est_full_mah > 0) brows.push(['电池容量', bd.est_full_mah + ' mAh（实测等效满容）']);
+                var bhtml = brows.map(function(x) {
+                    return '<div class="stat-item"><span class="stat-label">' + x[0] + '</span><span class="stat-value">' + x[1] + '</span></div>';
+                }).join('');
+                html += '<div class="battery-detail"><div class="stat-grid">' + bhtml + '</div></div>';
+            }
             html += '<div class="plugin-foot">';
             if (p.restarts) html += '<span class="svc-hint">重启 ' + p.restarts + ' 次</span>';
             if (p.name === 'usb') {
@@ -1374,6 +1386,7 @@ async function refreshPlugins() {
         });
     }
     $('plugList').innerHTML = html;
+    blOnInput(); /* 背光滑条重渲染后补 --fill 渐变 */
 }
 
 async function pluginRestart(name) {
@@ -3029,7 +3042,7 @@ document.addEventListener('DOMContentLoaded', function() {
     updateSairLocks();
     renderMcpTools();
 
-    document.querySelectorAll('.svc-list,.file-container,.log-container,.diag-container,.mcp-tools-list,.adb-device-list,.modal').forEach(function(el) {
+    document.querySelectorAll('.svc-list,.plugin-list,.file-container,.log-container,.diag-container,.mcp-tools-list,.adb-device-list,.modal').forEach(function(el) {
         el.addEventListener('wheel', function(e) {
             /* 内容未溢出(无滚动条)时放行, 滚轮冒泡滚动整页(2026-08-31 用户要求) */
             if (el.scrollHeight <= el.clientHeight + 1) return;
