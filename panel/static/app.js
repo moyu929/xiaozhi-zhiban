@@ -32,10 +32,10 @@ var MCP_TOOLS = [
 
 /* 已知插件的中文名与用途说明（未知插件显示原名称） */
 var PLUGIN_META = {
-    files:     { cn: '文件管理',   desc: '文件列表/删除/批量清理（未装时回落内置实现）' },
-    procs:     { cn: '进程管理',   desc: '进程清单查看与启停控制' },
-    usb:       { cn: 'USB 模式',   desc: 'USB 存储模式查询与重选' },
-    backlight: { cn: '背光控制',   desc: '屏幕背光调节与开机恢复' },
+    files:     { cn: '文件管理',   desc: '文件列表/删除/批量清理（上传下载为核心功能，装插件才有列表管理）' },
+    procs:     { cn: '进程管理',   desc: '进程清单查看与启停控制（不装则无进程管理）' },
+    usb:       { cn: 'USB 模式',   desc: 'USB 存储模式查询与重选、存储卡开关（不装则无 USB 控制）' },
+    backlight: { cn: '背光控制',   desc: '屏幕背光调节与开机恢复（不装则设备状态卡的背光滑条不可用）' },
     battery:   { cn: '电池守护',   desc: '电池采样记录 + 伪低电关机守卫（建议常驻）', must: true },
     demo:      { cn: '框架演示',   desc: '插件框架演示与崩溃隔离测试，可安全卸载' }
 };
@@ -1487,6 +1487,10 @@ async function refreshProcesses() {
     if (!S.wl.connected) return;
     var r = await api('/api/processes');
     if (r.error) {
+        if (r.error.indexOf('not installed') >= 0) {
+            $('processContainer').innerHTML = '<div class="empty-state">进程管理插件（procs）未安装<br>在「插件管理」中安装后可用</div>';
+            return;
+        }
         if (r._retried) {
             $('processContainer').innerHTML = '<div class="empty-state">获取进程列表失败</div>';
         } else {
@@ -2548,7 +2552,12 @@ function disconnectDeviceSSE(source) {
 async function refreshFiles() {
     if (!S.wl.connected) return;
     var r = await api('/api/files?path=' + encodeURIComponent(S.currentPath));
-    if (r.error) return;
+    if (r.error) {
+        if (r.error.indexOf('not installed') >= 0) {
+            $('fileContainer').innerHTML = '<div class="empty-state">文件管理插件（files）未安装<br>在「插件管理」中安装后可用</div>';
+        }
+        return;
+    }
     var d = r.data || r;
     var files = d.files || [];
     var container = $('fileContainer');

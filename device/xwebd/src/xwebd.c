@@ -61,11 +61,8 @@ typedef struct {
     route_handler_t handler;
 } route_t;
 
-#define BL_SYSFS_BASE        "/sys/class/backlight/owl_backlight/"
 #define BL_BRIGHTNESS_DEFVAL 200
 
-static int g_persist_bl_enable = 0;      /* 需求①: 亮度持久化开关, 默认关闭 */
-static int g_persist_bl_value  = -1;
 
 /* ===== 全局变量 ===== */
 
@@ -516,23 +513,6 @@ static int read_proc_line(const char *path, char *buf, int size) {
 
 /* ===== 文件辅助 ===== */
 
-static int is_protected_file(const char *name) {
-    const char *p = XWEBD_PROTECT_FILES;
-    while (*p) {
-        if (strcmp(name, p) == 0) return 1;
-        p += strlen(p) + 1;
-    }
-    return 0;
-}
-
-static int is_truncate_file(const char *name) {
-    const char *p = XWEBD_TRUNCATE_FILES;
-    while (*p) {
-        if (strcmp(name, p) == 0) return 1;
-        p += strlen(p) + 1;
-    }
-    return 0;
-}
 
 /* ===== 诊断辅助 ===== */
 
@@ -979,211 +959,11 @@ static int handle_get_services(int fd, const char *body, const char *query) {
     return send_response(fd, 200, "application/json", buf, len);
 }
 
-typedef struct {
-    const char *name;
-    const char *desc;
-    int controllable;
-    const char *category;
-} process_info_t;
 
-static const process_info_t g_known_processes[] = {
-    {"launcher",         "UI启动器，管理屏幕界面和音量条",     1, "系统"},
-    {"sair_main",        "语音助手(自定义版)",                  0, "核心"},
-    {"sair",             "语音助手(原生版)",                    0, "核心"},
-    {"audio_service",    "音频服务，提供录音和播放接口",        1, "核心"},
-    {"msg_server",       "消息总线，进程间通信",                1, "系统"},
-    {"wifiNetd",         "WiFi网络守护进程",                    0, "核心"},
-    {"xwebd",            "面板内核HTTP服务",                    0, "核心"},
-    {"manager",          "进程管理器，启动和管理系统服务",      0, "核心"},
-    {"music_player",     "本地音乐播放器(原版sair依赖)",        1, "可选"},
-    {"smart_player",     "智能播放器，整合sair/mqtt/在线音乐",  1, "可选"},
-    {"olmedia_service",  "在线媒体服务(原版sair依赖)",          1, "可选"},
-    {"mqtt_handle",      "MQTT消息处理(原版sair依赖)",          1, "可选"},
-    {"mqtt_custom_server","MQTT自定义服务(原版sair依赖)",       1, "可选"},
-    {NULL, NULL, 0, NULL}
-};
 
-static const process_info_t *find_process_info(const char *name) {
-    for (int i = 0; g_known_processes[i].name; i++) {
-        if (strcmp(name, g_known_processes[i].name) == 0)
-            return &g_known_processes[i];
-    }
-    return NULL;
-}
 
-static int handle_get_processes(int fd, const char *body, const char *query) {
-    char running_names[32][64];
-    int running_pids[32];
-    int running_rss[32];
-    int running_count = 0;
 
-    FILE *pf = popen(
-        "for p in /proc/[0-9]*/status; do "
-        "pid=$(echo $p | cut -d/ -f3); "
-        "name=$(grep '^Name:' $p 2>/dev/null | awk '{print $2}'); "
-        "rss=$(grep '^VmRSS:' $p 2>/dev/null | awk '{print $2}'); "
-        "if [ -n \"$name\" ] && [ -n \"$rss\" ] && [ \"$rss\" != \"0\" ]; then "
-        "echo \"$pid|$name|$rss\"; "
-        "fi; done",
-        "r");
-    if (!pf)
-        return send_error(fd, 500, "Failed to list processes");
 
-    char line[256];
-    while (fgets(line, sizeof(line), pf)) {
-        int pid = 0, rss = 0;
-        char name[64] = "";
-        if (sscanf(line, "%d|%63[^|]|%d", &pid, name, &rss) != 3)
-            continue;
-        if (rss <= 0) continue;
-        if (find_process_info(name) && running_count < 32) {
-            strncpy(running_names[running_count], name, 63);
-            running_names[running_count][63] = '\0';
-            running_pids[running_count] = pid;
-            running_rss[running_count] = rss;
-            running_count++;
-        }
-    }
-    pclose(pf);
-
-    char *buf = malloc(8192);
-    if (!buf) return send_error(fd, 500, "Out of memory");
-    int pos = 0;
-
-    APPEND_PRINTF(buf, pos, (int)8192, "{\"processes\":[");
-
-    int first = 1;
-    for (int i = 0; g_known_processes[i].name; i++) {
-        const char *pname = g_known_processes[i].name;
-        int found = 0;
-        for (int j = 0; j < running_count; j++) {
-            if (strcmp(pname, running_names[j]) == 0) {
-                if (!first) APPEND_PRINTF(buf, pos, (int)8192, ",");
-                first = 0;
-                APPEND_PRINTF(buf, pos, (int)8192,
-                    "{\"name\":\"%s\",\"pid\":%d,\"rss\":%d,"
-                    "\"desc\":\"%s\",\"category\":\"%s\","
-                    "\"controllable\":%s,\"running\":true}",
-                    pname, running_pids[j], running_rss[j],
-                    g_known_processes[i].desc, g_known_processes[i].category,
-                    g_known_processes[i].controllable ? "true" : "false");
-                found = 1;
-                break;
-            }
-        }
-        if (!found) {
-            if (!first) APPEND_PRINTF(buf, pos, (int)8192, ",");
-            first = 0;
-            APPEND_PRINTF(buf, pos, (int)8192,
-                "{\"name\":\"%s\",\"pid\":0,\"rss\":0,"
-                "\"desc\":\"%s\",\"category\":\"%s\","
-                "\"controllable\":%s,\"running\":false}",
-                pname,
-                g_known_processes[i].desc, g_known_processes[i].category,
-                g_known_processes[i].controllable ? "true" : "false");
-        }
-    }
-
-    APPEND_PRINTF(buf, pos, (int)8192, "]}");
-    int ret = send_json(fd, 200, buf);
-    free(buf);
-    return ret;
-}
-
-static int handle_post_process_control(int fd, const char *body, const char *query) {
-    char name[64] = "";
-    char action[16] = "";
-
-    parse_json_str(body, "name", name, sizeof(name));
-    parse_json_str(body, "action", action, sizeof(action));
-
-    if (!name[0] || !action[0])
-        return send_error(fd, 400, "Missing 'name' or 'action'");
-
-    const process_info_t *info = find_process_info(name);
-    if (!info)
-        return send_error(fd, 404, "Unknown process");
-    if (!info->controllable)
-        return send_error(fd, 403, "Process not controllable");
-
-    if (strcmp(action, "stop") == 0) {
-        char cmd[128];
-        snprintf(cmd, sizeof(cmd), "killall %s 2>/dev/null", name);
-        int rc = system(cmd);
-        XLOG_I(TAG, "进程控制: 停止 %s (rc=%d)", name, rc);
-        char resp[256];
-        int len = snprintf(resp, sizeof(resp), "{\"ok\":true,\"action\":\"stop\",\"name\":\"%s\"}", name);
-        return send_response(fd, 200, "application/json", resp, len);
-    }
-    else if (strcmp(action, "start") == 0 || strcmp(action, "restart") == 0) {
-        if (strcmp(action, "restart") == 0) {
-            char cmd[128];
-            snprintf(cmd, sizeof(cmd), "killall %s 2>/dev/null", name);
-            system(cmd);
-            usleep(500000);
-            XLOG_I(TAG, "进程控制: 重启 %s (已停止)", name);
-        }
-        char cmd[128];
-        snprintf(cmd, sizeof(cmd), "/usr/bin/%s &", name);
-        int rc = system(cmd);
-        XLOG_I(TAG, "进程控制: 启动 %s (rc=%d)", name, rc);
-        int ok = (rc == 0);
-        char resp[256];
-        int len = snprintf(resp, sizeof(resp), "{\"ok\":%s,\"action\":\"%s\",\"name\":\"%s\",\"rc\":%d}", ok ? "true" : "false", action, name, rc);
-        return send_response(fd, 200, "application/json", resp, len);
-    }
-    else {
-        return send_error(fd, 400, "Invalid action, use 'stop', 'start' or 'restart'");
-    }
-}
-
-static int handle_get_usb_mode(int fd, const char *body, const char *query) {
-    char functions[64] = "";
-    char enable[8] = "";
-    char lun0[128] = "";
-
-    FILE *pf;
-    pf = popen("cat /sys/class/android_usb/android0/functions 2>/dev/null", "r");
-    if (pf) { fgets(functions, sizeof(functions), pf); pclose(pf); }
-    functions[strcspn(functions, "\n")] = '\0';
-
-    pf = popen("cat /sys/class/android_usb/android0/enable 2>/dev/null", "r");
-    if (pf) { fgets(enable, sizeof(enable), pf); pclose(pf); }
-    enable[strcspn(enable, "\n")] = '\0';
-
-    pf = popen("cat /sys/class/android_usb/android0/f_mass_storage/lun0/file 2>/dev/null", "r");
-    if (pf) { fgets(lun0, sizeof(lun0), pf); pclose(pf); }
-    lun0[strcspn(lun0, "\n")] = '\0';
-
-    const char *mode = "disabled";
-    if (enable[0] == '1') {
-        if (strstr(functions, "mass_storage") && strstr(functions, "adb"))
-            mode = "mass_adb";
-        else if (strstr(functions, "mass_storage"))
-            mode = "charge";
-        else if (strstr(functions, "adb"))
-            mode = "adb";
-    }
-
-    char resp[512];
-    int len = snprintf(resp, sizeof(resp),
-        "{\"mode\":\"%s\",\"functions\":\"%s\",\"enabled\":%s,\"lun0\":\"%s\"}",
-        mode, functions, enable[0] == '1' ? "true" : "false", lun0);
-    return send_response(fd, 200, "application/json", resp, len);
-}
-
-static int handle_post_usb_mode(int fd, const char *body, const char *query) {
-    int rc = send_json(fd, 200, "{\"ok\":true}");
-    int trigger_fd = open("/sys/monitor/usb_port/config/run", O_WRONLY);
-    if (trigger_fd >= 0) {
-        write(trigger_fd, "1", 1);
-        close(trigger_fd);
-        XLOG_I(TAG, "USB hotplug重检测已触发, 设备将重新显示模式选择页面");
-    } else {
-        XLOG_W(TAG, "无法触发hotplug重检测: %s", strerror(errno));
-    }
-    return rc;
-}
 
 static int is_usb_data_mode(void) {
     char enable[8] = "";
@@ -1194,79 +974,14 @@ static int is_usb_data_mode(void) {
 }
 
 
-static void save_persist_conf(void);   /* 前向声明(亮度handler在其定义前使用) */
-
-/* ========== 需求①: 亮度调节持久化（《08 方案》§八①） ==================== */
-
-static int sysfs_write(const char *path, const char *val) {
-    int fd = open(path, O_WRONLY);
-    if (fd < 0) { XLOG_E(TAG, "sysfs 打开失败 %s", path); return -1; }
-    ssize_t n = write(fd, val, strlen(val));
-    close(fd);
-    return n > 0 ? 0 : -1;
-}
-
-/* 开机应用：enable 且 value 合法才动 sysfs; backlight 插件已安装时由插件负责 */
-static void apply_backlight_from_persist(void) {
-    if (xwplug_is_installed("backlight")) { XLOG_I(TAG, "背光已插件化, 由 xwplug-backlight 恢复"); return; }
-    if (!g_persist_bl_enable) { XLOG_I(TAG, "背光持久化未启用, 不干预"); return; }
-    int v = g_persist_bl_value;
-    if (v < 10 || v > 255) v = BL_BRIGHTNESS_DEFVAL;
-    char vb[16];
-    snprintf(vb, sizeof(vb), "%d", v);
-    if (sysfs_write(BL_SYSFS_BASE "brightness", vb) == 0)
-        sysfs_write(BL_SYSFS_BASE "bl_power", "0");
-    XLOG_I(TAG, "开机背光已应用: %d", v);
-}
-
-static int handle_get_backlight(int fd, const char *body, const char *query) {
-    (void)body; (void)query;
-    char resp[160];
-    int cur = BL_BRIGHTNESS_DEFVAL;
-    FILE *fp = fopen(BL_SYSFS_BASE "brightness", "r");
-    if (fp) { if (fscanf(fp, "%d", &cur) != 1) cur = BL_BRIGHTNESS_DEFVAL; fclose(fp); }
-    snprintf(resp, sizeof(resp),
-             "{\"enable\":%d,\"brightness\":%d}", g_persist_bl_enable, cur);
-    return send_json(fd, 200, resp);
-}
-
-static int handle_put_backlight(int fd, const char *body, const char *query) {
-    (void)query;
-    char en_s[16] = "", val_s[16] = "";
-    if (parse_json_str(body, "enable", en_s, sizeof(en_s)) < 0 &&
-        parse_json_str(body, "brightness", val_s, sizeof(val_s)) < 0)
-        return send_error(fd, 400, "Missing 'enable'/'brightness' field");
-
-    if (en_s[0])
-        g_persist_bl_enable = atoi(en_s);
-
-    if (val_s[0]) {
-        int v = atoi(val_s);
-        if (v < 10 || v > 255)
-            return send_error(fd, 400, "brightness must be 10..255");
-        g_persist_bl_value = v;
-        char vb[16];
-        snprintf(vb, sizeof(vb), "%d", v);
-        sysfs_write(BL_SYSFS_BASE "brightness", vb);
-        sysfs_write(BL_SYSFS_BASE "bl_power", "0");
-    } else {
-        g_persist_bl_value = -1;
-    }
-    save_persist_conf();
-    XLOG_I(TAG, "背光设置: enable=%d value=%d", g_persist_bl_enable, g_persist_bl_value);
-    return handle_get_backlight(fd, NULL, NULL);
-}
-
 static void save_persist_conf(void) {
     char buf[1024];
-    int len = snprintf(buf, sizeof(buf), "usb_lun=%d\ntelnet=%d\nled=%d\nprecache=%d\ncustom_ws_url=%s\nbl_enable=%d\nbl_value=%d\n",
+    int len = snprintf(buf, sizeof(buf), "usb_lun=%d\ntelnet=%d\nled=%d\nprecache=%d\ncustom_ws_url=%s\n",
                        g_persist_usb_lun >= 0 ? g_persist_usb_lun : 0,
                        g_persist_telnet >= 0 ? g_persist_telnet : 1,
                        g_persist_led >= 0 ? g_persist_led : 1,
                        g_persist_precache,
-                       g_persist_custom_ws_url,
-                       g_persist_bl_enable,
-                       g_persist_bl_value);
+                       g_persist_custom_ws_url);
     char tmp_path[256];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", XWEBD_PERSIST_CONF);
     int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -1300,11 +1015,8 @@ static void load_persist_conf(void) {
     if (p) g_persist_led = atoi(p + 4);
     p = strstr(buf, "precache=");
     if (p) g_persist_precache = atoi(p + 9);
-    /* transport_mode 键已废弃(2026-08-30 移除 MQTT+UDP 路线), 旧文件的孤儿行忽略 */
-    p = strstr(buf, "bl_enable=");
-    if (p && p[11] != '\0') { g_persist_bl_enable = atoi(p + 11); }
-    p = strstr(buf, "bl_value=");
-    if (p && p[9] != '\0')  { g_persist_bl_value  = atoi(p + 9); }
+    /* transport_mode/bl_enable/bl_value 键已废弃(2026-08-30 移除MQTT路线 + 背光插件化),
+     * 旧文件孤儿行忽略; 背光持久化由 xwplug-backlight 自有 conf 负责 */
 
     p = strstr(buf, "custom_ws_url=");
     if (p) {
@@ -1314,8 +1026,6 @@ static void load_persist_conf(void) {
             g_persist_custom_ws_url[i++] = *p++;
         g_persist_custom_ws_url[i] = '\0';
     }
-    XLOG_I(TAG, "持久化配置已加载: usb_lun=%d, telnet=%d, led=%d, precache=%d, custom_ws_url=%s",
-           g_persist_usb_lun, g_persist_telnet, g_persist_led, g_persist_precache, g_persist_custom_ws_url);
 }
 
 static void apply_persist_conf(void) {
@@ -1706,62 +1416,6 @@ static int handle_post_reboot(int fd, const char *body, const char *query) {
 
 /* ===== API处理函数: 文件 ===== */
 
-static int handle_get_files(int fd, const char *body, const char *query) {
-    char path_val[PATH_MAX] = "";
-    if (query) {
-        char *p = strstr(query, "path=");
-        if (p) {
-            p += 5;
-            char *end = strchr(p, '&');
-            int plen = end ? (int)(end - p) : (int)strlen(p);
-            if (plen >= PATH_MAX) plen = PATH_MAX - 1;
-            memcpy(path_val, p, plen);
-            path_val[plen] = '\0';
-        }
-    }
-
-    char resolved[PATH_MAX];
-    if (validate_path(path_val, resolved, sizeof(resolved)) != 0)
-        return send_error(fd, 400, "Invalid or unsafe path");
-
-    DIR *dir = opendir(resolved);
-    if (!dir) return send_error(fd, 404, "Directory not found");
-
-    char esc_path[PATH_MAX];
-    json_escape(resolved, esc_path, sizeof(esc_path));
-
-    char buf[XWEBD_RESP_BUF_SIZE];
-    int len = 0;
-    APPEND_PRINTF(buf, len, (int)sizeof(buf), "{\"path\":\"%s\",\"files\":[", esc_path);
-
-    struct dirent *ent;
-    int first = 1;
-    while ((ent = readdir(dir)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-
-        char full_path[PATH_MAX];
-        snprintf(full_path, sizeof(full_path), "%s/%s", resolved, ent->d_name);
-
-        struct stat st;
-        if (stat(full_path, &st) != 0) continue;
-
-        if (!first) APPEND_PRINTF(buf, len, (int)sizeof(buf), ",");
-        first = 0;
-
-        char esc_name[512];
-        json_escape(ent->d_name, esc_name, sizeof(esc_name));
-
-        APPEND_PRINTF(buf, len, (int)sizeof(buf),
-            "{\"name\":\"%s\",\"size\":%ld,\"is_dir\":%s,\"mtime\":%ld}",
-            esc_name, (long)st.st_size, S_ISDIR(st.st_mode) ? "true" : "false", (long)st.st_mtime);
-
-        if (len >= (int)sizeof(buf) - 256) break;
-    }
-    closedir(dir);
-
-    APPEND_PRINTF(buf, len, (int)sizeof(buf), "]}");
-    return send_response(fd, 200, "application/json", buf, len);
-}
 
 static int handle_download_file(int fd, const char *body, const char *query) {
     char path_val[PATH_MAX] = "";
@@ -1828,137 +1482,8 @@ download_done:
     return 0;
 }
 
-static int handle_delete_file(int fd, const char *body, const char *query) {
-    char path_val[PATH_MAX] = "";
-    if (query) {
-        char *p = strstr(query, "path=");
-        if (p) {
-            p += 5;
-            char *end = strchr(p, '&');
-            int plen = end ? (int)(end - p) : (int)strlen(p);
-            if (plen >= PATH_MAX) plen = PATH_MAX - 1;
-            memcpy(path_val, p, plen);
-            path_val[plen] = '\0';
-        }
-    }
 
-    char resolved[PATH_MAX];
-    if (validate_path(path_val, resolved, sizeof(resolved)) != 0)
-        return send_error(fd, 400, "Invalid or unsafe path");
 
-    const char *fname = strrchr(resolved, '/');
-    fname = fname ? fname + 1 : resolved;
-    if (is_protected_file(fname)) return send_error(fd, 400, "Cannot delete protected file");
-
-    if (remove(resolved) != 0) {
-        if (errno == ENOENT) return send_error(fd, 404, "File not found");
-        return send_error(fd, 500, "Delete failed");
-    }
-    return send_json(fd, 200, "{\"ok\":true}");
-}
-
-static int handle_batch_delete(int fd, const char *body, const char *query) {
-    if (!body) return send_error(fd, 400, "Empty request body");
-    int deleted = 0;
-    const char *p = strstr(body, "\"paths\"");
-    if (!p) return send_error(fd, 400, "Missing 'paths' field");
-    p = strchr(p, '[');
-    if (!p) return send_error(fd, 400, "Invalid paths format");
-    p++;
-
-    while (*p && *p != ']') {
-        while (*p && (*p == ' ' || *p == ',' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
-        if (*p != '"') { p++; continue; }
-        p++;
-        char path_val[PATH_MAX];
-        int i = 0;
-        while (*p && *p != '"' && i < PATH_MAX - 1) {
-            if (*p == '\\' && *(p + 1)) { p++; path_val[i++] = *p++; }
-            else path_val[i++] = *p++;
-        }
-        path_val[i] = '\0';
-        if (*p == '"') p++;
-
-        char resolved[PATH_MAX];
-        if (validate_path(path_val, resolved, sizeof(resolved)) == 0) {
-            const char *fname = strrchr(resolved, '/');
-            fname = fname ? fname + 1 : resolved;
-            if (!is_protected_file(fname) && remove(resolved) == 0) deleted++;
-        }
-    }
-
-    char buf[32];
-    snprintf(buf, sizeof(buf), "{\"deleted\":%d}", deleted);
-    return send_json(fd, 200, buf);
-}
-
-static int handle_cleanup(int fd, const char *body, const char *query) {
-    long cleaned_bytes = 0;
-    int cleaned_files = 0;
-
-    DIR *dir = opendir(XWEBD_BASE_DIR);
-    if (!dir) return send_error(fd, 500, "Cannot open base directory");
-
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-
-        char full_path[PATH_MAX];
-        snprintf(full_path, sizeof(full_path), "%s/%s", XWEBD_BASE_DIR, ent->d_name);
-
-        struct stat st;
-        if (stat(full_path, &st) != 0 || S_ISDIR(st.st_mode)) continue;
-
-        if (is_protected_file(ent->d_name)) continue;
-
-        if (is_truncate_file(ent->d_name)) {
-            long old_size = st.st_size;
-            int tfd = open(full_path, O_WRONLY | O_TRUNC);
-            if (tfd >= 0) {
-                close(tfd);
-                cleaned_bytes += old_size;
-                cleaned_files++;
-            }
-            continue;
-        }
-
-        if (strcmp(ent->d_name, ".upload_pid") == 0) {
-            char pid_buf[16];
-            int n = read_file_string(full_path, pid_buf, sizeof(pid_buf));
-            if (n > 0) {
-                int pid = atoi(pid_buf);
-                char comm_path[64];
-                snprintf(comm_path, sizeof(comm_path), "/proc/%d/comm", pid);
-                char comm[64];
-                if (read_file_string(comm_path, comm, sizeof(comm)) <= 0 || strstr(comm, "xwebd") == NULL) {
-                    if (remove(full_path) == 0) { cleaned_bytes += st.st_size; cleaned_files++; }
-                }
-            } else {
-                if (remove(full_path) == 0) { cleaned_bytes += st.st_size; cleaned_files++; }
-            }
-            continue;
-        }
-
-        const char *cp = XWEBD_CLEANUP_PATTERNS;
-        while (*cp) {
-            if (strcmp(ent->d_name, cp) == 0) {
-                if (remove(full_path) == 0) { cleaned_bytes += st.st_size; cleaned_files++; }
-                break;
-            }
-            cp += strlen(cp) + 1;
-        }
-
-        size_t namelen = strlen(ent->d_name);
-        if (namelen >= 4 && strcmp(ent->d_name + namelen - 4, ".tmp") == 0) {
-            if (remove(full_path) == 0) { cleaned_bytes += st.st_size; cleaned_files++; }
-        }
-    }
-    closedir(dir);
-
-    char buf[64];
-    snprintf(buf, sizeof(buf), "{\"ok\":true,\"cleaned_bytes\":%ld,\"cleaned_files\":%d}", cleaned_bytes, cleaned_files);
-    return send_json(fd, 200, buf);
-}
 
 /* ===== API处理函数: 助手 ===== */
 
@@ -2473,18 +1998,9 @@ static const route_t g_routes[] = {
     {"POST",   "/api/logs/clean",          handle_post_logs_clean},
     {"POST",   "/api/poweroff",            handle_post_poweroff},
     {"POST",   "/api/reboot",              handle_post_reboot},
-    {"GET",    "/api/files",               handle_get_files},
     {"GET",    "/api/files/download",       handle_download_file},
-    {"DELETE", "/api/files",               handle_delete_file},
-    {"DELETE", "/api/files/download",       handle_delete_file},
-    {"POST",   "/api/files/batch-delete",   handle_batch_delete},
-    {"POST",   "/api/files/cleanup",        handle_cleanup},
     {"GET",    "/api/services",             handle_get_services},
     {"POST",   "/api/services/toggle",      handle_post_service_toggle},
-    {"GET",    "/api/processes",            handle_get_processes},
-    {"POST",   "/api/processes/control",    handle_post_process_control},
-    {"GET",    "/api/usb/mode",             handle_get_usb_mode},
-    {"POST",   "/api/usb/mode",             handle_post_usb_mode},
     {"GET",    "/api/diag",                 handle_get_diag},
     {"GET",    "/api/assistant/env",        handle_get_assistant_env},
     {"GET",    "/api/assistant/status",      handle_get_assistant_status},
@@ -2506,8 +2022,6 @@ static const route_t g_routes[] = {
     {"POST",   "/api/plugins/restart",      xwplug_handle_restart},
     {"POST",   "/api/plugins/remove",       xwplug_handle_remove},
     {"POST",   "/api/plugins/install",      xwplug_handle_install},
-    {"GET",    "/api/backlight",             handle_get_backlight},
-    {"PUT",    "/api/backlight",             handle_put_backlight},
     {NULL, NULL, NULL}
 };
 
@@ -2888,36 +2402,30 @@ static int handle_request(int client_fd) {
             return handle_upload_raw(client_fd, content_type, content_length, body, body_received, req_buf);
     }
 
-    /* 功能插件化改写(B1+): 对应插件在线时旧路径改写到插件, 未装回落内置实现.
-     * download/upload 大文件流式永远走内置. */
-    if (xwplug_is_online("files")) {
-        if (strcmp(method, "GET") == 0 && strcmp(path, "/api/files") == 0)
-            return xwplug_forward(client_fd, "GET", "files/list", query, NULL, 0);
-        if (strcmp(method, "DELETE") == 0 && strcmp(path, "/api/files") == 0)
-            return xwplug_forward(client_fd, "GET", "files/delete", query, NULL, 0);
-        if (strcmp(method, "POST") == 0 && strcmp(path, "/api/files/batch-delete") == 0)
-            return xwplug_forward(client_fd, "POST", "files/batch-delete", query, body, body_received);
-        if (strcmp(method, "POST") == 0 && strcmp(path, "/api/files/cleanup") == 0)
-            return xwplug_forward(client_fd, "GET", "files/cleanup", query, NULL, 0);
-    }
-    if (xwplug_is_online("procs")) {
-        if (strcmp(method, "GET") == 0 && strcmp(path, "/api/processes") == 0)
-            return xwplug_forward(client_fd, "GET", "procs/list", query, NULL, 0);
-        if (strcmp(method, "POST") == 0 && strcmp(path, "/api/processes/control") == 0)
-            return xwplug_forward(client_fd, "POST", "procs/control", query, body, body_received);
-    }
-    if (xwplug_is_online("usb")) {
-        if (strcmp(method, "GET") == 0 && strcmp(path, "/api/usb/mode") == 0)
-            return xwplug_forward(client_fd, "GET", "usb/mode", query, NULL, 0);
-        if (strcmp(method, "POST") == 0 && strcmp(path, "/api/usb/mode") == 0)
-            return xwplug_forward(client_fd, "POST", "usb/mode", query, body, body_received);
-    }
-    if (xwplug_is_online("backlight")) {
-        if (strcmp(method, "GET") == 0 && strcmp(path, "/api/backlight") == 0)
-            return xwplug_forward(client_fd, "GET", "backlight/state", query, NULL, 0);
-        if (strcmp(method, "PUT") == 0 && strcmp(path, "/api/backlight") == 0)
-            return xwplug_forward(client_fd, "PUT", "backlight/state", query, body, body_received);
-    }
+    /* 功能插件化改写(纯粹化: 四功能全量交插件, 未装=404/离线=503 由网关回复;
+     * download/upload 大文件流式走核心) */
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/files") == 0)
+        return xwplug_forward(client_fd, "GET", "files/list", query, NULL, 0);
+    if (strcmp(method, "DELETE") == 0 && strcmp(path, "/api/files") == 0)
+        return xwplug_forward(client_fd, "GET", "files/delete", query, NULL, 0);
+    if (strcmp(method, "DELETE") == 0 && strcmp(path, "/api/files/download") == 0)
+        return xwplug_forward(client_fd, "GET", "files/delete", query, NULL, 0);
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/files/batch-delete") == 0)
+        return xwplug_forward(client_fd, "POST", "files/batch-delete", query, body, body_received);
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/files/cleanup") == 0)
+        return xwplug_forward(client_fd, "GET", "files/cleanup", query, NULL, 0);
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/processes") == 0)
+        return xwplug_forward(client_fd, "GET", "procs/list", query, NULL, 0);
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/processes/control") == 0)
+        return xwplug_forward(client_fd, "POST", "procs/control", query, body, body_received);
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/usb/mode") == 0)
+        return xwplug_forward(client_fd, "GET", "usb/mode", query, NULL, 0);
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/usb/mode") == 0)
+        return xwplug_forward(client_fd, "POST", "usb/mode", query, body, body_received);
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/backlight") == 0)
+        return xwplug_forward(client_fd, "GET", "backlight/state", query, NULL, 0);
+    if (strcmp(method, "PUT") == 0 && strcmp(path, "/api/backlight") == 0)
+        return xwplug_forward(client_fd, "PUT", "backlight/state", query, body, body_received);
 
     /* 路由表查找 */
     for (int i = 0; g_routes[i].handler; i++) {
@@ -2962,7 +2470,6 @@ static void worker_loop(void) {
     cpu_sample_update();
     cleanup_startup_residuals();
     load_persist_conf();
-    apply_backlight_from_persist();
     apply_persist_conf();
     xwplug_init();
 

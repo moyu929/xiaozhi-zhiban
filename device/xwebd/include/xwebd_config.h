@@ -53,7 +53,6 @@
 /* 受保护文件列表: 这些文件禁止通过API删除，以\0分隔 */
 #define XWEBD_PROTECT_FILES  "xwebd\0sair\0sair_backup\0boot_watchdog.sh\0test.sh\0test.sh.new\0xiaozhi.log\0xwebd_persist.conf\0"
 /* 清理时截断(清空内容)而非删除的文件列表，以\0分隔 */
-#define XWEBD_TRUNCATE_FILES "xwebd.log\0"
 /* 清理时直接删除的文件名模式列表，以\0分隔 */
 #define XWEBD_CLEANUP_PATTERNS "sair_new\0.upload_pid\0.api_token\0"
 
