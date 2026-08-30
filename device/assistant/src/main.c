@@ -380,11 +380,6 @@ static void subtitle_typing_tick(void)
 #define BOT_PUSH_PATH "/tmp/bot_push.swf"
 #define BOT_PUSH_DISABLE_CFG "/var/upgrade/.boot_push_disable"
 
-/* 372(MSG_POWER_ON_PUSH)广播到达时刻: 背光误关核查锚点
- * (2026-08-30 实测: WiFi连上(0x12C)后~1.7s 0x174 到达 sair,
- *  372 处理路径关背光, 插件被 bind 拦截后无人恢复) */
-static uint64_t g_push_372_ms = 0;
-
 /* boot_push_tick 内用, main.c 前向引用(定义在下方) */
 extern app_context_t g_app;
 
@@ -397,45 +392,6 @@ int boot_push_disable_enabled(void)
     int n = read(fd, buf, sizeof(buf) - 1);
     close(fd);
     return (n > 0 && buf[0] == '1');
-}
-
-/* 前缀匹配 comm: boot_push 实际 comm 为 "boot_push.so"(launcher 应用插件
- * exec 全路径, .so 后缀截入 comm, 2026-08-30 黑屏残留事故根因:
- * 精确匹配 "boot_push" 从未命中, 退出消息从未发出) */
-static int find_pid_by_comm_prefix(const char *prefix)
-{
-    DIR *d = opendir("/proc");
-    if (!d)
-        return -1;
-    struct dirent *e;
-    int found = -1;
-    size_t plen = strlen(prefix);
-    while ((e = readdir(d)) != NULL)
-    {
-        if (e->d_name[0] < '0' || e->d_name[0] > '9')
-            continue;
-        char path[64];
-        snprintf(path, sizeof(path), "/proc/%.12s/comm", e->d_name);
-        int fd = open(path, O_RDONLY);
-        if (fd < 0)
-            continue;
-        char buf[40] = {0};
-        int n = read(fd, buf, sizeof(buf) - 1);
-        close(fd);
-        if (n > 0)
-        {
-            char *nl = strchr(buf, '\n');
-            if (nl)
-                *nl = '\0';
-            if (strncmp(buf, prefix, plen) == 0)
-            {
-                found = atoi(e->d_name);
-                break;
-            }
-        }
-    }
-    closedir(d);
-    return found;
 }
 
 /* boot_push.so 的 bind 覆盖状态(/proc/mounts 查询) */
@@ -522,12 +478,10 @@ static void boot_push_apply(int enabled)
 static void boot_push_tick(void)
 {
     static uint64_t last_ms = 0;
-    static uint64_t last_send_ms = 0;
-    static int attempts = 0; /* 已发退出轮次(进程消失复位) */
     uint64_t now = get_time_ms();
     int enabled = boot_push_disable_enabled();
 
-    /* 抑制期 1s 粒度(抓 boot_push 启动窗口), 非抑制 60s 维护 */
+    /* 抑制期 1s 粒度(bind 维护+背光自愈), 非抑制 60s 维护 */
     if (now - last_ms < (enabled ? 1000 : 60000))
         return;
     last_ms = now;
@@ -539,8 +493,10 @@ static void boot_push_tick(void)
     /* 开机窗口背光误关自愈(直接状态修复, 非按键注入): 开机链中背光被关
      * (bl_power=4)且无人恢复——实测与 372 相关但非严格伴随(21:28 轮无 372
      * 仍被关), 故不锚定广播, 直接监测状态. 启动后 5 分钟窗口内: 背光被关
-     * 且非自研 display_ctrl 息屏态(屏保已被 forbid 不会自发关闭)则复原;
-     * 自研息屏(display_ctrl)与 MCP 手动息屏均置 self_off, 不会被误开. */
+     * 且非自研 display_ctrl 息屏态则复原; 自研息屏(display_ctrl)与 MCP
+     * 手动息屏均置 self_off, 不会被误开.
+     * 注意: 原生屏保关背光也是 bl_power=4, 窗口内若屏保先关会被复原
+     * (开机 5 分钟内不息屏), 窗口过后屏保正常接管——可接受的边界. */
     {
         static uint64_t last_chk_ms = 0;
         uint64_t up_ms = now - g_app.boot_time_ms;
@@ -566,118 +522,10 @@ static void boot_push_tick(void)
         }
     }
 
-    /* 抑制期残留处理: 372 广播不依赖下载成败(实测), boot_push.so 仍会被
-     * exec, swf 内容缺失时停在黑场景等按键.
-     * v3.4.6 重构: comm 改前缀匹配("boot_push.so" 截入 comm 导致旧精确
-     * 匹配从未命中, 退出消息一次都没发出去过——黑屏残留根因).
-     * 年龄判定 /proc/PID/stat 第22字段 starttime(内核标准滴答).
-     * 退出策略四级递进(绝不 kill: M1 证实子进程被信号终止会触发整机重启):
-     *   L0 消息退出: type=1 通用退出 + MSG_RESUME_LAST(24) 恢复 launcher
-     *   L1/L2 消息 + 注入 HOME 键(102): 等效用户按主页, 实测可退黑场景
-     *   L3 消息 + 注入 BACK 键(30): 等效用户按返回
-     *   L4+ 消息 + HOME 每 5s 重发(进程可能换驻, 持续压制)
-     * 进程消失即复位状态机; 安全边界: 年龄<300s 且助手非对话态. */
-    int pid = find_pid_by_comm_prefix("boot_push");
-    if (pid <= 0) {
-        attempts = 0;
-        return;
-    }
-    if (now - last_send_ms < 5000)
-        return;
-
-    /* 读 /proc/PID/stat 第22字段 starttime(单位: 滴答, 一般100/s) */
-    long start_ticks = -1;
-    char spath[40];
-    snprintf(spath, sizeof(spath), "/proc/%d/stat", pid);
-    int sfd = open(spath, O_RDONLY);
-    if (sfd >= 0)
-    {
-        char sbuf[512];
-        int n = read(sfd, sbuf, sizeof(sbuf) - 1);
-        close(sfd);
-        if (n > 0)
-        {
-            sbuf[n] = '\0';
-            /* comm 字段含空格时以 ')' 结束定位, 之后字段从 state 开始计数 */
-            char *p = strrchr(sbuf, ')');
-            if (p)
-            {
-                int field = 2; /* ')' 后第一个是 state=字段3 */
-                long val = 0;
-                char *q = p + 1;
-                while (*q && field <= 22)
-                {
-                    while (*q == ' ')
-                        q++;
-                    if (!*q)
-                        break;
-                    val = strtol(q, &q, 10);
-                    field++;
-                }
-                if (field > 22)
-                    start_ticks = val;
-            }
-        }
-    }
-    if (start_ticks < 0)
-        return; /* 解析失败不误杀 */
-
-    /* 系统运行时长(秒) = /proc/uptime 第一字段; 进程年龄 = uptime - start/HZ */
-    double uptime = 0;
-    int ufd = open("/proc/uptime", O_RDONLY);
-    if (ufd >= 0)
-    {
-        char ubuf[64];
-        int n = read(ufd, ubuf, sizeof(ubuf) - 1);
-        close(ufd);
-        if (n > 0)
-        {
-            ubuf[n] = '\0';
-            uptime = atof(ubuf);
-        }
-    }
-    long age = (long)(uptime - start_ticks / 100.0);
-    if (age < 0 || age > 300)
-        return;
-
-    xiaozhi_state_t st = state_machine_get_state(&g_app.sm);
-    if (st == kStateListening || st == kStateSpeaking)
-        return;
-
-    /* a) 直发退出消息: type=1 + 进程名(applib 通用应用退出, 同 manager
-     * 杀应用广播的载荷形态: manager_impl case MSG_APP_EXIT 前置流程) */
-    char qmsg[64];
-    memset(qmsg, 0, sizeof(qmsg));
-    *(int *)qmsg = 1;
-    snprintf(qmsg + 4, sizeof(qmsg) - 4, "boot_push");
-    send_async_msg("boot_push", qmsg);
-
-    /* b) RESUME_LAST 兜底: 恢复 launcher 前台 */
-    char rmsg[8];
-    memset(rmsg, 0, sizeof(rmsg));
-    *(int *)rmsg = 24; /* MSG_RESUME_LAST */
-    send_async_msg("manager", rmsg);
-
-    /* c) 按键注入分级兜底: 消息无响应时等效用户按 HOME/BACK
-     * (用户实测物理按键可退黑场景; 注入走同一 input 通道) */
-    int key = -1;
-    if (attempts >= 1 && attempts <= 2)
-        key = GOODIX_KEY_HOME;
-    else if (attempts == 3)
-        key = GOODIX_KEY_BACK;
-    else if (attempts >= 4)
-        key = GOODIX_KEY_HOME;
-    if (key > 0)
-    {
-        extern int mcp_inject_key(int key_code);
-        if (mcp_inject_key(key) == 0)
-            PLOG_I("PUSH", "boot_push 黑屏注入按键 %d (第%d轮)", key, attempts);
-    }
-    attempts++;
-
-    last_send_ms = now;
-    PLOG_I("PUSH", "boot_push(pid=%d, age=%lds) 黑屏残留, 已发退出+RESUME_LAST (轮次%d)",
-           pid, age, attempts);
+    /* 抑制期残留处理已废弃(2026-08-30): bind mount 拦截后 launcher
+     * dlopen boot_push.so 直接失败, 进程根本不会存在, 无需监控/退出
+     * 消息/按键注入(注入方案已被用户否决). 保留三层: 占位目录挡下载,
+     * bind 挡 dlopen, 背光自愈挡黑屏残留. */
 }
 
 
@@ -1908,7 +1756,6 @@ static void proc_sys_msg(void *msg_ptr)
     case 0x174: /* MSG_POWER_ON_PUSH: WiFi连上后每日动画推送广播(olmedia触发) */
         if (boot_push_disable_enabled())
         {
-            g_push_372_ms = get_time_ms();
             PLOG_I("IPC", "0x174 每日推送广播(抑制中): 插件已被bind拦截, 背光自愈兜底中");
         }
         else
@@ -2988,32 +2835,6 @@ int main(int argc, char *argv[])
     if (set_sched_priority() < 0)
     {
         PLOG_W("INIT", "设置调度优先级失败, 以普通优先级继续");
-    }
-
-    /* 禁用原生屏保(P3 逆向: msg_server 的 libsystime 按 BACKLIGHT_DURATION
-     * 默认30s空闲关背光)。原厂各应用都会 forbid, 我们拦掉每日动画后开机
-     * 无人禁屏保 → 开机30s黑屏(2026-08-30 实测根因, 非boot_push残留)。
-     * forbid(1) 禁屏保+恢复已关背光; sair 退出即回原生行为(安全降级)。
-     * 桌面常亮, 会话中息屏仍由自研 display_ctrl 管(SCREEN_OFF_IDLE_SEC)。 */
-    {
-        void *libst = dlopen("libsystime_api.so", RTLD_LAZY);
-        if (libst)
-        {
-            int (*forbid)(int) = (int (*)(int))dlsym(libst, "systime_forbid_screensaver");
-            if (forbid)
-            {
-                int r = forbid(1);
-                PLOG_I("INIT", "原生屏保已禁用 (systime_forbid_screensaver=%d)", r);
-            }
-            else
-            {
-                PLOG_W("INIT", "systime_forbid_screensaver 符号缺失, 原生屏保未被禁用");
-            }
-        }
-        else
-        {
-            PLOG_W("INIT", "libsystime_api.so 加载失败: %s, 原生屏保未被禁用", dlerror());
-        }
     }
 
     if (is_hot_update)
