@@ -380,6 +380,10 @@ static void subtitle_typing_tick(void)
 #define BOT_PUSH_PATH "/tmp/bot_push.swf"
 #define BOT_PUSH_DISABLE_CFG "/var/upgrade/.boot_push_disable"
 
+/* 开机窗口黑屏压制用时间戳(ms): 用户真实按键 / 上次HOME注入 */
+uint64_t g_last_real_key_ms = 0;
+static uint64_t g_last_home_inject_ms = 0;
+
 /* boot_push_tick 内用, main.c 前向引用(定义在下方) */
 extern app_context_t g_app;
 
@@ -477,6 +481,26 @@ static void boot_push_tick(void)
     boot_push_apply(enabled);
     if (!enabled)
         return;
+
+    /* 开机窗口黑屏压制(2026-08-30 定案): 每日动画由 launcher 进程内场景插件
+     * 渲染(libeasy_swf), 黑帧无独立进程可检测、372 广播实测不达 sair——
+     * 放弃触发点, 改窗口压制: 联网切场景时机(启动后 25-180s)内每 10s 注入
+     * HOME 键, launcher 回主页场景即退出黑帧. HOME 对正常主页幂等无副作用;
+     * 用户真实按键 5s 内避让(不打扰主动操作). */
+    {
+        uint64_t up_ms = now - g_app.boot_time_ms;
+        if (up_ms >= 25000 && up_ms <= 180000 &&
+            now - g_last_real_key_ms > 5000 && now - g_last_home_inject_ms > 10000)
+        {
+            extern int mcp_inject_key(int key_code);
+            if (mcp_inject_key(GOODIX_KEY_HOME) == 0)
+            {
+                g_last_home_inject_ms = now;
+                PLOG_I("PUSH", "开机窗口黑屏压制: 注入HOME (启动+%llums)",
+                       (unsigned long long)up_ms);
+            }
+        }
+    }
 
     /* 抑制期残留处理: 372 广播不依赖下载成败(实测), boot_push.so 仍会被
      * exec, swf 内容缺失时停在黑场景等按键.
@@ -1076,6 +1100,7 @@ static void on_key_event(int key_code, void *user_data)
 {
     app_context_t *app = (app_context_t *)user_data;
     PLOG_I("KEY", "按键事件: code=%d", key_code);
+    g_last_real_key_ms = get_time_ms(); /* 用户真实按键: 黑屏压制注入避让 */
     if (key_code == GOODIX_KEY_BACK)
     {
         app->pending_key_exit = 1;
