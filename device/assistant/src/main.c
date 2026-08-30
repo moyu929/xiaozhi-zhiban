@@ -380,9 +380,10 @@ static void subtitle_typing_tick(void)
 #define BOT_PUSH_PATH "/tmp/bot_push.swf"
 #define BOT_PUSH_DISABLE_CFG "/var/upgrade/.boot_push_disable"
 
-/* 开机窗口黑屏压制用时间戳(ms): 用户真实按键 / 上次HOME注入 */
-uint64_t g_last_real_key_ms = 0;
-static uint64_t g_last_home_inject_ms = 0;
+/* 372(MSG_POWER_ON_PUSH)广播到达时刻与注入进度: 每日动画场景切换锚点
+ * (2026-08-30 实测: WiFi连上(0x12C)后~1.7s 0x174 到达 sair) */
+static uint64_t g_push_372_ms = 0;
+static int g_push_372_stage = 0;
 
 /* boot_push_tick 内用, main.c 前向引用(定义在下方) */
 extern app_context_t g_app;
@@ -482,22 +483,30 @@ static void boot_push_tick(void)
     if (!enabled)
         return;
 
-    /* 开机窗口黑屏压制(2026-08-30 定案): 每日动画由 launcher 进程内场景插件
-     * 渲染(libeasy_swf), 黑帧无独立进程可检测、372 广播实测不达 sair——
-     * 放弃触发点, 改窗口压制: 联网切场景时机(启动后 25-180s)内每 10s 注入
-     * HOME 键, launcher 回主页场景即退出黑帧. HOME 对正常主页幂等无副作用;
-     * 用户真实按键 5s 内避让(不打扰主动操作). */
+    /* 372 广播锚定的黑屏退出(事件驱动, 仅开机联网后一次): launcher 收 372
+     * 后切换每日动画场景, swf 被占位挡住 → 黑帧+关背光(bl_power=4)残留.
+     * 场景切换完成后注入 HOME 退回主页: +2s 首注, +5s 双保险再注一次.
+     * HOME 对正常主页幂等; 全程最多 2 次注入, 不骚扰正常使用. */
+    if (g_push_372_ms)
     {
-        uint64_t up_ms = now - g_app.boot_time_ms;
-        if (up_ms >= 25000 && up_ms <= 180000 &&
-            now - g_last_real_key_ms > 5000 && now - g_last_home_inject_ms > 10000)
+        uint64_t since = now - g_push_372_ms;
+        extern int mcp_inject_key(int key_code);
+        if (g_push_372_stage == 0 && since >= 2000)
         {
-            extern int mcp_inject_key(int key_code);
             if (mcp_inject_key(GOODIX_KEY_HOME) == 0)
             {
-                g_last_home_inject_ms = now;
-                PLOG_I("PUSH", "开机窗口黑屏压制: 注入HOME (启动+%llums)",
-                       (unsigned long long)up_ms);
+                g_push_372_stage = 1;
+                PLOG_I("PUSH", "372后%llums: 注入HOME退出每日动画黑场景(1/2)",
+                       (unsigned long long)since);
+            }
+        }
+        else if (g_push_372_stage == 1 && since >= 5000)
+        {
+            if (mcp_inject_key(GOODIX_KEY_HOME) == 0)
+            {
+                g_push_372_stage = 2;
+                PLOG_I("PUSH", "372后%llums: 注入HOME双保险(2/2)",
+                       (unsigned long long)since);
             }
         }
     }
@@ -1100,7 +1109,6 @@ static void on_key_event(int key_code, void *user_data)
 {
     app_context_t *app = (app_context_t *)user_data;
     PLOG_I("KEY", "按键事件: code=%d", key_code);
-    g_last_real_key_ms = get_time_ms(); /* 用户真实按键: 黑屏压制注入避让 */
     if (key_code == GOODIX_KEY_BACK)
     {
         app->pending_key_exit = 1;
@@ -1842,6 +1850,18 @@ static void proc_sys_msg(void *msg_ptr)
         }
         break;
     }
+    case 0x174: /* MSG_POWER_ON_PUSH: WiFi连上后每日动画推送广播(olmedia触发) */
+        if (boot_push_disable_enabled())
+        {
+            g_push_372_ms = get_time_ms();
+            g_push_372_stage = 0;
+            PLOG_I("IPC", "0x174 每日推送广播(抑制中): 锚定HOME注入退出黑场景");
+        }
+        else
+        {
+            PLOG_I("IPC", "0x174 每日推送广播(未抑制): 放行原生播放");
+        }
+        break;
     default:
         PLOG_D("IPC", "系统消息: 未处理 type=0x%X", msg_type);
         break;
