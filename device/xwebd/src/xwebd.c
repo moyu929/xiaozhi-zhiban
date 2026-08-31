@@ -682,7 +682,12 @@ static int handle_get_system(int fd, const char *body, const char *query) {
         if (read_file_string("/proc/uptime", buf2, sizeof(buf2)) > 0) {
             char *sp = strchr(buf2, ' ');
             if (sp) *sp = '\0';
-            uptime = atof(buf2);
+            /* (2026-08-31 实测定论: 本机 uclibc atof/strtod 恒返 0——探针
+             * atof("447.37")=0.000 而 printf 正常; 旧版 uptime_s 一直为 0 即此因。
+             * 手动整数解析, 秒级精度足够) */
+            sp = strchr(buf2, '.');
+            if (sp) *sp = '\0';
+            uptime = atoi(buf2);
         }
     }
     {
