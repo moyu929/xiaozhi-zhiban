@@ -134,7 +134,8 @@ for name, path, must in [
     ("B1 battery /status", "/api/plugin/battery/status", ["voltage_uv", "capacity", "charging"]),
     ("B2 procs /list", "/api/plugin/procs/list", ["processes"]),
     ("B3 usb /mode", "/api/plugin/usb/mode", None),
-    ("B4 backlight /state", "/api/plugin/backlight/state", ["brightness"]),
+    # backlight 单插件已由 lights 三灯聚合取代(fa37614), 旧路由卸载后 404 属预期
+    ("B4 lights 背光状态", "/api/backlight", ["brightness"]),
     ("B5 demo /ping", "/api/plugin/demo/ping", None),
 ]:
     st, b = http("GET", path)
@@ -246,6 +247,44 @@ check("D1 电池插件低电自护运行中(充电态旁路)", charging in (True
 out = telnet_cmd(["ps | grep xwplug-bat-c | grep -v grep | wc -l"])
 n = [l.strip() for l in out.splitlines() if l.strip().isdigit()]
 check("D2 采样子进程存活(唯一)", n and n[0] == "1", out[-80:])
+
+
+# ============ E 组: 生命周期全场景(2026-09-01 卸载失联事故后补) ============
+# E1 卸载助手后 xwebd 自动恢复(事故场景重放: killall sair -> manager 广播
+#    TERM -> xwebd 退出 -> 设备重启 -> test.sh 拉起。18~60s 恢复为合格)
+def wait_dev_back(path, expect_key, timeout_s=180):
+    import time as _t
+    t0 = _t.time()
+    while _t.time() - t0 < timeout_s:
+        st, b = http("GET", path)
+        if st == 200 and expect_key in b.decode(errors="replace"):
+            return round(_t.time() - t0)
+        _t.sleep(6)
+    return -1
+
+st, b = http("POST", "/api/assistant/uninstall", "{}")
+if st == 200:
+    sec = wait_dev_back("/api/version", "version")
+    check("E1 卸载助手后 xwebd 自动恢复(重启拉起链路)", sec > 0, f"{sec}s")
+    if sec > 0:
+        st, b = http("GET", "/api/assistant/status")
+        d = jparse(b)
+        check("E2 卸载后原生助手接管", d and not d.get("installed") and d.get("native_running"), f"{b[:80]}")
+        st, b = http("GET", "/api/plugins")
+        d = jparse(b)
+        plugs = d.get("plugins", []) if d else []
+        check("E3 卸载助手不伤插件(仍在线)", plugs and all(p.get("online") for p in plugs), f"{len(plugs)}个")
+else:
+    check("E1 卸载助手(跳过: 设备非安装态)", True, "installed=False, 场景不适用")
+
+# E4 test.sh 自检内容校验(xwebd 1.5.6+, 防调试脚本覆盖导致开机失联)
+st, b = http("GET", "/api/diag")
+d = jparse(b)
+if d and "items" in d:
+    ts = [i for i in d["items"] if "test.sh" in str(i.get("name", ""))]
+    check("E4 test.sh 自启内容校验项", bool(ts) and ts[0].get("ok"), f"{ts}")
+else:
+    check("E4 test.sh 自启内容校验项(需 xwebd>=1.5.6)", False, "diag 无 items")
 
 # ============ 汇总 ============
 print("\n" + "=" * 50)
