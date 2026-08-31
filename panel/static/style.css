@@ -31,11 +31,19 @@
 }
 
 html { overflow-y: scroll; }
-html::-webkit-scrollbar { width: 6px; }
-html::-webkit-scrollbar-track { background: var(--bg-primary); }
-html::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* ---- 下拉选项统一(2026-08-31): 深底可读, 全站 select 一份声明 ---- */
+select option { background: var(--bg-secondary); color: var(--text-primary); }
+
+/* ---- 局部滚动条统一规范(2026-08-31): 全站 4px 细条 ----
+ * 禁止容器级再单独声明 scrollbar 样式 */
+* { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.14) transparent; }
+*::-webkit-scrollbar { width: 4px; height: 4px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 2px; }
+*::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); }
 
 body {
   font-family: var(--font-sans);
@@ -312,11 +320,6 @@ body {
 .grid-3col .card {
   padding: 16px 14px;
 }
-.grid-2-1 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 16px; }
-.grid-2col.fill-row { align-items: stretch; }
-.fill-row > .card { display: flex; flex-direction: column; }
-.fill-row .plugin-list { flex: 1; min-height: 240px; max-height: 440px; }
-.fill-row .diag-container { flex: 1; min-height: 240px; height: auto; max-height: 440px; }
 .assistant-layout {
   display: flex;
   gap: 20px;
@@ -335,11 +338,7 @@ body {
   flex: 1;
   overflow-y: auto;
   min-height: 240px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.1) transparent;
 }
-.assistant-right .mcp-tools-list::-webkit-scrollbar { width: 4px; }
-.assistant-right .mcp-tools-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
 @media (max-width: 900px) {
   .grid-2col, .grid-3col, .grid-2-1 { grid-template-columns: 1fr; }
@@ -421,48 +420,6 @@ body {
   color: var(--text-primary);
 }
 
-.control-group { margin-bottom: 16px; }
-.control-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 8px;
-}
-.control-val { color: var(--accent); font-size: var(--fs-body); }
-
-.slider-row { display: flex; align-items: center; gap: 10px; }
-.slider {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 6px;
-  background: var(--bg-secondary);
-  border-radius: 3px;
-  outline: none;
-}
-.slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 18px; height: 18px;
-  border-radius: 50%;
-  background: var(--accent);
-  cursor: pointer;
-  box-shadow: 0 0 8px rgba(50,240,140,0.4);
-  transition: box-shadow 0.2s;
-}
-.slider::-webkit-slider-thumb:hover { box-shadow: 0 0 16px rgba(50,240,140,0.6); }
-.slider::-moz-range-thumb {
-  width: 18px; height: 18px;
-  border-radius: 50%;
-  background: var(--accent);
-  cursor: pointer;
-  border: none;
-}
 
 .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
 .btn-row-even { display: flex; gap: 8px; margin-top: 16px; }
@@ -499,20 +456,7 @@ body {
   transition: border-color 0.2s;
 }
 .input-text:focus, .select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(50,240,140,0.15); }
-.select option { background: var(--bg-secondary); color: var(--text-primary); }
 .form-row { display: flex; gap: 16px; margin-bottom: 14px; }
-.form-check {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.checkbox {
-  accent-color: var(--accent);
-  width: 16px; height: 16px;
-}
 
 .service-status {
   display: flex;
@@ -543,11 +487,7 @@ body {
 .adb-device-list {
   max-height: 200px;
   overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.1) transparent;
 }
-.adb-device-list::-webkit-scrollbar { width: 4px; }
-.adb-device-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 .adb-device-item {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -680,8 +620,6 @@ body {
 }
 
 .file-container { height: 420px; overflow-y: auto; }
-.file-container::-webkit-scrollbar { width: 4px; }
-.file-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
 .file-nav {
   display: flex;
@@ -740,14 +678,7 @@ body {
   border: 1px solid rgba(255,255,255,0.06);
   min-height: 200px;
 }
-.log-container::-webkit-scrollbar { width: 4px; }
-.log-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
-.log-dual {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
 .log-triple {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
@@ -800,7 +731,6 @@ body {
   font-size: 11px;
   font-family: var(--font-sans);
 }
-.log-filter-xs option { background: var(--bg-secondary); }
 .form-hint {
   font-size: var(--fs-label);
   font-weight: 400;
@@ -810,7 +740,7 @@ body {
 }
 
 @media (max-width: 700px) {
-  .log-dual, .log-triple { grid-template-columns: 1fr; }
+  .log-triple { grid-template-columns: 1fr; }
 }
 
 .log-line { padding: 1px 0; white-space: pre-wrap; word-break: break-all; }
@@ -890,8 +820,6 @@ body {
   overflow-y: auto;
   box-shadow: 0 8px 40px rgba(0,0,0,0.5);
 }
-.modal::-webkit-scrollbar { width: 4px; }
-.modal::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 .modal-header {
   display: flex;
   align-items: center;
@@ -941,40 +869,7 @@ body {
 .help-section strong { color: var(--text-primary); }
 
 .diag-container { height: 300px; overflow-y: auto; }
-.diag-container::-webkit-scrollbar { width: 4px; }
-.diag-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
-.diag-section { margin-bottom: 16px; }
-.diag-section:last-child { margin-bottom: 0; }
-.diag-section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border-color);
-}
-.diag-section-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-.diag-badge {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 10px;
-  border-radius: 20px;
-}
-.diag-badge-ok {
-  background: rgba(50,240,140,0.12);
-  color: var(--accent);
-  border: 1px solid rgba(50,240,140,0.2);
-}
-.diag-badge-fail {
-  background: rgba(239,68,68,0.12);
-  color: var(--danger);
-  border: 1px solid rgba(239,68,68,0.2);
-}
 
 .diag-items { display: flex; flex-direction: column; gap: 6px; }
 .diag-item {
@@ -1027,9 +922,7 @@ body {
 .btn-outline { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
 .btn-outline:hover { background: var(--danger); color: #fff; }
 
-.svc-list { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent; }
-.svc-list::-webkit-scrollbar { width: 4px; }
-.svc-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+.svc-list { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; }
 
 .svc-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--bg-secondary); border-radius: var(--radius-sm); font-size: 13px; }
 
@@ -1143,11 +1036,6 @@ body {
 .conn-dot.disconnected { background: var(--danger); }
 .conn-dot.not-installed { background: var(--text-muted); }
 
-.config-details { border: 1px solid var(--border-color); border-radius: 6px; padding: 0; }
-.config-summary { padding: 8px 12px; cursor: pointer; font-size: 13px; color: var(--text-muted); user-select: none; }
-.config-details[open] .config-summary { border-bottom: 1px solid var(--border-color); margin-bottom: 4px; }
-.config-details .stat-grid { padding: 4px 8px 8px; }
-.config-details .input-text { width: 100%; font-size: 12px; padding: 4px 6px; }
 
 .confirm-overlay {
   position: fixed;
@@ -1216,83 +1104,9 @@ body {
   flex: 1;
   text-align: center;
 }
-.mcp-tool-actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-.mcp-tool-item:hover .mcp-tool-actions {
-  opacity: 1;
-}
-.mcp-tool-actions button {
-  padding: 4px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.mcp-tool-btn-edit {
-  background: rgba(59,130,246,0.15);
-  color: var(--info);
-}
-.mcp-tool-btn-edit:hover {
-  background: rgba(59,130,246,0.3);
-}
-.mcp-tool-btn-del {
-  background: rgba(239,68,68,0.15);
-  color: var(--danger);
-}
-.mcp-tool-btn-del:hover {
-  background: rgba(239,68,68,0.3);
-}
-.mcp-edit-form {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  background: var(--bg-secondary);
-  border-radius: 4px;
-  border: 1px solid var(--border-focus);
-  margin-bottom: 4px;
-}
-.mcp-edit-form .mcp-edit-row {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-.mcp-edit-form input,
-.mcp-edit-form textarea {
-  padding: 6px 10px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  color: var(--text-primary);
-  font-size: 12px;
-  font-family: var(--font-sans);
-}
-.mcp-edit-form input:focus,
-.mcp-edit-form textarea:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-.mcp-edit-form .mcp-edit-name {
-  width: 200px;
-  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
-}
-.mcp-edit-form .mcp-edit-desc {
-  flex: 1;
-}
 
 .process-container {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.1) transparent;
 }
-.process-container::-webkit-scrollbar { width: 4px; }
-.process-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 .process-summary {
   font-size: 12px;
   color: var(--text-muted);
@@ -1311,11 +1125,7 @@ body {
 .process-table-scroll {
   flex: 1;
   overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.1) transparent;
 }
-.process-table-scroll::-webkit-scrollbar { width: 4px; }
-.process-table-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 .process-table {
   table-layout: fixed;
   width: 100%;
@@ -1402,27 +1212,11 @@ body {
   vertical-align: middle;
   cursor: pointer;
 }
-.proc-filter-select option { background: var(--bg-secondary); }
 .process-actions {
   white-space: nowrap;
 }
 .process-actions .btn-xs {
   margin-right: 3px;
-}
-.mcp-edit-form .mcp-edit-params {
-  width: 100%;
-  min-height: 60px;
-  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
-  font-size: 11px;
-  resize: vertical;
-}
-.mcp-edit-form .mcp-edit-btns {
-  display: flex;
-  gap: 6px;
-}
-.mcp-edit-form .btn {
-  font-size: 12px;
-  padding: 5px 14px;
 }
 .timeout-row {
   display: grid;
@@ -1488,15 +1282,6 @@ body {
   background: var(--accent-gradient);
 }
 
-.use-limit-box {
-  padding: 12px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
 .use-limit-row {
   display: flex;
   align-items: center;
@@ -1592,11 +1377,7 @@ body {
   min-height: 240px;
   max-height: 440px;
   overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.1) transparent;
 }
-.plugin-list::-webkit-scrollbar { width: 4px; }
-.plugin-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 .plugin-item {
   padding: 10px 12px;
   background: var(--bg-secondary);
@@ -1775,11 +1556,7 @@ body {
   gap: 6px;
   max-height: 340px;
   overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.1) transparent;
 }
-.plugin-install-list::-webkit-scrollbar { width: 4px; }
-.plugin-install-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 .plugin-install-item {
   display: flex;
   align-items: flex-start;
@@ -1839,9 +1616,5 @@ body {
 .assistant-layout {
   max-height: 620px;
   overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.1) transparent;
   padding-right: 6px;
 }
-.assistant-layout::-webkit-scrollbar { width: 4px; }
-.assistant-layout::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }

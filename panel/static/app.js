@@ -207,7 +207,7 @@ function renderMcpTools() {
     var html = '';
     for (var i = 0; i < MCP_TOOLS.length; i++) {
         var t = MCP_TOOLS[i];
-        html += '<div class="mcp-tool-item" title="' + escapeHtml(t.name) + '">';
+        html += '<div class="mcp-tool-item">';
         html += '<span class="mcp-tool-name">' + escapeHtml(t.name) + '</span>';
         html += '<span class="mcp-tool-desc">' + escapeHtml(t.desc) + '</span>';
         html += '</div>';
@@ -2867,50 +2867,21 @@ async function runDiag() {
     btn.disabled = true;
     btn.textContent = '检测中...';
 
-    var assistantEnvResult = null, assistantResult = null;
-    try { var aer = await api('/api/assistant/env'); assistantEnvResult = aer.items ? aer : (aer.data ? aer.data : null); } catch(e) {}
-    try { var ar = await api('/api/assistant/diag'); assistantResult = ar.items ? ar : (ar.data ? ar.data : null); } catch(e) {}
-
+    /* 助手环境(env: 库/音频服务/WiFi) + 运行时健康(diag: 配置/看门狗/WS/电池) */
     var allItems = [];
-    if (assistantEnvResult) {
-        var envItems = assistantEnvResult.items || [];
-        for (var i = 0; i < envItems.length; i++) allItems.push(envItems[i]);
-    }
-    if (assistantResult) {
-        var diagItems = assistantResult.items || [];
-        for (var j = 0; j < diagItems.length; j++) allItems.push(diagItems[j]);
-    }
+    try {
+        var aer = await api('/api/assistant/env');
+        var envResult = aer.items ? aer : (aer.data ? aer.data : null);
+        if (envResult) allItems = allItems.concat(envResult.items || []);
+    } catch(e) {}
+    try {
+        var ar = await api('/api/assistant/diag');
+        var diagResult = ar.items ? ar : (ar.data ? ar.data : null);
+        if (diagResult) allItems = allItems.concat(diagResult.items || []);
+    } catch(e) {}
 
-    if (!allItems.length) {
-        container.innerHTML = '<div class="empty-state">请先无线连接设备</div>';
-        btn.disabled = false;
-        btn.textContent = '运行自检';
-        return;
-    }
-
-    var html = '<div class="diag-items">';
-    for (var k = 0; k < allItems.length; k++) {
-        html += '<div class="diag-item diag-item-pending" data-diag-idx="' + k + '">';
-        html += '<span class="diag-item-icon diag-icon-spinner"></span>';
-        html += '<span class="diag-item-name">' + allItems[k].name + '</span>';
-        html += '<span class="diag-item-msg">检测中...</span>';
-        html += '</div>';
-    }
-    html += '</div>';
-    container.innerHTML = html;
-
-    for (var m = 0; m < allItems.length; m++) {
-        await new Promise(function(resolve) { setTimeout(resolve, 80 + Math.random() * 120); });
-        var item = allItems[m];
-        var el = container.querySelector('[data-diag-idx="' + m + '"]');
-        if (!el) continue;
-        var cls = item.ok ? 'diag-item-ok' : 'diag-item-fail';
-        var icon = item.ok ? '&#10003;' : '&#10007;';
-        el.className = 'diag-item ' + cls;
-        el.querySelector('.diag-item-icon').className = 'diag-item-icon';
-        el.querySelector('.diag-item-icon').innerHTML = icon;
-        el.querySelector('.diag-item-msg').textContent = item.message;
-    }
+    if (allItems.length) await renderDiagItemsProgressive(container, allItems);
+    else container.innerHTML = '<div class="empty-state">请先无线连接设备</div>';
 
     btn.disabled = false;
     btn.textContent = '运行自检';
@@ -2932,14 +2903,16 @@ async function runWiredDiag() {
         envResult = er.items ? er : (er.data ? er.data : null);
     } catch(e) {}
 
-    if (!envResult) {
-        container.innerHTML = '<div class="empty-state">环境自检失败，请检查ADB连接</div>';
-        btn.disabled = false;
-        btn.textContent = '运行自检';
-        return;
-    }
+    if (envResult) await renderDiagItemsProgressive(container, envResult.items || []);
+    else container.innerHTML = '<div class="empty-state">环境自检失败，请检查ADB连接</div>';
 
-    var items = envResult.items || [];
+    btn.disabled = false;
+    btn.textContent = '运行自检';
+}
+
+/* 诊断项渐进渲染(2026-08-31 自 runDiag/runWiredDiag 重复实现统一抽出):
+ * 先全部渲染 spinner, 再逐项翻出结果 */
+async function renderDiagItemsProgressive(container, items) {
     var html = '<div class="diag-items">';
     for (var k = 0; k < items.length; k++) {
         html += '<div class="diag-item diag-item-pending" data-diag-idx="' + k + '">';
@@ -2950,48 +2923,16 @@ async function runWiredDiag() {
     }
     html += '</div>';
     container.innerHTML = html;
-
     for (var m = 0; m < items.length; m++) {
         await new Promise(function(resolve) { setTimeout(resolve, 80 + Math.random() * 120); });
-        var item = items[m];
         var el = container.querySelector('[data-diag-idx="' + m + '"]');
         if (!el) continue;
-        var cls = item.ok ? 'diag-item-ok' : 'diag-item-fail';
-        var icon = item.ok ? '&#10003;' : '&#10007;';
-        el.className = 'diag-item ' + cls;
+        var item = items[m];
+        el.className = 'diag-item ' + (item.ok ? 'diag-item-ok' : 'diag-item-fail');
         el.querySelector('.diag-item-icon').className = 'diag-item-icon';
-        el.querySelector('.diag-item-icon').innerHTML = icon;
+        el.querySelector('.diag-item-icon').innerHTML = item.ok ? '&#10003;' : '&#10007;';
         el.querySelector('.diag-item-msg').textContent = item.message;
     }
-
-    btn.disabled = false;
-    btn.textContent = '运行自检';
-}
-
-function renderDiagSection(title, result) {
-    var items = result.items || [];
-    var okCount = result.ok_count || items.filter(function(i) { return i.ok; }).length;
-    var failCount = result.fail_count || items.filter(function(i) { return !i.ok; }).length;
-    var total = result.total || items.length;
-    var allOk = failCount === 0;
-    var html = '<div class="diag-section">';
-    html += '<div class="diag-section-header">';
-    html += '<span class="diag-section-title">' + title + '</span>';
-    html += '<span class="diag-badge ' + (allOk ? 'diag-badge-ok' : 'diag-badge-fail') + '">';
-    html += allOk ? '全部通过' : (okCount + '/' + total + ' 通过');
-    html += '</span></div>';
-    html += '<div class="diag-items">';
-    items.forEach(function(item) {
-        var cls = item.ok ? 'diag-item-ok' : 'diag-item-fail';
-        var icon = item.ok ? '&#10003;' : '&#10007;';
-        html += '<div class="diag-item ' + cls + '">';
-        html += '<span class="diag-item-icon">' + icon + '</span>';
-        html += '<span class="diag-item-name">' + item.name + '</span>';
-        html += '<span class="diag-item-msg">' + item.message + '</span>';
-        html += '</div>';
-    });
-    html += '</div></div>';
-    return html;
 }
 
 // ==================== Help ====================
@@ -3137,28 +3078,27 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    document.querySelectorAll('.svc-list,.plugin-list,.file-container,.log-container,.diag-container,.mcp-tools-list,.adb-device-list,.assistant-layout,.plugin-install-list,.modal').forEach(function(el) {
-        el.addEventListener('wheel', function(e) {
-            /* 内容未溢出(无滚动条)时放行, 滚轮冒泡滚动整页(2026-08-31 用户要求) */
-            if (el.scrollHeight <= el.clientHeight + 1) return;
-            var st = el.scrollTop;
-            var atTop = st <= 0;
-            var atBottom = st + el.clientHeight >= el.scrollHeight;
-            if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
-                e.preventDefault();
-            }
-        }, { passive: false });
-    });
-
+    /* ---- 局部滚动传播统一规范(2026-08-31) ----
+     * 规则(所有局部滚动容器一份逻辑, 全局委托, 新增容器自动纳入):
+     *   有滚动条且未到边界 -> 默认行为滚动该容器
+     *   有滚动条且已到边界 -> 阻断, 不向上层递进(整页不滚)
+     *   无滚动条(内容全展示) -> 不拦截, 向上层递进(整页滚)
+     * 替代此前两套并行实现: 逐容器绑定(选择器硬编码易漏)
+     * + .process-table-scroll 专用 document 委托 */
     document.addEventListener('wheel', function(e) {
-        var el = e.target.closest('.process-table-scroll');
-        if (!el) return;
-        if (el.scrollHeight <= el.clientHeight + 1) return; /* 无滚动条放行 */
-        var st = el.scrollTop;
-        var atTop = st <= 0;
-        var atBottom = st + el.clientHeight >= el.scrollHeight;
-        if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
-            e.preventDefault();
+        var el = e.target;
+        while (el && el !== document.documentElement) {
+            var oy = window.getComputedStyle(el).overflowY;
+            if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 1) {
+                var st = el.scrollTop;
+                var atTop = st <= 0;
+                var atBottom = st + el.clientHeight >= el.scrollHeight;
+                if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
+                    e.preventDefault();
+                }
+                return; /* 只管最近一层可滚容器 */
+            }
+            el = el.parentElement;
         }
     }, { passive: false });
 

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>小智 · 智伴</title>
-<link rel="stylesheet" href="/style.css?v=31">
+<link rel="stylesheet" href="/style.css?v=32">
 </head>
 <body>
 <canvas id="particles"></canvas>
@@ -391,7 +391,7 @@
                     <label class="form-label">当前 WS URL <span class="tip-ico" data-tip="助手实际连接的 WebSocket 地址，实时显示当前生效配置（自定义优先）。使用自建服务器时在此填写；清空并保存则恢复官方地址。" tabindex="-1">!</span></label>
                     <input type="text" id="cfgCustomWsUrl" class="input-text value-mono" value="" placeholder="wss://your-server.com/xiaozhi/v1/">
                   </div>
-                  <div class="use-limit-row" style="cursor:not-allowed" onclick="showBootPushDisabled()" title="该功能暂不可用">
+                  <div class="use-limit-row" style="cursor:not-allowed" onclick="showBootPushDisabled()">
                     <label class="svc-toggle use-limit-switch">
                       <input type="checkbox" id="cfgBootPushDisable" disabled>
                       <span class="svc-toggle-track svc-toggle-disabled"><span class="svc-toggle-thumb"></span></span>
@@ -666,6 +666,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=44"></script>
+<script src="/app.js?v=45"></script>
 </body>
 </html>
