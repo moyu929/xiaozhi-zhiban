@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>小智 · 智伴</title>
-<link rel="stylesheet" href="/style.css?v=34">
+<link rel="stylesheet" href="/style.css?v=35">
 </head>
 <body>
 <canvas id="particles"></canvas>
@@ -88,6 +88,165 @@
                 </div>
                 <div class="deploy-item-actions">
                   <button class="btn btn-primary btn-sm" onclick="adbDeploySair('cold')" id="btnAdbDeploySairCold">部署</button>
+                  <button class="btn btn-danger btn-sm" onclick="adbRemoveSair()" id="btnAdbRemoveSair" style="display:none">卸载</button>
+                </div>
+                <div id="adbSairProgress" class="deploy-progress" style="display:none;margin-top:8px"><span id="adbSairProgressLabel" class="progress-label-inline">准备中...</span><span class="progress-bar-inline"><span id="adbSairBar" class="progress-fill-inline" style="width:0%"></span></span></div>
+              </div>
+            </div>
+            <div class="section-overlay" id="adbAssistantOverlay" style="display:none"><div class="spinner"></div></div>
+          </section>
+        </div>
+
+        <div class="grid-2col">
+          <section class="card">
+            <div class="card-header"><h2>设备控制</h2></div>
+            <div class="btn-row" style="margin-top:0">
+              <button class="btn btn-danger" onclick="adbRebootAndReconnect()">重启设备</button>
+              <button class="btn btn-danger btn-outline" onclick="adbPoweroff()">关机</button>
+              <button class="btn btn-danger btn-outline" onclick="adbFactoryReset()">恢复出厂</button>
+            </div>
+            <div class="btn-row" style="margin-top:10px">
+              <button class="btn btn-danger" onclick="emergencyNuke('adb')" style="background:linear-gradient(135deg,#dc2626,#991b1b);font-weight:700;letter-spacing:1px">🚨 紧急修复</button>
+            </div>
+            <div class="wired-hint" style="margin-top:6px">
+              <span class="hint-icon">⚠️</span>
+              <span>设备频繁重启时使用：高频轮询设备连接，一旦上线立即恢复出厂设置</span>
+            </div>
+            <div class="wired-hint" style="margin-top:14px">
+              <span class="hint-icon">💡</span>
+              <span>部署面板内核后，可切换至<strong>无线模式</strong>获得完整控制功能</span>
+            </div>
+            <div class="section-overlay" id="adbControlOverlay" style="display:none"><div class="spinner"></div></div>
+          </section>
+
+          <section class="card">
+            <div class="card-header"><h2>xwebd 环境自检</h2><div class="card-actions"><button class="btn btn-primary btn-sm" onclick="runWiredDiag()" id="btnWiredDiag">运行自检</button></div></div>
+            <div id="wiredDiagContainer" class="diag-container">
+              <div class="empty-state">部署前点击「运行自检」检测设备是否满足 xwebd 运行环境</div>
+            </div>
+          </section>
+        </div>
+
+        <section class="card">
+          <div class="card-header"><h2>面板日志</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" onclick="refreshLogPanel('panel', true)">刷新</button><button class="btn btn-ghost btn-xs" onclick="clearLogPanel('panel')">清屏</button><button class="btn btn-danger btn-xs" onclick="cleanLogPanel('panel')">清理</button></div></div>
+          <div class="log-panel-options">
+            <label class="auto-refresh-xs"><input type="checkbox" id="autoRefreshPanelWired" checked> 自动</label>
+            <select id="logLevelPanelWired" onchange="refreshLogPanel('panel', true)" class="log-filter-xs">
+              <option value="">全部</option>
+              <option value="E">错误</option>
+              <option value="W">警告</option>
+              <option value="I">信息</option>
+              <option value="D">调试</option>
+            </select>
+          </div>
+          <div id="logPanelWired" class="log-container">
+            <div class="empty-state">暂无日志</div>
+          </div>
+        </section>
+        </div>
+      </div>
+
+      <!-- ==================== 无线模式 ==================== -->
+      <div class="panel-page" id="wirelessPage">
+        <div class="panel-page-inner">
+        <div class="grid-2col">
+          <section class="card" id="deviceSection">
+            <div class="card-header"><h2>设备状态</h2></div>
+            <div class="connect-bar" style="margin-bottom:14px">
+              <span id="connStatus" class="status-pill offline"><span class="status-dot offline"></span>离线</span>
+              <input type="text" id="deviceHost" class="input-host" value="" placeholder="设备IP / localhost">
+              <button id="btnConnect" class="btn btn-primary" onclick="connectDevice()">连接</button>
+            </div>
+            <div class="stat-grid">
+              <div class="stat-item"><span class="stat-label">设备型号</span><span id="devModel" class="stat-value">--</span></div>
+              <div class="stat-item"><span class="stat-label">内核版本</span><span id="devKernel" class="stat-value">--</span></div>
+              <div class="stat-item"><span class="stat-label">CPU</span><span id="devCpu" class="stat-value">--</span></div>
+              <div class="stat-item"><span class="stat-label">CPU占用</span><span id="devCpuUsage" class="stat-value">--</span></div>
+              <div class="stat-item"><span class="stat-label">WiFi</span><span id="devWifi" class="stat-value">--</span></div>
+              <div class="stat-item"><span class="stat-label">运行时间</span><span id="devUptime" class="stat-value">--</span></div>
+              <div class="stat-item"><span class="stat-label">内存</span><span id="devMem" class="stat-value">--</span></div>
+              <div class="stat-item"><span class="stat-label">磁盘</span><span id="devDisk" class="stat-value">--</span></div>
+            </div>
+            <div class="backlight-row">
+              <span class="stat-label">音量</span>
+              <input type="range" id="volSlider" class="bl-slider" min="0" max="40" step="2" value="20" oninput="volOnInput()" onchange="volSave()">
+              <span id="volValue" class="bl-value">--</span>
+            </div>
+            <div class="btn-row-even" style="margin-top:14px">
+              <button class="btn btn-danger" onclick="wirelessRebootAndReconnect()">重启</button>
+              <button class="btn btn-danger btn-outline" onclick="doPoweroff()">关机</button>
+              <button class="btn btn-danger btn-outline" onclick="doCleanup()">清理垃圾</button>
+            </div>
+            <div style="margin-top:10px">
+              <button class="btn btn-danger" onclick="emergencyNuke('http')" style="width:100%;background:linear-gradient(135deg,#dc2626,#991b1b);font-weight:700;letter-spacing:1px">🚨 紧急修复</button>
+            </div>
+            <div class="wired-hint" style="margin-top:4px">
+              <span class="hint-icon">⚠️</span>
+              <span>设备频繁重启时使用：高频轮询设备连接，一旦上线立即恢复出厂设置</span>
+            </div>
+            <div class="section-overlay" id="deviceOverlay" style="display:none"><div class="spinner"></div></div>
+          </section>
+
+          <section class="card" id="xwebdSection">
+            <div class="card-header"><h2>面板内核管理</h2><div class="card-actions"><span class="conn-status" id="xwebdConnStatus"><span class="conn-dot disconnected"></span>未连接</span></div></div>
+            <div class="service-status">
+              <span id="xwebdStatus" class="stat-value">--</span>
+              <span id="xwebdVersion" class="badge">--</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label">日志采集级别 <span class="tip-ico" data-tip="设备端写入日志文件的最低级别。排查问题时用 DEBUG；日常适当调高级别可减少闪存写入。" tabindex="-1">!</span></label>
+              <select id="cfgLogLevel" class="select">
+                <option value="">全部</option>
+                <option value="DEBUG">调试 (DEBUG)</option>
+                <option value="INFO">信息 (INFO)</option>
+                <option value="WARN">警告 (WARN)</option>
+                <option value="ERROR">错误 (ERROR)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">上传大小限制 (MB)</label>
+              <input type="number" id="cfgUploadMax" class="input-text" value="10" min="1" max="100">
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:12px">
+              <button class="btn btn-accent" onclick="saveXwebdConfig()" style="flex:1">保存配置</button>
+              <button class="btn btn-ghost" onclick="restoreXwebdDefaults()" style="flex:1">恢复默认值</button>
+            </div>
+            <div class="btn-row-even" style="margin-top:12px">
+              <button id="btnXwebdUpdate" class="btn btn-accent" onclick="doXwebdUpdate()">更新</button>
+              <button id="btnXwebdRestart" class="btn btn-ghost" onclick="doXwebdRestart()">重启</button>
+              <button id="btnXwebdRemove" class="btn btn-danger" onclick="doXwebdRemove()">卸载</button>
+            </div>
+            <div class="settings-group-title">服务与功能</div>
+            <div class="svc-list" id="xwebdSvcList">
+              <div class="empty-state">等待连接设备...</div>
+            </div>
+            <div class="section-overlay" id="xwebdOverlay" style="display:none"><div class="spinner"></div></div>
+          </section>
+        </div>
+
+        <!-- 第二排: 插件管理 + 助手环境自检 (fill-row: 卡片等高, 滚动区填满) -->
+        <div class="grid-2col fill-row">
+          <section class="card">
+            <div class="card-header"><h2>插件管理</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" onclick="refreshPlugins()">刷新</button><button class="btn btn-primary btn-sm" onclick="showPluginInstall()">安装插件</button></div></div>
+            <div class="plugin-list" id="plugList">
+              <div class="empty-state">等待连接设备...</div>
+            </div>
+            <div class="plugin-tip">插件按需安装、独立进程运行：单个插件崩溃不影响系统，卸载后相关面板功能自动回落到内置实现</div>
+          </section>
+
+          <section class="card">
+            <div class="card-header">
+              <h2>助手环境自检</h2>
+              <div class="card-actions">
+                <button class="btn btn-primary btn-sm" onclick="runDiag()" id="btnDiag">运行自检</button>
+              </div>
+            </div>
+            <div id="diagContainer" class="diag-container">
+              <div class="empty-state">点击「运行自检」检测设备是否满足语音助手运行环境</div>
+            </div>
+          </section>
+        </div>
+
         <section class="card" id="assistantSection" style="margin-bottom:16px">
           <div class="card-header"><h2>语音助手管理</h2><div class="card-actions"><span class="conn-status" id="assistantConnStatus"><span class="conn-dot disconnected"></span>未连接</span></div></div>
           <div class="assistant-layout">
@@ -247,165 +406,6 @@
           <div class="section-overlay" id="assistantOverlay" style="display:none"><div class="spinner"></div><div class="overlay-text" id="assistantOverlayText"></div></div>
           <div class="section-overlay not-installed-overlay" id="assistantNotInstalledOverlay" style="display:none"><div class="overlay-text" id="notInstalledText">未安装语音助手</div><button class="btn btn-primary" onclick="doDeploy()" style="margin-top:12px">部署语音助手</button></div>
         </section>
-
-                  <button class="btn btn-danger btn-sm" onclick="adbRemoveSair()" id="btnAdbRemoveSair" style="display:none">卸载</button>
-                </div>
-                <div id="adbSairProgress" class="deploy-progress" style="display:none;margin-top:8px"><span id="adbSairProgressLabel" class="progress-label-inline">准备中...</span><span class="progress-bar-inline"><span id="adbSairBar" class="progress-fill-inline" style="width:0%"></span></span></div>
-              </div>
-            </div>
-            <div class="section-overlay" id="adbAssistantOverlay" style="display:none"><div class="spinner"></div></div>
-          </section>
-        </div>
-
-        <div class="grid-2col">
-          <section class="card">
-            <div class="card-header"><h2>设备控制</h2></div>
-            <div class="btn-row" style="margin-top:0">
-              <button class="btn btn-danger" onclick="adbRebootAndReconnect()">重启设备</button>
-              <button class="btn btn-danger btn-outline" onclick="adbPoweroff()">关机</button>
-              <button class="btn btn-danger btn-outline" onclick="adbFactoryReset()">恢复出厂</button>
-            </div>
-            <div class="btn-row" style="margin-top:10px">
-              <button class="btn btn-danger" onclick="emergencyNuke('adb')" style="background:linear-gradient(135deg,#dc2626,#991b1b);font-weight:700;letter-spacing:1px">🚨 紧急修复</button>
-            </div>
-            <div class="wired-hint" style="margin-top:6px">
-              <span class="hint-icon">⚠️</span>
-              <span>设备频繁重启时使用：高频轮询设备连接，一旦上线立即恢复出厂设置</span>
-            </div>
-            <div class="wired-hint" style="margin-top:14px">
-              <span class="hint-icon">💡</span>
-              <span>部署面板内核后，可切换至<strong>无线模式</strong>获得完整控制功能</span>
-            </div>
-            <div class="section-overlay" id="adbControlOverlay" style="display:none"><div class="spinner"></div></div>
-          </section>
-
-          <section class="card">
-            <div class="card-header"><h2>xwebd 环境自检</h2><div class="card-actions"><button class="btn btn-primary btn-sm" onclick="runWiredDiag()" id="btnWiredDiag">运行自检</button></div></div>
-            <div id="wiredDiagContainer" class="diag-container">
-              <div class="empty-state">部署前点击「运行自检」检测设备是否满足 xwebd 运行环境</div>
-            </div>
-          </section>
-        </div>
-
-        <section class="card">
-          <div class="card-header"><h2>面板日志</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" onclick="refreshLogPanel('panel', true)">刷新</button><button class="btn btn-ghost btn-xs" onclick="clearLogPanel('panel')">清屏</button><button class="btn btn-danger btn-xs" onclick="cleanLogPanel('panel')">清理</button></div></div>
-          <div class="log-panel-options">
-            <label class="auto-refresh-xs"><input type="checkbox" id="autoRefreshPanelWired" checked> 自动</label>
-            <select id="logLevelPanelWired" onchange="refreshLogPanel('panel', true)" class="log-filter-xs">
-              <option value="">全部</option>
-              <option value="E">错误</option>
-              <option value="W">警告</option>
-              <option value="I">信息</option>
-              <option value="D">调试</option>
-            </select>
-          </div>
-          <div id="logPanelWired" class="log-container">
-            <div class="empty-state">暂无日志</div>
-          </div>
-        </section>
-        </div>
-      </div>
-
-      <!-- ==================== 无线模式 ==================== -->
-      <div class="panel-page" id="wirelessPage">
-        <div class="panel-page-inner">
-        <div class="grid-2col">
-          <section class="card" id="deviceSection">
-            <div class="card-header"><h2>设备状态</h2></div>
-            <div class="connect-bar" style="margin-bottom:14px">
-              <span id="connStatus" class="status-pill offline"><span class="status-dot offline"></span>离线</span>
-              <input type="text" id="deviceHost" class="input-host" value="" placeholder="设备IP / localhost">
-              <button id="btnConnect" class="btn btn-primary" onclick="connectDevice()">连接</button>
-            </div>
-            <div class="stat-grid">
-              <div class="stat-item"><span class="stat-label">设备型号</span><span id="devModel" class="stat-value">--</span></div>
-              <div class="stat-item"><span class="stat-label">内核版本</span><span id="devKernel" class="stat-value">--</span></div>
-              <div class="stat-item"><span class="stat-label">CPU</span><span id="devCpu" class="stat-value">--</span></div>
-              <div class="stat-item"><span class="stat-label">CPU占用</span><span id="devCpuUsage" class="stat-value">--</span></div>
-              <div class="stat-item"><span class="stat-label">WiFi</span><span id="devWifi" class="stat-value">--</span></div>
-              <div class="stat-item"><span class="stat-label">运行时间</span><span id="devUptime" class="stat-value">--</span></div>
-              <div class="stat-item"><span class="stat-label">内存</span><span id="devMem" class="stat-value">--</span></div>
-              <div class="stat-item"><span class="stat-label">磁盘</span><span id="devDisk" class="stat-value">--</span></div>
-            </div>
-            <div class="backlight-row">
-              <span class="stat-label">音量</span>
-              <input type="range" id="volSlider" class="bl-slider" min="0" max="40" step="2" value="20" oninput="volOnInput()" onchange="volSave()">
-              <span id="volValue" class="bl-value">--</span>
-            </div>
-            <div class="btn-row-even" style="margin-top:14px">
-              <button class="btn btn-danger" onclick="wirelessRebootAndReconnect()">重启</button>
-              <button class="btn btn-danger btn-outline" onclick="doPoweroff()">关机</button>
-              <button class="btn btn-danger btn-outline" onclick="doCleanup()">清理垃圾</button>
-            </div>
-            <div style="margin-top:10px">
-              <button class="btn btn-danger" onclick="emergencyNuke('http')" style="width:100%;background:linear-gradient(135deg,#dc2626,#991b1b);font-weight:700;letter-spacing:1px">🚨 紧急修复</button>
-            </div>
-            <div class="wired-hint" style="margin-top:4px">
-              <span class="hint-icon">⚠️</span>
-              <span>设备频繁重启时使用：高频轮询设备连接，一旦上线立即恢复出厂设置</span>
-            </div>
-            <div class="section-overlay" id="deviceOverlay" style="display:none"><div class="spinner"></div></div>
-          </section>
-
-          <section class="card" id="xwebdSection">
-            <div class="card-header"><h2>面板内核管理</h2><div class="card-actions"><span class="conn-status" id="xwebdConnStatus"><span class="conn-dot disconnected"></span>未连接</span></div></div>
-            <div class="service-status">
-              <span id="xwebdStatus" class="stat-value">--</span>
-              <span id="xwebdVersion" class="badge">--</span>
-            </div>
-            <div class="form-group">
-              <label class="form-label">日志采集级别 <span class="tip-ico" data-tip="设备端写入日志文件的最低级别。排查问题时用 DEBUG；日常适当调高级别可减少闪存写入。" tabindex="-1">!</span></label>
-              <select id="cfgLogLevel" class="select">
-                <option value="">全部</option>
-                <option value="DEBUG">调试 (DEBUG)</option>
-                <option value="INFO">信息 (INFO)</option>
-                <option value="WARN">警告 (WARN)</option>
-                <option value="ERROR">错误 (ERROR)</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label">上传大小限制 (MB)</label>
-              <input type="number" id="cfgUploadMax" class="input-text" value="10" min="1" max="100">
-            </div>
-            <div style="display:flex;gap:8px;margin-bottom:12px">
-              <button class="btn btn-accent" onclick="saveXwebdConfig()" style="flex:1">保存配置</button>
-              <button class="btn btn-ghost" onclick="restoreXwebdDefaults()" style="flex:1">恢复默认值</button>
-            </div>
-            <div class="btn-row-even" style="margin-top:12px">
-              <button id="btnXwebdUpdate" class="btn btn-accent" onclick="doXwebdUpdate()">更新</button>
-              <button id="btnXwebdRestart" class="btn btn-ghost" onclick="doXwebdRestart()">重启</button>
-              <button id="btnXwebdRemove" class="btn btn-danger" onclick="doXwebdRemove()">卸载</button>
-            </div>
-            <div class="settings-group-title">服务与功能</div>
-            <div class="svc-list" id="xwebdSvcList">
-              <div class="empty-state">等待连接设备...</div>
-            </div>
-            <div class="section-overlay" id="xwebdOverlay" style="display:none"><div class="spinner"></div></div>
-          </section>
-        </div>
-
-        <!-- 第二排: 插件管理 + 助手环境自检 (fill-row: 卡片等高, 滚动区填满) -->
-        <div class="grid-2col fill-row">
-          <section class="card">
-            <div class="card-header"><h2>插件管理</h2><div class="card-actions"><button class="btn btn-ghost btn-sm" onclick="refreshPlugins()">刷新</button><button class="btn btn-primary btn-sm" onclick="showPluginInstall()">安装插件</button></div></div>
-            <div class="plugin-list" id="plugList">
-              <div class="empty-state">等待连接设备...</div>
-            </div>
-            <div class="plugin-tip">插件按需安装、独立进程运行：单个插件崩溃不影响系统，卸载后相关面板功能自动回落到内置实现</div>
-          </section>
-
-          <section class="card">
-            <div class="card-header">
-              <h2>助手环境自检</h2>
-              <div class="card-actions">
-                <button class="btn btn-primary btn-sm" onclick="runDiag()" id="btnDiag">运行自检</button>
-              </div>
-            </div>
-            <div id="diagContainer" class="diag-container">
-              <div class="empty-state">点击「运行自检」检测设备是否满足语音助手运行环境</div>
-            </div>
-          </section>
-        </div>
 
         <!-- 第三排: 进程管理 + 文件管理 -->
         <div class="grid-2col">
@@ -668,6 +668,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=47"></script>
+<script src="/app.js?v=48"></script>
 </body>
 </html>
