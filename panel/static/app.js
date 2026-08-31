@@ -893,7 +893,6 @@ function resetWirelessUI() {
     $('processContainer').innerHTML = '<div class="empty-state">等待连接设备...</div>';
     $('processSummary').textContent = '';
     _procCache = [];
-    _procFilterCategory = '';
     _procFilterAction = '';
     $('btnXwebdRestart').style.display = '';
     $('btnXwebdRemove').style.display = '';
@@ -1526,7 +1525,6 @@ async function doPluginInstallSelected() {
     await refreshPlugins();
 }
 
-var _procFilterCategory = '';
 var _procFilterAction = '';
 var _procCache = [];
 
@@ -1547,9 +1545,6 @@ function renderProcesses() {
     procs.sort(function(a, b) { return _procSortKey(a) - _procSortKey(b); });
 
     var filtered = procs;
-    if (_procFilterCategory) {
-        filtered = filtered.filter(function(p) { return p.category === _procFilterCategory; });
-    }
     if (_procFilterAction) {
         if (_procFilterAction === 'start') {
             filtered = filtered.filter(function(p) { return !p.running && p.controllable; });
@@ -1579,8 +1574,7 @@ function renderProcesses() {
 
     var headHtml = '<table class="process-table process-table-head">' + colgroup + '<thead><tr>'
         + '<th>进程</th><th>PID</th><th>内存</th>'
-        + '<th class="proc-filter-th"><span>类别</span><select class="proc-filter-select" onchange="_procFilterCategory=this.value;renderProcesses()">'
-        + '<option value="">全部</option><option value="核心"' + (_procFilterCategory === '核心' ? ' selected' : '') + '>核心</option><option value="系统"' + (_procFilterCategory === '系统' ? ' selected' : '') + '>系统</option><option value="可选"' + (_procFilterCategory === '可选' ? ' selected' : '') + '>可选</option></select></th>'
+        + '<th>类别</th>'
         + '<th>说明</th>'
         + '<th class="proc-filter-th"><span>操作</span><select class="proc-filter-select" onchange="_procFilterAction=this.value;renderProcesses()">'
         + '<option value="">全部</option><option value="start"' + (_procFilterAction === 'start' ? ' selected' : '') + '>待启动</option><option value="stop"' + (_procFilterAction === 'stop' ? ' selected' : '') + '>可停止</option><option value="protected"' + (_procFilterAction === 'protected' ? ' selected' : '') + '>受保护</option></select></th>'
@@ -3092,7 +3086,8 @@ document.addEventListener('DOMContentLoaded', function() {
             if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 1) {
                 var st = el.scrollTop;
                 var atTop = st <= 0;
-                var atBottom = st + el.clientHeight >= el.scrollHeight;
+                /* -1 容差: DPI 缩放下 scrollTop/scrollHeight 可带小数, 差 1px 内视为到边 */
+                var atBottom = st + el.clientHeight >= el.scrollHeight - 1;
                 if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
                     e.preventDefault();
                 }
