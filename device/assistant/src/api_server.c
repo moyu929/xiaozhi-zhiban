@@ -177,7 +177,13 @@ static int parse_json_str(const char *json, const char *key, char *out, int out_
     const char *found = NULL;
     while ((p = strstr(p, search)) != NULL)
     {
-        if (p == json || p[-1] == '{' || p[-1] == ',')
+        /* 键起点前的空白也要跨过: python json.dumps 生成 ", " / ": " 带空格,
+         * 只认紧贴的 {/, 会丢弃第二个及以后的字段(2026-08-31 事故:
+         * 面板整卡保存只有第一个字段生效, use_limit_minutes 排后全被丢) */
+        const char *b = (p > json) ? p - 1 : json;
+        while (b > json && (*b == ' ' || *b == '\t' || *b == '\n' || *b == '\r'))
+            b--;
+        if (p == json || *b == '{' || *b == ',')
         {
             const char *q = p + klen;
             while (*q == ' ' || *q == '\t')
@@ -224,8 +230,13 @@ static int parse_json_int(const char *json, const char *key, int *out)
     const char *p = json;
     while ((p = strstr(p, search)) != NULL)
     {
-        /* 前一字符必须是对象边界(起始/{/,), 排除 "xxxdelay_min" 类子串键 */
-        if (p == json || p[-1] == '{' || p[-1] == ',')
+        /* 前一字符必须是对象边界(起始/{/,), 排除 "xxxdelay_min" 类子串键;
+         * 边界判定先跨过键前空白——宽松格式(python json.dumps ", ")下
+         * 第二个及以后的字段键前是空格, 紧贴判定会整字段丢弃 */
+        const char *b = (p > json) ? p - 1 : json;
+        while (b > json && (*b == ' ' || *b == '\t' || *b == '\n' || *b == '\r'))
+            b--;
+        if (p == json || *b == '{' || *b == ',')
         {
             const char *q = p + klen;
             while (*q == ' ' || *q == '\t')

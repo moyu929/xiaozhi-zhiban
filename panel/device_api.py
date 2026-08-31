@@ -93,7 +93,9 @@ class XwebdAPI:
             req_body = body
             req_headers = headers or {"Content-Type": "application/octet-stream"}
         elif data is not None:
-            req_body = json.dumps(data).encode("utf-8")
+            # 紧凑分隔符: 设备端手写 JSON 解析器对宽松格式("key": val 带空格)
+            # 的键边界判定有历史缺陷, 紧凑输出规避(解析器已同步修复, 双保险)
+            req_body = json.dumps(data, separators=(",", ":")).encode("utf-8")
             req_headers = headers or {"Content-Type": "application/json"}
         else:
             req_body = None
