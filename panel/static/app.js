@@ -11,16 +11,37 @@ var S = {
     deviceSSE: {},
     xwebdVersion: '',
     localVersions: {},
-    mcpTools: [
-        { name: 'self.get_device_status', desc: '获取设备实时状态', params: '{"type":"object","properties":{}}' },
-        { name: 'self.audio_speaker.set_volume', desc: '设置音量 (0-100)', params: '{"type":"object","properties":{"volume":{"type":"integer","minimum":0,"maximum":100}},"required":["volume"]}' },
-        { name: 'self.get_system_info', desc: '获取系统信息', params: '{"type":"object","properties":{}}' },
-        { name: 'self.clean_junk', desc: '清理临时文件', params: '{"type":"object","properties":{}}' },
-        { name: 'self.reboot', desc: '重启设备', params: '{"type":"object","properties":{}}' },
-        { name: 'self.poweroff', desc: '关机', params: '{"type":"object","properties":{}}' },
-        { name: 'self.get_mcp_tools', desc: '列出所有MCP工具', params: '{"type":"object","properties":{}}' }
-    ],
-    mcpEditingIdx: -1
+    usbMode: '',
+    svcData: null,
+    lightsCtrl: null,
+    batteryDetail: null
+};
+
+/* 设备助手固件内置 MCP 工具（与 sair mcp_handler.c 同步维护，只读参考） */
+var MCP_TOOLS = [
+    { name: 'self.get_device_status', desc: '查设备状态：电量、音量、CPU、内存' },
+    { name: 'self.audio_speaker.volume_up', desc: '音量调大一格（原生音量条）' },
+    { name: 'self.audio_speaker.volume_down', desc: '音量调小一格（原生音量条）' },
+    { name: 'self.get_system_info', desc: '查版本、音量、电量等系统信息' },
+    { name: 'self.clean_junk', desc: '清理临时文件与缓存，释放内存' },
+    { name: 'self.get_mcp_tools', desc: '列出全部可用 MCP 工具' },
+    { name: 'self.reboot', desc: '重启设备（仅响应明确的"重启"指令）' },
+    { name: 'self.poweroff', desc: '关机（原生关机动画，"关机/不玩了"）' },
+    { name: 'self.limit_info', desc: '查今日使用时长：已用/上限/剩余' },
+    { name: 'self.limit_delay', desc: '达限后延长使用 N 分钟（需家长开启）' },
+    { name: 'self.screen_off_set', desc: '设置会话中自动息屏秒数（0=不息屏）' },
+    { name: 'self.screen_off_now', desc: '立即息屏，语音对话继续' },
+    { name: 'self.screen_on_now', desc: '亮屏（"亮屏/打开屏幕"）' }
+];
+
+/* 已知插件的中文名与用途说明（未知插件显示原名称） */
+var PLUGIN_META = {
+    files:     { cn: '文件管理',   desc: '文件列表/删除/批量清理（上传下载为核心功能，装插件才有列表管理）' },
+    procs:     { cn: '进程管理',   desc: '进程清单查看与启停控制（不装则无进程管理）' },
+    usb:       { cn: 'USB 模式',   desc: 'USB 存储模式查询与重选、存储卡开关（不装则无 USB 控制）' },
+    lights:    { cn: '灯控管理',   desc: '屏幕背光/呼吸灯/按键背光三灯合一（不装则背光滑条与灯开关回落内置）' },
+    battery:   { cn: '电池守护',   desc: '电池采样记录 + 低电关机守护（卸载后失去低电保护与电池详情，建议常驻）' },
+    demo:      { cn: '框架演示',   desc: '插件框架演示与崩溃隔离测试，可安全卸载' }
 };
 
 var LOG = {
@@ -54,6 +75,40 @@ function stripAnsi(s) {
     });
 }
 
+/* ---- 叹号 tooltip(2026-08-31): 长功能解释收进浮窗, 不撑乱排版 ----
+ * 静态 HTML 直接写 <span class="tip-ico" data-tip="说明">!</span>;
+ * JS 动态渲染处用 tip('说明') 生成。浮窗单例 fixed 定位, 不受滚动容器裁剪 */
+function tip(text) {
+    return '<span class="tip-ico" data-tip="' + escapeHtml(text).replace(/"/g, '&quot;') + '" tabindex="-1">!</span>';
+}
+
+(function initTipFloat() {
+    var pop = null;
+    function hide() { if (pop) { pop.remove(); pop = null; } }
+    function show(ico) {
+        var text = ico.getAttribute('data-tip') || '';
+        if (!text) return;
+        hide();
+        pop = document.createElement('div');
+        pop.className = 'tip-float';
+        pop.textContent = text;
+        document.body.appendChild(pop);
+        var r = ico.getBoundingClientRect();
+        var pw = pop.offsetWidth, ph = pop.offsetHeight;
+        var x = Math.max(8, Math.min(r.left, window.innerWidth - pw - 8));
+        var y = r.bottom + 6;
+        if (y + ph > window.innerHeight - 8) y = Math.max(8, r.top - ph - 6); /* 贴底翻上方 */
+        pop.style.left = x + 'px';
+        pop.style.top = y + 'px';
+    }
+    document.addEventListener('mouseover', function(e) {
+        var ico = e.target && e.target.closest ? e.target.closest('.tip-ico') : null;
+        if (ico) show(ico);
+        else hide();
+    });
+    window.addEventListener('scroll', hide, true);
+})();
+
 function toast(msg, type) {
     type = type || 'info';
     var el = $('toast');
@@ -73,8 +128,10 @@ function flashEl(el) {
     setTimeout(function() { el.classList.remove('flash'); }, 400);
 }
 
-function showOverlay(id) { document.getElementById(id).style.display = 'flex'; }
-function hideOverlay(id) { document.getElementById(id).style.display = 'none'; }
+/* null 防御(2026-08-31): 重构删卡后 overlay id 失配曾致 connectDevice 直接
+ * TypeError 中断——连接请求都发不出, 表现为"点连接转圈无超时" */
+function showOverlay(id) { var el = document.getElementById(id); if (el) el.style.display = 'flex'; }
+function hideOverlay(id) { var el = document.getElementById(id); if (el) el.style.display = 'none'; }
 
 async function api(path, opts) {
     opts = opts || {};
@@ -147,83 +204,15 @@ function copyActivationCode(btn) {
 function renderMcpTools() {
     var container = $('mcpToolsList');
     if (!container) return;
-    if (!S.mcpTools.length) {
-        container.innerHTML = '<div class="empty-state" style="padding:12px">暂无MCP工具，点击上方按钮新建</div>';
-        return;
-    }
     var html = '';
-    for (var i = 0; i < S.mcpTools.length; i++) {
-        var t = S.mcpTools[i];
-        if (S.mcpEditingIdx === i) {
-            html += '<div class="mcp-edit-form">';
-            html += '<div class="mcp-edit-row">';
-            html += '<input class="mcp-edit-name" id="mcpEditName" value="' + escapeHtml(t.name) + '" placeholder="工具名称">';
-            html += '<input class="mcp-edit-desc" id="mcpEditDesc" value="' + escapeHtml(t.desc) + '" placeholder="工具描述">';
-            html += '</div>';
-            html += '<textarea class="mcp-edit-params" id="mcpEditParams" placeholder="接口参数 (JSON Schema)">' + escapeHtml(t.params || '') + '</textarea>';
-            html += '<div class="mcp-edit-btns">';
-            html += '<button class="btn btn-accent btn-xs" onclick="mcpToolSaveEdit(' + i + ')">保存</button>';
-            html += '<button class="btn btn-ghost btn-xs" onclick="mcpToolCancelEdit()">取消</button>';
-            html += '</div>';
-            html += '</div>';
-        } else {
-            html += '<div class="mcp-tool-item">';
-            html += '<span class="mcp-tool-name">' + escapeHtml(t.name) + '</span>';
-            html += '<span class="mcp-tool-desc">' + escapeHtml(t.desc) + '</span>';
-            html += '<span class="mcp-tool-actions">';
-            html += '<button class="mcp-tool-btn-edit" onclick="mcpToolEdit(' + i + ')">编辑</button>';
-            html += '<button class="mcp-tool-btn-del" onclick="mcpToolDel(' + i + ')">删除</button>';
-            html += '</span>';
-            html += '</div>';
-        }
+    for (var i = 0; i < MCP_TOOLS.length; i++) {
+        var t = MCP_TOOLS[i];
+        html += '<div class="mcp-tool-item">';
+        html += '<span class="mcp-tool-name">' + escapeHtml(t.name) + '</span>';
+        html += '<span class="mcp-tool-desc">' + escapeHtml(t.desc) + '</span>';
+        html += '</div>';
     }
     container.innerHTML = html;
-}
-
-function mcpToolAdd() {
-    S.mcpEditingIdx = S.mcpTools.length;
-    S.mcpTools.push({ name: '', desc: '', params: '' });
-    renderMcpTools();
-    var nameInput = $('mcpEditName');
-    if (nameInput) nameInput.focus();
-}
-
-function mcpToolEdit(idx) {
-    S.mcpEditingIdx = idx;
-    renderMcpTools();
-    var nameInput = $('mcpEditName');
-    if (nameInput) nameInput.focus();
-}
-
-function mcpToolSaveEdit(idx) {
-    var name = $('mcpEditName').value.trim();
-    var desc = $('mcpEditDesc').value.trim();
-    var params = $('mcpEditParams').value.trim();
-    if (!name) { toast('工具名称不能为空', 'error'); return; }
-    if (params) {
-        try { JSON.parse(params); } catch(e) { toast('接口参数必须是有效的JSON', 'error'); return; }
-    }
-    S.mcpTools[idx] = { name: name, desc: desc, params: params };
-    S.mcpEditingIdx = -1;
-    renderMcpTools();
-    toast('工具已保存', 'success');
-}
-
-function mcpToolCancelEdit() {
-    if (S.mcpEditingIdx >= 0 && S.mcpTools[S.mcpEditingIdx].name === '') {
-        S.mcpTools.splice(S.mcpEditingIdx, 1);
-    }
-    S.mcpEditingIdx = -1;
-    renderMcpTools();
-}
-
-async function mcpToolDel(idx) {
-    var name = S.mcpTools[idx].name || '该工具';
-    if (!await showConfirm('确定删除工具 ' + name + '？', {danger: true})) return;
-    S.mcpTools.splice(idx, 1);
-    S.mcpEditingIdx = -1;
-    renderMcpTools();
-    toast('工具已删除', 'success');
 }
 
 function showConfirm(msg, opts) {
@@ -311,7 +300,14 @@ function updateViewportHeight() {
     var pageId = S.mode === 'wired' ? 'wiredPage' : 'wirelessPage';
     var page = $(pageId);
     if (viewport && page) {
-        viewport.style.height = page.scrollHeight + 'px';
+        /* 浮点高度方案(2026-08-31 v3): 整数 scrollHeight 舍入在 DPI 缩放下
+         * 会 RO<->写高度 震荡循环刷死主线程(页面加载后零请求、连接后转圈
+         * 卡死, 2px 死区仍挡不住). 改用 getBoundingClientRect 浮点值:
+         * 写浮点读浮点, 往返稳定, 循环断根; 0.5px 死区仅防噪声 */
+        var h = page.getBoundingClientRect().height;
+        var cur = parseFloat(viewport.style.height) || 0;
+        if (Math.abs(h - cur) < 0.5) return;
+        viewport.style.height = h + 'px';
     }
 }
 
@@ -782,12 +778,18 @@ async function connectDevice() {
         resetWiredUI();
     }
 
-    var r = await api('/api/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: host }),
-    });
+    var r;
+    try {
+        r = await api('/api/connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host: host }),
+        });
+    } catch (e) {
+        r = { ok: false, error: '连接请求异常: ' + (e && e.message || e) };
+    }
 
+    try {
     if (r.ok && r.xwebd_connected) {
         S.wl.connected = true;
         S.wl.xwebd = true;
@@ -821,8 +823,12 @@ async function connectDevice() {
         toast(r.error ? '连接失败：' + r.error : '连接失败', 'error');
     }
 
+    } catch (e) {
+        toast('连接过程异常: ' + (e && e.message || e), 'error');
+    } finally {
     hideWirelessOverlays();
     if (!S.wl.connected) { btn.disabled = false; btn.textContent = '连接'; btn.className = 'btn btn-primary'; }
+    }
 }
 
 function resetWirelessUI() {
@@ -831,7 +837,6 @@ function resetWirelessUI() {
     $('devCpu').textContent = '--';
     $('devCpuUsage').textContent = '--';
     $('devWifi').textContent = '--';
-    $('devBattery').textContent = '--';
     $('devUptime').textContent = '--';
     $('devMem').textContent = '--';
     $('devDisk').textContent = '--';
@@ -845,10 +850,29 @@ function resetWirelessUI() {
     $('xwebdVersion').textContent = '--';
     $('cfgMcpEndpoint').value = '';
     $('cfgSairLogLevel').value = '';
-    $('cfgListeningMode').value = 'realtime';
-    $('cfgTransportMode').value = '0';
+    $('cfgListeningMode').value = 'autostop';
+    $('cfgAecMode').value = 'local';
+    updateAecVisibility();
     $('cfgCustomWsUrl').value = '';
-    updateTransportModeUI();
+    $('cfgBootPushDisable').checked = false;
+    $('cfgLimitEnable').checked = false;
+    $('cfgLimitMinutes').value = '';
+    $('cfgLimitDelayTool').checked = false;
+    $('cfgLimitSched').checked = false;
+    document.querySelectorAll('#schedDays input[type=checkbox]').forEach(function(cb) { cb.checked = false; });
+    $('limitStat').textContent = '今日已用 -- 分钟（未启用）';
+    $('cfgScreenOffSec').value = '';
+    var bls = $('blSlider'); /* 背光滑条已迁 lights 插件条目, 元素可能不存在 */
+    if (bls) { bls.value = 400; }
+    var blv = $('blValue');
+    if (blv) blv.textContent = '--';
+    var blp = $('blPersist');
+    if (blp) blp.checked = false;
+    $('volSlider').value = 20;
+    $('volValue').textContent = '--';
+    var usbReset = $('devUsbMode'); /* USB 模式已迁插件卡, 元素可能不存在 */
+    if (usbReset) usbReset.textContent = '--';
+    S.usbMode = '';
     $('cfgListenTimeout').value = '';
     $('cfgSessionTimeout').value = '';
     $('cfgWakeupCooldown').value = '';
@@ -860,11 +884,15 @@ function resetWirelessUI() {
     $('logXwebd').innerHTML = '<div class="empty-state">等待连接设备...</div>';
     $('logAssistant').innerHTML = '<div class="empty-state">等待连接设备...</div>';
     $('logPanel').innerHTML = '<div class="empty-state">暂无日志</div>';
-    $('svcList').innerHTML = '<div class="empty-state">等待连接设备...</div>';
+    $('xwebdSvcList').innerHTML = '<div class="empty-state">等待连接设备...</div>';
+    $('cfgPrecache').checked = false;
+    S.svcData = null;
+    S.lightsCtrl = null;
+    S.batteryDetail = null;
+    S.batteryCap = null;
     $('processContainer').innerHTML = '<div class="empty-state">等待连接设备...</div>';
     $('processSummary').textContent = '';
     _procCache = [];
-    _procFilterCategory = '';
     _procFilterAction = '';
     $('btnXwebdRestart').style.display = '';
     $('btnXwebdRemove').style.display = '';
@@ -878,15 +906,6 @@ function resetWirelessUI() {
     $('footerInfo').textContent = '--';
     S.wl.sairInstalled = false;
     S.wl.sairNativeRunning = false;
-    S.mcpTools = [
-        { name: 'self.get_device_status', desc: '获取设备实时状态', params: '{"type":"object","properties":{}}' },
-        { name: 'self.audio_speaker.set_volume', desc: '设置音量 (0-100)', params: '{"type":"object","properties":{"volume":{"type":"integer","minimum":0,"maximum":100}},"required":["volume"]}' },
-        { name: 'self.get_system_info', desc: '获取系统信息', params: '{"type":"object","properties":{}}' },
-        { name: 'self.clean_junk', desc: '清理临时文件', params: '{"type":"object","properties":{}}' },
-        { name: 'self.reboot', desc: '重启设备', params: '{"type":"object","properties":{}}' },
-        { name: 'self.poweroff', desc: '关机', params: '{"type":"object","properties":{}}' },
-        { name: 'self.get_mcp_tools', desc: '列出所有MCP工具', params: '{"type":"object","properties":{}}' }
-    ];
     S.mcpEditingIdx = -1;
     renderMcpTools();
     updateSairLocks();
@@ -964,13 +983,158 @@ function refreshAll() {
     refreshStatus();
     refreshAssistantStatus();
     refreshXwebdStatus();
-    refreshServices();
+    refreshXwebdServices();
+    refreshPlugins();
     refreshProcesses();
     refreshFiles();
+    refreshBacklight();
+    refreshUsbMode();
+    refreshBatteryDetail();
     refreshLogPanel('panel', false);
     refreshLogPanel('xwebd', false);
     refreshLogPanel('assistant', false);
     refreshConfig();
+}
+
+// ==================== 音量 / USB 模式 / 电池详情（sair 原生 sound + battery 插件） ====================
+
+function volOnInput() {
+    var s = $('volSlider');
+    $('volValue').textContent = s.value;
+    var pct = (s.value - s.min) / (s.max - s.min) * 100;
+    s.style.setProperty('--fill', pct + '%');
+}
+
+async function volSave() {
+    if (!S.wl.connected) return;
+    var v = parseInt($('volSlider').value, 10);
+    var r = await api('/api/assistant/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ volume: v }),
+    });
+    if (r.ok || !r.error) toast('音量已设置为 ' + v + '/40', 'success');
+    else toast('音量设置失败: ' + (r.error || ''), 'error');
+}
+
+/* 低频同步音量滑条(语音 volume_up/down 或设备物理按键改过) */
+async function refreshVolumeOnly() {
+    if (!S.wl.connected) return;
+    var r = await api('/api/assistant/config');
+    if (r.error || r.volume === undefined || r.volume < 0) return;
+    if (parseInt($('volSlider').value, 10) !== r.volume) {
+        $('volSlider').value = r.volume;
+        volOnInput();
+    }
+}
+
+var USB_MODE_MAP = {
+    adb: 'ADB 调试',
+    mass_adb: '存储+ADB',
+    charge: '仅充电',
+    disabled: '已关闭'
+};
+
+var S_USB_MODE = { mode: '' }; /* refreshUsbMode 缓存, 插件卡显示用 */
+
+async function refreshUsbMode() {
+    if (!S.wl.connected) return;
+    var r = await api('/api/usb/mode');
+    if (r.error) return;
+    var d = r.data || r;
+    if (d.mode) {
+        S.usbMode = d.mode;
+        var usbEl = $('devUsbMode');
+        if (usbEl) usbEl.textContent = USB_MODE_MAP[d.mode] || d.mode;
+    }
+}
+
+async function refreshBatteryDetail() {
+    if (!S.wl.connected) return;
+    /* battery 插件在线才可读; 未装/离线无详情 */
+    var r = await api('/api/plugin/battery/status');
+    if (r.error) {
+        S.batteryDetail = null;
+        return;
+    }
+    var d = r.data || r;
+    S.batteryDetail = d;
+    /* 详情数据渲染进插件管理卡 battery 条目; 设备状态卡不再显示电量
+     * (2026-08-31 用户指正: 电量属电池守护插件数据, 整合进插件条目) */
+    refreshPlugins();
+}
+
+// ==================== 屏幕背光（lights 插件 / 内置回落; 控件在插件卡） ====================
+
+async function refreshBacklight() {
+    if (!S.wl.connected) return;
+    var r = await api('/api/backlight');
+    if (r.error) return;
+    var d = r.data || r;
+    /* 控件已迁 lights 插件条目(由 refreshPlugins 渲染), 此处只更新状态缓存 */
+    S.lightsCtrl = { brightness: d.brightness, persist: !!d.enable };
+    refreshPlugins();
+}
+
+function blOnInput() {
+    var s = $('blSlider');
+    var v = $('blValue');
+    if (!s || !v) return; /* 控件随 lights 插件条目渲染, 断连/未装时不存在 */
+    v.textContent = s.value;
+    var pct = (s.value - s.min) / (s.max - s.min) * 100;
+    s.style.setProperty('--fill', pct + '%');
+}
+
+async function blSave() {
+    if (!S.wl.connected) return;
+    var s = $('blSlider');
+    if (!s) return;
+    var v = parseInt(s.value, 10);
+    var r = await api('/api/backlight', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brightness: v }),
+    });
+    if (r.ok || !r.error) {
+        toast('背光已设置为 ' + v, 'success');
+        /* 修复(2026-08-31): 不更新缓存会被 5s 轮询的 refreshPlugins 用旧值
+         * 重渲染滑条, 表现为"拉到10马上跳回500"。取设备返回值(经clamp) */
+        var d = r.data || r;
+        S.lightsCtrl = S.lightsCtrl || {};
+        S.lightsCtrl.brightness = d.brightness || v;
+        var bs = $('blSlider'), bv = $('blValue');
+        if (bs) bs.value = S.lightsCtrl.brightness;
+        if (bv) bv.textContent = S.lightsCtrl.brightness;
+        if (bs) blOnInput();
+    } else {
+        toast('背光设置失败: ' + (r.error || ''), 'error');
+    }
+}
+
+async function blSavePersist() {
+    if (!S.wl.connected) return;
+    var p = $('blPersist');
+    if (!p) return;
+    var en = p.checked ? 1 : 0;
+    var r = await api('/api/backlight', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enable: en }),
+    });
+    if (r.ok || !r.error) {
+        toast(en ? '已开启持久生效（亮度设置重启后保留）' : '已关闭持久生效', 'success');
+        var d = r.data || r;
+        if (d.brightness) {
+            var bs = $('blSlider'), bv = $('blValue');
+            if (bs) bs.value = d.brightness;
+            if (bv) bv.textContent = d.brightness;
+            if (bs) blOnInput();
+        }
+    } else {
+        toast('设置失败: ' + (r.error || ''), 'error');
+        var bp = $('blPersist');
+        if (bp) bp.checked = !en;
+    }
 }
 
 async function refreshStatus() {
@@ -989,10 +1153,14 @@ async function refreshStatus() {
         var wifiOk = d.wifi_connected;
         if (S.wl.connected && !wifiOk && d.wifi_ip) wifiOk = true;
         $('devWifi').textContent = wifiOk ? '已连接' : '未连接';
-        $('devBattery').textContent = d.battery_cap != null ? (d.battery_cap >= 0 && d.battery_cap <= 100 ? d.battery_cap + '%' : 'USB供电') : '--';
+        S.batteryCap = d.battery_cap; /* 电量百分比缓存, 电池守护插件条目展示用 */
         $('devUptime').textContent = formatUptime(d.uptime_s);
         $('devMem').textContent = formatMem(d.mem_free_kb, d.mem_total_kb, d.mem_cached_kb);
         $('devDisk').textContent = formatDisk(d.disk_used_kb, d.disk_total_kb);
+        refreshBatteryDetail();
+        S._tick = (S._tick || 0) + 1;
+        if (S._tick % 6 === 0) refreshVolumeOnly(); /* 30s 拉一次音量(语音调音量后同步) */
+        if (S._tick % 6 === 3) refreshBacklight();  /* 30s 错峰拉一次背光(外部修改后同步) */
         if (d.state) {
             var stateEl = $('assistantState');
             if (stateEl) {
@@ -1076,50 +1244,36 @@ async function refreshXwebdStatus() {
     } catch(e) {}
 }
 
-async function refreshServices() {
+/* ==================== xwebd 服务与功能（原服务状态卡拆解并入各卡） ====================
+ * 自启动/看门狗为必开安全机制(关掉=重启失联/崩溃循环无回退), 只显示状态不给开关;
+ * telnet 渲染在面板内核管理卡(纯 xwebd 域, 无插件承接);
+ * 呼吸灯/按键背光/usb_lun/背光滑条 渲染在插件管理卡对应插件条目(2026-08-31 用户指正:
+ * 插件提供的功能应显示在插件管理栏对应插件项中, 不应散落其他位置);
+ * 音频预缓存(sair 域)在语音助手管理卡。 */
+async function refreshXwebdServices() {
     if (!S.wl.connected) return;
     var r = await api('/api/services');
     if (r.error) return;
     var d = r.data || r;
-
-    var items = [
-        { name: '面板内核', key: 'xwebd_running', status: d.xwebd && d.xwebd.running, toggle: false,
-          statusText: d.xwebd && d.xwebd.running ? '运行中' : '已停止' },
-        { name: '面板内核自启动', key: 'autostart', status: d.xwebd && d.xwebd.autostart, toggle: true, service: 'autostart',
-          statusText: d.xwebd && d.xwebd.autostart ? '已启用' : '未启用', hint: '重启保留' },
-        { name: '语音助手', key: 'sair', status: d.sair && d.sair.running, toggle: false,
-          statusText: d.sair ? (d.sair.running ? '运行中' : (d.sair.installed ? '已停止' : '未安装')) : '未知' },
-        { name: '看门狗脚本', key: 'watchdog', status: d.boot_watchdog && (d.boot_watchdog.deployed || d.boot_watchdog.running), toggle: true, service: 'boot_watchdog',
-          statusText: d.boot_watchdog ? (d.boot_watchdog.running ? '运行中' : (d.boot_watchdog.deployed ? '已部署' : '未部署')) : '未知', hint: '重启保留' },
-        { name: 'Telnet 终端', key: 'telnet', status: d.telnet && d.telnet.running, toggle: true, service: 'telnet',
-          statusText: d.telnet && d.telnet.running ? '运行中' : '已停止', hint: '重启保留' },
-        { name: 'USB存储卡', key: 'usb_lun', status: d.usb_lun && d.usb_lun.enabled, toggle: true, service: 'usb_lun',
-          statusText: d.usb_lun && d.usb_lun.enabled ? '已开启' : '已关闭', hint: '重启保留' },
-        { name: '呼吸灯', key: 'led', status: d.led && d.led.enabled, toggle: true, service: 'led',
-          statusText: d.led && d.led.enabled ? '已开启' : '已关闭', hint: '重启保留' },
-        { name: '按键背光', key: 'key_backlight', status: d.key_backlight && d.key_backlight.enabled === true, toggle: true, service: 'key_backlight',
-          statusText: d.key_backlight ? (d.key_backlight.enabled === true ? '已开启' : (d.key_backlight.enabled === false ? '已关闭' : '不支持')) : '未知', hint: '重启保留' },
-        { name: '音频预缓存', key: 'audio_precache', status: d.audio_precache && d.audio_precache.enabled, toggle: true, service: 'audio_precache',
-          statusText: d.audio_precache && d.audio_precache.enabled ? '已开启' : '已关闭', hint: '重启保留' }
-    ];
+    S.svcData = d;
 
     var html = '';
-    items.forEach(function(item) {
-        var statusCls = item.status ? 'svc-on' : 'svc-off';
+    /* 必开项(自启动/看门狗)不展示: 用户指正属"废话"信息 */
+    var togglable = [
+        { name: 'Telnet 终端', service: 'telnet', on: d.telnet && d.telnet.running, hint: '调试用' }
+    ];
+    togglable.forEach(function(item) {
         html += '<div class="svc-item">';
         html += '<span class="svc-name">' + item.name + '</span>';
-        if (item.toggle) {
-            html += '<label class="svc-toggle">';
-            html += '<input type="checkbox"' + (item.status ? ' checked' : '') + ' onchange="toggleService(\'' + item.service + '\', this.checked)">';
-            html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
-            html += '</label>';
-            if (item.hint) html += '<span class="svc-hint">' + item.hint + '</span>';
-        } else {
-            html += '<span class="svc-status ' + statusCls + '">' + item.statusText + '</span>';
-        }
+        html += '<label class="svc-toggle">';
+        html += '<input type="checkbox"' + (item.on ? ' checked' : '') + ' onchange="toggleService(\'' + item.service + '\', this.checked)">';
+        html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
+        html += '</label>';
+        if (item.hint) html += '<span class="svc-hint">' + item.hint + '</span>';
         html += '</div>';
     });
-    $('svcList').innerHTML = html;
+    var container = $('xwebdSvcList');
+    if (container) container.innerHTML = html;
 }
 
 async function toggleService(service, enable) {
@@ -1132,29 +1286,13 @@ async function toggleService(service, enable) {
     });
     if (r.ok) {
         toast(service + ' 已' + (enable ? '开启' : '关闭'), 'success');
-        await new Promise(function(resolve) { setTimeout(resolve, 500); });
-        await refreshServices();
     } else {
         toast('操作失败: ' + (r.error || ''), 'error');
-        await refreshServices();
     }
-}
-
-async function setTransportMode(mode) {
-    if (!S.wl.connected) return;
-    var r = await api('/api/services/toggle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service: 'transport_mode', action: 'enable', value: mode }),
-    });
-    if (r.ok) {
-        toast('传输模式已设置为 ' + (mode === 1 ? 'MQTT+UDP' : 'WebSocket'), 'success');
-        await new Promise(function(resolve) { setTimeout(resolve, 500); });
-        await refreshServices();
-    } else {
-        toast('设置失败: ' + (r.error || ''), 'error');
-        await refreshServices();
-    }
+    await new Promise(function(resolve) { setTimeout(resolve, 500); });
+    await refreshXwebdServices();
+    await refreshPlugins(); /* usb_lun 开关嵌在 usb 插件条目 */
+    if (service === 'usb_lun') refreshUsbMode();
 }
 
 async function setCustomWsUrl(url) {
@@ -1167,26 +1305,226 @@ async function setCustomWsUrl(url) {
     if (r.ok) {
         toast('自定义WS URL已保存', 'success');
         await new Promise(function(resolve) { setTimeout(resolve, 500); });
-        await refreshServices();
+        await refreshConfig();
     } else {
         toast('设置失败: ' + (r.error || ''), 'error');
-        await refreshServices();
     }
 }
 
-function updateTransportModeUI() {
-    var mode = parseInt($('cfgTransportMode').value);
-    var urlGroup = $('customWsUrlGroup');
-    if (urlGroup) urlGroup.style.display = (mode === 0) ? '' : 'none';
+// ==================== Plugins (B0 插件框架) ====================
+
+async function refreshPlugins() {
+    if (!S.wl.connected) return;
+    var r = await api('/api/plugins');
+    if (r.error) return;
+    var d = r.data || r;
+    var plugs = (d.plugins || []);
+    /* usb_lun 开关状态: 优先用 refreshXwebdServices 缓存, 无则拉一次 */
+    var svc = S.svcData;
+    if (!svc) {
+        var sr = await api('/api/services');
+        if (!sr.error) svc = sr.data || sr;
+        S.svcData = svc;
+    }
+    var usbLunOn = svc && svc.usb_lun && svc.usb_lun.enabled;
+    var ledOn = svc && svc.led && svc.led.enabled;
+    var keyBlOn = svc && svc.key_backlight && svc.key_backlight.enabled === true;
+    var lc = S.lightsCtrl || {};
+    var html = '';
+    if (!plugs.length) {
+        html = '<div class="empty-state">暂无插件，点击右上角「安装插件」</div>';
+    } else {
+        plugs.forEach(function(p) {
+            var meta = PLUGIN_META[p.name] || {};
+            var status = p.disabled ? '<span class="svc-status svc-off">已停用</span>'
+                : (p.online ? '<span class="svc-status svc-on">运行中</span>'
+                            : '<span class="svc-status svc-off">离线</span>');
+            html += '<div class="plugin-item">';
+            html += '<div class="plugin-head">';
+            html += '<span class="plugin-name">' + escapeHtml(meta.cn || p.name) + '</span>';
+            html += '<span class="plugin-id">' + escapeHtml(p.name) + '</span>';
+            html += status;
+            /* pid/内存放第一行(状态后, 2026-08-31 用户要求) */
+            html += '<span class="svc-hint">pid ' + (p.pid || '--') + '</span>';
+            if (p.mem_kb) html += '<span class="svc-hint">内存 ' + p.mem_kb + 'KB</span>';
+            html += '</div>';
+            html += '<div class="plugin-desc">' + escapeHtml(meta.desc || '未知插件，无描述') + '</div>';
+            /* 灯控管理: 三灯控件内嵌插件条目(2026-08-31 自面板内核管理卡/设备状态卡迁入) */
+            if (p.name === 'lights') {
+                html += '<div class="plugin-lights">';
+                html += '<div class="backlight-row">';
+                html += '<span class="stat-label">屏幕背光</span>';
+                html += '<input type="range" id="blSlider" class="bl-slider" min="10" max="900" step="1" value="' + (lc.brightness || 400) + '" oninput="blOnInput()" onchange="blSave()">';
+                html += '<span id="blValue" class="bl-value">' + (lc.brightness || '--') + '</span>';
+                html += '<label class="svc-toggle">';
+                html += '<input type="checkbox" id="blPersist"' + (lc.persist ? ' checked' : '') + ' onchange="blSavePersist()">';
+                html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
+                html += '</label>';
+                html += '<span class="stat-label bl-persist-label">持久生效</span>' + tip('开启后亮度设置写入设备持久配置，重启后保留当前亮度；关闭则重启恢复默认亮度。');
+                html += '</div>';
+                html += '<div class="plugin-lights-toggles">';
+                html += '<span class="svc-name">呼吸灯</span>' + tip('设备正面的呼吸灯。开关状态写入持久配置，重启保留。');
+                html += '<label class="svc-toggle">';
+                html += '<input type="checkbox"' + (ledOn ? ' checked' : '') + ' onchange="toggleService(\'led\', this.checked)">';
+                html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
+                html += '</label>';
+                html += '<span class="svc-name">按键背光</span>' + tip('机身按键的背光灯。开关状态写入持久配置，重启保留。');
+                html += '<label class="svc-toggle">';
+                html += '<input type="checkbox"' + (keyBlOn ? ' checked' : '') + ' onchange="toggleService(\'key_backlight\', this.checked)">';
+                html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
+                html += '</label>';
+                html += '</div>';
+                html += '</div>';
+            }
+            /* 电池守护: 详情数据内嵌插件条目(2026-08-31 自设备状态卡迁入;
+             * kv 紧凑行排版, 字号降级不再撑大) */
+            if (p.name === 'battery' && S.batteryDetail && S.batteryDetail.voltage_uv > 0) {
+                var bd = S.batteryDetail;
+                var v = (bd.voltage_uv / 1000000).toFixed(2) + ' V';
+                var i = (Math.abs(bd.current_ua || 0) / 1000).toFixed(0) + ' mA';
+                var brows = [];
+                if (S.batteryCap != null && S.batteryCap >= 0 && S.batteryCap <= 100)
+                    brows.push(['电量', S.batteryCap + '%']);
+                if (bd.charging) {
+                    brows.push(['充电电压', v]);
+                    brows.push(['充电电流', i]);
+                    if (bd.est_charge_min > 0) brows.push(['预计充满', Math.floor(bd.est_charge_min / 60) + ' 时 ' + (bd.est_charge_min % 60) + ' 分']);
+                } else {
+                    brows.push(['电压', v]);
+                    brows.push(['电流', i]);
+                    if (bd.est_remain_min > 0) brows.push(['预计可用', Math.floor(bd.est_remain_min / 60) + ' 时 ' + (bd.est_remain_min % 60) + ' 分']);
+                }
+                if (bd.est_full_mah > 0) brows.push(['电池容量', bd.est_full_mah + ' mAh']);
+                var bhtml = brows.map(function(x) {
+                    return '<div class="batt-kv-row"><span class="batt-kv-label">' + x[0] + '</span><span class="batt-kv-value">' + x[1] + '</span></div>';
+                }).join('');
+                html += '<div class="battery-detail"><div class="batt-kv">' + bhtml + '</div></div>';
+            }
+            html += '<div class="plugin-foot">';
+            if (p.restarts) html += '<span class="svc-hint">重启 ' + p.restarts + ' 次</span>';
+            if (p.name === 'usb') {
+                /* USB 模式显示+重选按钮随 usb 插件条目展示(2026-08-31 自设备状态卡迁入) */
+                html += '<span class="svc-hint">当前 ' + escapeHtml(USB_MODE_MAP[S.usbMode] || S.usbMode || '--') + '</span>';
+                html += '<button class="btn btn-ghost btn-sm" onclick="reselectUsbMode()">重选模式</button>';
+                /* USB 存储卡开关随 usb 插件条目展示(服务状态卡已拆解) */
+                html += '<label class="svc-toggle">';
+                html += '<input type="checkbox"' + (usbLunOn ? ' checked' : '') + ' onchange="toggleService(\'usb_lun\', this.checked)">';
+                html += '<span class="svc-toggle-track"><span class="svc-toggle-thumb"></span></span>';
+                html += '</label>';
+                html += '<span class="svc-hint">存储卡</span>' + tip('开启后，USB 选择数据传输模式时，电脑可以读写设备的存储卡。开关状态重启保留。');
+            }
+            if (!meta.must) {
+                html += '<span class="plugin-btns">';
+                html += '<button class="btn btn-ghost btn-sm" onclick="pluginRestart(\'' + p.name + '\')">重启</button>';
+                html += '<button class="btn btn-danger btn-outline btn-sm" onclick="pluginRemove(\'' + p.name + '\')">卸载</button>';
+                html += '</span>';
+            } else {
+                html += '<span class="svc-hint">核心组件</span>';
+            }
+            html += '</div>';
+            html += '</div>';
+        });
+    }
+    $('plugList').innerHTML = html;
+    blOnInput(); /* 背光滑条重渲染后补 --fill 渐变 */
 }
 
-async function refreshServicesWithFlash() {
-    await refreshServices();
-    var svcList = document.querySelector('.svc-list');
-    if (svcList) flashEl(svcList);
+async function pluginRestart(name) {
+    if (!S.wl.connected) return;
+    var r = await api('/api/plugins/restart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name }),
+    });
+    if (r.ok || !r.error) { toast('插件 ' + name + ' 已重启', 'success'); }
+    else toast('重启失败: ' + (r.error || ''), 'error');
+    await new Promise(function(resolve) { setTimeout(resolve, 800); });
+    await refreshPlugins();
 }
 
-var _procFilterCategory = '';
+async function pluginRemove(name) {
+    if (!S.wl.connected) return;
+    /* 修复(2026-08-31): 此前传 onOk 回调, 但 showConfirm 是 Promise 风格,
+     * 回调被静默忽略——二次确认后无任何动作, 表现为"卸载无反应" */
+    if (!await showConfirm('确定卸载插件 ' + name + '？', { danger: true })) return;
+    var r = await api('/api/plugins/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name }),
+    });
+    if (r.ok || !r.error) { toast('插件 ' + name + ' 已卸载', 'success'); }
+    else toast('卸载失败: ' + (r.error || ''), 'error');
+    await refreshPlugins();
+}
+
+/* 安装插件(2026-08-31 重做): 不再弹 Windows 原生文件选择框——用户无从知道
+ * 哪些是插件包。改为自动检索本项目已构建的插件包(device/xwebd/build/plugins)
+ * + 源码目录自述文本(xwplug_<name>.txt), 弹窗列表勾选安装 */
+async function showPluginInstall() {
+    if (!S.wl.connected) { toast('请先连接设备', 'error'); return; }
+    $('pluginInstallModal').style.display = 'flex';
+    var listEl = $('pluginInstallList');
+    listEl.innerHTML = '<div class="empty-state">检索本地插件包...</div>';
+    var local = await api('/api/plugins/local');
+    if (local.error) {
+        listEl.innerHTML = '<div class="empty-state">' + escapeHtml(local.error) + '</div>';
+        return;
+    }
+    var installed = {};
+    var dev = await api('/api/plugins');
+    if (!dev.error) {
+        var dd = dev.data || dev;
+        (dd.plugins || []).forEach(function(p) { installed[p.name] = true; });
+    }
+    var plugs = local.plugins || [];
+    if (!plugs.length) {
+        listEl.innerHTML = '<div class="empty-state">未找到插件包，请先运行 build_plugins.sh</div>';
+        return;
+    }
+    var html = '';
+    plugs.forEach(function(p) {
+        var has = !!installed[p.name];
+        html += '<label class="plugin-install-item' + (has ? ' installed' : '') + '">';
+        html += '<input type="checkbox" value="' + escapeHtml(p.name) + '"' + (has ? ' disabled' : ' checked') + '>';
+        html += '<div class="plugin-install-info">';
+        html += '<div class="plugin-install-name">' + escapeHtml(p.cn)
+              + ' <span class="plugin-install-id">' + escapeHtml(p.name) + '</span>'
+              + (has ? ' <span class="svc-status svc-on">已安装</span>' : '')
+              + '</div>';
+        html += '<div class="plugin-install-desc">' + escapeHtml(p.desc) + (p.detail ? tip(p.detail) : '') + '</div>';
+        html += '</div>';
+        html += '<span class="plugin-install-size">' + p.size_kb + ' KB</span>';
+        html += '</label>';
+    });
+    listEl.innerHTML = html;
+}
+
+function closePluginInstall() { $('pluginInstallModal').style.display = 'none'; }
+
+async function doPluginInstallSelected() {
+    var checked = document.querySelectorAll('#pluginInstallList input[type=checkbox]:checked');
+    if (!checked.length) { toast('请先勾选要安装的插件', 'info'); return; }
+    var btn = $('btnPluginInstallGo');
+    btn.disabled = true;
+    var fail = 0;
+    for (var i = 0; i < checked.length; i++) {
+        var name = checked[i].value;
+        btn.textContent = '安装 ' + name + '（' + (i + 1) + '/' + checked.length + '）...';
+        var r = await api('/api/plugins/install-local', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name }),
+        });
+        if (r.ok) toast('插件 ' + name + ' 已安装', 'success');
+        else { fail++; toast('安装 ' + name + ' 失败: ' + (r.error || ''), 'error'); }
+    }
+    btn.disabled = false;
+    btn.textContent = '安装选中';
+    if (!fail) closePluginInstall();
+    await new Promise(function(resolve) { setTimeout(resolve, 800); });
+    await refreshPlugins();
+}
+
 var _procFilterAction = '';
 var _procCache = [];
 
@@ -1207,9 +1545,6 @@ function renderProcesses() {
     procs.sort(function(a, b) { return _procSortKey(a) - _procSortKey(b); });
 
     var filtered = procs;
-    if (_procFilterCategory) {
-        filtered = filtered.filter(function(p) { return p.category === _procFilterCategory; });
-    }
     if (_procFilterAction) {
         if (_procFilterAction === 'start') {
             filtered = filtered.filter(function(p) { return !p.running && p.controllable; });
@@ -1239,8 +1574,7 @@ function renderProcesses() {
 
     var headHtml = '<table class="process-table process-table-head">' + colgroup + '<thead><tr>'
         + '<th>进程</th><th>PID</th><th>内存</th>'
-        + '<th class="proc-filter-th"><span>类别</span><select class="proc-filter-select" onchange="_procFilterCategory=this.value;renderProcesses()">'
-        + '<option value="">全部</option><option value="核心"' + (_procFilterCategory === '核心' ? ' selected' : '') + '>核心</option><option value="系统"' + (_procFilterCategory === '系统' ? ' selected' : '') + '>系统</option><option value="可选"' + (_procFilterCategory === '可选' ? ' selected' : '') + '>可选</option></select></th>'
+        + '<th>类别</th>'
         + '<th>说明</th>'
         + '<th class="proc-filter-th"><span>操作</span><select class="proc-filter-select" onchange="_procFilterAction=this.value;renderProcesses()">'
         + '<option value="">全部</option><option value="start"' + (_procFilterAction === 'start' ? ' selected' : '') + '>待启动</option><option value="stop"' + (_procFilterAction === 'stop' ? ' selected' : '') + '>可停止</option><option value="protected"' + (_procFilterAction === 'protected' ? ' selected' : '') + '>受保护</option></select></th>'
@@ -1284,6 +1618,10 @@ async function refreshProcesses() {
     if (!S.wl.connected) return;
     var r = await api('/api/processes');
     if (r.error) {
+        if (r.error.indexOf('not installed') >= 0) {
+            $('processContainer').innerHTML = '<div class="empty-state">进程管理插件（procs）未安装<br>在「插件管理」中安装后可用</div>';
+            return;
+        }
         if (r._retried) {
             $('processContainer').innerHTML = '<div class="empty-state">获取进程列表失败</div>';
         } else {
@@ -1362,13 +1700,44 @@ async function refreshConfig() {
     if (!S.wl.connected) return;
     var r = await api('/api/assistant/config');
     if (!r.error) {
-        if (r.mcp_endpoint !== undefined) $('cfgMcpEndpoint').value = r.mcp_endpoint;
+        /* MCP 接入点实时显示当前生效配置: 自定义接入点优先, 未设时回落
+         * 当前 WS 地址(与「当前 WS URL」行为一致), 不再显示空栏 */
+        $('cfgMcpEndpoint').value = r.mcp_endpoint || r.ws_url || '';
         if (r.listening_mode) $('cfgListeningMode').value = r.listening_mode;
+        if (r.aec_mode) $('cfgAecMode').value = r.aec_mode;
         if (r.log_level) $('cfgSairLogLevel').value = r.log_level;
         if (r.listen_timeout) $('cfgListenTimeout').value = Math.round(r.listen_timeout / 1000);
         if (r.session_timeout) $('cfgSessionTimeout').value = Math.round(r.session_timeout / 1000);
         if (r.wakeup_cooldown) $('cfgWakeupCooldown').value = Math.round(r.wakeup_cooldown / 1000);
         if (r.ws_ping_interval) $('cfgWsPingInterval').value = Math.round(r.ws_ping_interval / 1000);
+        if (r.boot_push_disable !== undefined) $('cfgBootPushDisable').checked = false; /* 死锁缺陷禁用: 强制关, 见 bootPushModal */
+        if (r.screen_off_idle_sec !== undefined) $('cfgScreenOffSec').value = r.screen_off_idle_sec;
+        if (r.volume !== undefined && r.volume >= 0) {
+            $('volSlider').value = r.volume;
+            volOnInput();
+        }
+        updateAecVisibility();
+        var ul = r.use_limit;
+        if (ul) {
+            $('cfgLimitEnable').checked = !!ul.enable;
+            if (ul.minutes) $('cfgLimitMinutes').value = ul.minutes;
+            $('cfgLimitDelayTool').checked = !!ul.delay_tool;
+            var sc = ul.sched || {};
+            $('cfgLimitSched').checked = !!sc.enable;
+            renderSchedDays(sc.days || 0);
+            renderSchedSpans(sc.spans || '');
+            var spent = Math.floor((ul.spent_sec || 0) / 60);
+            var statText;
+            if (!ul.enable) {
+                statText = '今日已用 ' + spent + ' 分钟（限制未启用）';
+            } else {
+                var remain = Math.max(0, Math.floor((ul.remain_sec || 0) / 60));
+                statText = '今日已用 ' + spent + ' 分钟 / 上限 ' + (ul.minutes || 0) + ' 分钟，剩余 ' + remain + ' 分钟';
+                if (ul.locked) statText += '（已达限锁定）';
+                if (ul.delay_until) statText += '（延迟豁免至 ' + new Date(ul.delay_until * 1000).toLocaleTimeString() + '）';
+            }
+            $('limitStat').textContent = statText;
+        }
     }
     var r2 = await api('/api/xwebd/config');
     if (!r2.error) {
@@ -1378,11 +1747,138 @@ async function refreshConfig() {
     var r3 = await api('/api/services');
     if (!r3.error) {
         var sd = r3.data || r3;
-        if (sd.transport_mode != null) {
-            $('cfgTransportMode').value = sd.transport_mode;
-        }
-        if (sd.custom_ws_url !== undefined) $('cfgCustomWsUrl').value = sd.custom_ws_url;
-        updateTransportModeUI();
+        S.svcData = sd;
+        /* 合并栏: 显示实际生效地址(自定义优先, 其次官方), 清空保存即恢复官方 */
+        $('cfgCustomWsUrl').value = sd.custom_ws_url || r.ws_url || '';
+        if (sd.audio_precache) $('cfgPrecache').checked = !!sd.audio_precache.enabled;
+    }
+}
+
+/* 音频预缓存开关(sair 域, 经 xwebd services/toggle) */
+async function togglePrecache(enable) {
+    if (!S.wl.connected) { $('cfgPrecache').checked = !enable; return; }
+    var action = enable ? 'enable' : 'disable';
+    var r = await api('/api/services/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: 'audio_precache', action: action }),
+    });
+    if (r.ok || !r.error) {
+        toast('音频预缓存已' + (enable ? '开启' : '关闭') + '（下次唤醒生效）', 'success');
+    } else {
+        toast('设置失败: ' + (r.error || ''), 'error');
+        $('cfgPrecache').checked = !enable;
+    }
+}
+
+/* 星期位图 <-> 勾选框（checkbox value 即位掩码 bit0=周日 .. bit6=周六） */
+function renderSchedDays(days) {
+    document.querySelectorAll('#schedDays input[type=checkbox]').forEach(function(cb) {
+        cb.checked = (days & parseInt(cb.value, 10)) !== 0;
+    });
+}
+
+function readSchedDays() {
+    var days = 0;
+    document.querySelectorAll('#schedDays input[type=checkbox]').forEach(function(cb) {
+        if (cb.checked) days |= parseInt(cb.value, 10);
+    });
+    return days;
+}
+
+/* ---- 多时段行(2026-08-31): HH:mm 输入, 存取转 HHMM ----
+ * spans csv: "1600-2000,2100-2200"; 行数 1..4, 可增删 */
+function schedSpanRows() { return document.querySelectorAll('#schedSpans .sched-span-row'); }
+
+function hhmmToDisplay(v) {
+    /* "1600" -> "16:00"; 容错原样返回 */
+    if (/^\d{4}$/.test(v)) return v.slice(0, 2) + ':' + v.slice(2);
+    return v || '';
+}
+function displayToHhmm(v) {
+    /* "16:00" -> "1600"; 非法返回 '' */
+    v = (v || '').replace(/\s/g, '');
+    var m = v.match(/^(\d{1,2}):(\d{2})$/);
+    if (m) return ('0' + m[1]).slice(-2) + m[2];
+    if (/^\d{4}$/.test(v)) return v;
+    return '';
+}
+
+function renderSchedSpans(csv) {
+    var box = $('schedSpans');
+    if (!box) return;
+    var spans = (csv || '').split(',').map(function(x) { return x.trim(); }).filter(Boolean);
+    if (!spans.length) spans = [''];
+    var html = '';
+    spans.forEach(function(sp, i) {
+        var parts = sp.split('-');
+        var a = hhmmToDisplay(parts[0] || '');
+        var b = hhmmToDisplay(parts[1] || '');
+        html += '<div class="sched-span-row">'
+            + '<span class="stat-label">时段</span>'
+            + '<input type="time" class="input-text sched-span-in" value="' + a + '">'
+            + '<span class="stat-label">至</span>'
+            + '<input type="time" class="input-text sched-span-in" value="' + b + '">'
+            + '<button type="button" class="btn btn-ghost btn-sm" onclick="removeSchedSpan(this)">删除</button>'
+            + '</div>';
+    });
+    box.innerHTML = html;
+}
+
+function addSchedSpan() {
+    if (schedSpanRows().length >= 4) { toast('最多 4 个时段', 'info'); return; }
+    var box = $('schedSpans');
+    var div = document.createElement('div');
+    div.className = 'sched-span-row';
+    div.innerHTML = '<span class="stat-label">时段</span>'
+        + '<input type="time" class="input-text sched-span-in">'
+        + '<span class="stat-label">至</span>'
+        + '<input type="time" class="input-text sched-span-in">'
+        + '<button type="button" class="btn btn-ghost btn-sm" onclick="removeSchedSpan(this)">删除</button>';
+    box.appendChild(div);
+}
+
+function removeSchedSpan(btn) {
+    var row = btn.closest('.sched-span-row');
+    if (schedSpanRows().length <= 1) { /* 只剩一行时清空而非删除 */ 
+        row.querySelectorAll('input').forEach(function(x) { x.value = ''; });
+        return;
+    }
+    row.remove();
+}
+
+function readSchedSpans() {
+    var out = [];
+    schedSpanRows().forEach(function(row) {
+        var ins = row.querySelectorAll('input.sched-span-in');
+        var a = displayToHhmm(ins[0] ? ins[0].value : '');
+        var b = displayToHhmm(ins[1] ? ins[1].value : '');
+        if (a && b) out.push(a + '-' + b);
+    });
+    return out;
+}
+
+/* AEC 选项仅 Realtime 模式有意义（AutoStop 一问一答、播放与收音不并行） */
+function updateAecVisibility() {
+    var group = $('aecModeGroup');
+    if (!group) return;
+    var realtime = $('cfgListeningMode').value === 'realtime';
+    group.style.display = realtime ? '' : 'none';
+}
+
+async function limitDelayNow(minutes) {
+    if (!S.wl.connected) { toast('请先连接设备', 'error'); return; }
+    var r = await api('/api/assistant/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ use_limit_delay_min: minutes }),
+    });
+    if (r.ok || !r.error) {
+        toast('已延长 ' + minutes + ' 分钟', 'success');
+        await new Promise(function(resolve) { setTimeout(resolve, 1200); });
+        await refreshConfig();
+    } else {
+        toast('延长失败: ' + (r.error || ''), 'error');
     }
 }
 
@@ -1476,8 +1972,10 @@ async function saveAssistantConfig() {
     if (mcpEndpoint) config.mcp_endpoint = mcpEndpoint;
     var logLevel = $('cfgSairLogLevel').value;
     if (logLevel) config.log_level = logLevel;
-    var listeningMode = $('cfgListeningMode').value;
-    if (listeningMode) config.listening_mode = listeningMode;
+    config.listening_mode = $('cfgListeningMode').value;
+    if (config.listening_mode === 'realtime') {
+        config.aec_mode = $('cfgAecMode').value || 'local';
+    }
     var listenTimeout = parseInt($('cfgListenTimeout').value);
     var sessionTimeout = parseInt($('cfgSessionTimeout').value);
     var wakeupCooldown = parseInt($('cfgWakeupCooldown').value);
@@ -1486,10 +1984,22 @@ async function saveAssistantConfig() {
     if (sessionTimeout > 0) config.session_timeout = sessionTimeout * 1000;
     if (wakeupCooldown > 0) config.wakeup_cooldown = wakeupCooldown * 1000;
     if (wsPingInterval > 0) config.ws_ping_interval = wsPingInterval * 1000;
-    var transportMode = parseInt($('cfgTransportMode').value);
-    if (transportMode >= 0 && transportMode <= 1) config.transport_mode = transportMode;
+    var screenOffSec = parseInt($('cfgScreenOffSec').value);
+    if (!isNaN(screenOffSec) && screenOffSec >= 0) config.screen_off_idle_sec = screenOffSec;
+    /* 每日使用时长限制 */
+    config.use_limit_enable = $('cfgLimitEnable').checked ? 1 : 0;
+    var limitMinutes = parseInt($('cfgLimitMinutes').value);
+    if (!isNaN(limitMinutes)) config.use_limit_minutes = limitMinutes;
+    config.use_limit_delay_tool = $('cfgLimitDelayTool').checked ? 1 : 0;
+    /* 多时段: "enable,days,1600-2000,2100-2200"(sair use_limit_spans 解析) */
+    config.use_limit_spans = [
+        $('cfgLimitSched').checked ? 1 : 0,
+        readSchedDays()
+    ].concat(readSchedSpans()).join(',');
+    /* 进阶选项 */
     var customWsUrl = $('cfgCustomWsUrl').value.trim();
     config.custom_ws_url = customWsUrl;
+    config.boot_push_disable = $('cfgBootPushDisable').checked ? 1 : 0;
     var r = await api('/api/assistant/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -1518,29 +2028,44 @@ async function saveXwebdConfig() {
 }
 
 async function restoreAssistantDefaults() {
-    if (!await showConfirm('确定恢复助手配置为默认值？', {icon: '🔄'})) return;
+    if (!await showConfirm('确定恢复助手配置为默认值？（使用时长限制一并重置）', {icon: '🔄'})) return;
     $('cfgMcpEndpoint').value = '';
     $('cfgSairLogLevel').value = 'INFO';
-    $('cfgListeningMode').value = 'realtime';
+    $('cfgListeningMode').value = 'autostop';
+    $('cfgAecMode').value = 'local';
+    updateAecVisibility();
     $('cfgListenTimeout').value = '120';
     $('cfgSessionTimeout').value = '300';
     $('cfgWakeupCooldown').value = '3';
     $('cfgWsPingInterval').value = '25';
-    $('cfgTransportMode').value = '0';
+    $('cfgScreenOffSec').value = '0';
     $('cfgCustomWsUrl').value = '';
+    $('cfgBootPushDisable').checked = false;
+    $('cfgLimitEnable').checked = false;
+    $('cfgLimitMinutes').value = '60';
+    $('cfgLimitDelayTool').checked = false;
+    $('cfgLimitSched').checked = false;
+    renderSchedSpans('');
+    renderSchedDays(127);
     var r = await api('/api/assistant/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             mcp_endpoint: '',
             log_level: 'INFO',
-            listening_mode: 'realtime',
+            listening_mode: 'autostop',
+            aec_mode: 'local',
             listen_timeout: 120000,
             session_timeout: 300000,
             wakeup_cooldown: 3000,
             ws_ping_interval: 25000,
-            transport_mode: 0,
-            custom_ws_url: ''
+            screen_off_idle_sec: 0,
+            custom_ws_url: '',
+            boot_push_disable: 0,
+            use_limit_enable: 0,
+            use_limit_minutes: 60,
+            use_limit_delay_tool: 0,
+            use_limit_sched: '0,127,,'
         }),
     });
     if (r.ok || !r.error) {
@@ -1894,14 +2419,12 @@ function showWirelessOverlays() {
     showOverlay('deviceOverlay');
     showOverlay('xwebdOverlay');
     showOverlay('processOverlay');
-    showOverlay('serviceOverlay');
     showOverlay('assistantOverlay');
 }
 function hideWirelessOverlays() {
     hideOverlay('deviceOverlay');
     hideOverlay('xwebdOverlay');
     hideOverlay('processOverlay');
-    hideOverlay('serviceOverlay');
     hideOverlay('assistantOverlay');
 }
 
@@ -2229,7 +2752,12 @@ function disconnectDeviceSSE(source) {
 async function refreshFiles() {
     if (!S.wl.connected) return;
     var r = await api('/api/files?path=' + encodeURIComponent(S.currentPath));
-    if (r.error) return;
+    if (r.error) {
+        if (r.error.indexOf('not installed') >= 0) {
+            $('fileContainer').innerHTML = '<div class="empty-state">文件管理插件（files）未安装<br>在「插件管理」中安装后可用</div>';
+        }
+        return;
+    }
     var d = r.data || r;
     var files = d.files || [];
     var container = $('fileContainer');
@@ -2333,50 +2861,21 @@ async function runDiag() {
     btn.disabled = true;
     btn.textContent = '检测中...';
 
-    var assistantEnvResult = null, assistantResult = null;
-    try { var aer = await api('/api/assistant/env'); assistantEnvResult = aer.items ? aer : (aer.data ? aer.data : null); } catch(e) {}
-    try { var ar = await api('/api/assistant/diag'); assistantResult = ar.items ? ar : (ar.data ? ar.data : null); } catch(e) {}
-
+    /* 助手环境(env: 库/音频服务/WiFi) + 运行时健康(diag: 配置/看门狗/WS/电池) */
     var allItems = [];
-    if (assistantEnvResult) {
-        var envItems = assistantEnvResult.items || [];
-        for (var i = 0; i < envItems.length; i++) allItems.push(envItems[i]);
-    }
-    if (assistantResult) {
-        var diagItems = assistantResult.items || [];
-        for (var j = 0; j < diagItems.length; j++) allItems.push(diagItems[j]);
-    }
+    try {
+        var aer = await api('/api/assistant/env');
+        var envResult = aer.items ? aer : (aer.data ? aer.data : null);
+        if (envResult) allItems = allItems.concat(envResult.items || []);
+    } catch(e) {}
+    try {
+        var ar = await api('/api/assistant/diag');
+        var diagResult = ar.items ? ar : (ar.data ? ar.data : null);
+        if (diagResult) allItems = allItems.concat(diagResult.items || []);
+    } catch(e) {}
 
-    if (!allItems.length) {
-        container.innerHTML = '<div class="empty-state">请先无线连接设备</div>';
-        btn.disabled = false;
-        btn.textContent = '运行自检';
-        return;
-    }
-
-    var html = '<div class="diag-items">';
-    for (var k = 0; k < allItems.length; k++) {
-        html += '<div class="diag-item diag-item-pending" data-diag-idx="' + k + '">';
-        html += '<span class="diag-item-icon diag-icon-spinner"></span>';
-        html += '<span class="diag-item-name">' + allItems[k].name + '</span>';
-        html += '<span class="diag-item-msg">检测中...</span>';
-        html += '</div>';
-    }
-    html += '</div>';
-    container.innerHTML = html;
-
-    for (var m = 0; m < allItems.length; m++) {
-        await new Promise(function(resolve) { setTimeout(resolve, 80 + Math.random() * 120); });
-        var item = allItems[m];
-        var el = container.querySelector('[data-diag-idx="' + m + '"]');
-        if (!el) continue;
-        var cls = item.ok ? 'diag-item-ok' : 'diag-item-fail';
-        var icon = item.ok ? '&#10003;' : '&#10007;';
-        el.className = 'diag-item ' + cls;
-        el.querySelector('.diag-item-icon').className = 'diag-item-icon';
-        el.querySelector('.diag-item-icon').innerHTML = icon;
-        el.querySelector('.diag-item-msg').textContent = item.message;
-    }
+    if (allItems.length) await renderDiagItemsProgressive(container, allItems);
+    else container.innerHTML = '<div class="empty-state">请先无线连接设备</div>';
 
     btn.disabled = false;
     btn.textContent = '运行自检';
@@ -2398,14 +2897,16 @@ async function runWiredDiag() {
         envResult = er.items ? er : (er.data ? er.data : null);
     } catch(e) {}
 
-    if (!envResult) {
-        container.innerHTML = '<div class="empty-state">环境自检失败，请检查ADB连接</div>';
-        btn.disabled = false;
-        btn.textContent = '运行自检';
-        return;
-    }
+    if (envResult) await renderDiagItemsProgressive(container, envResult.items || []);
+    else container.innerHTML = '<div class="empty-state">环境自检失败，请检查ADB连接</div>';
 
-    var items = envResult.items || [];
+    btn.disabled = false;
+    btn.textContent = '运行自检';
+}
+
+/* 诊断项渐进渲染(2026-08-31 自 runDiag/runWiredDiag 重复实现统一抽出):
+ * 先全部渲染 spinner, 再逐项翻出结果 */
+async function renderDiagItemsProgressive(container, items) {
     var html = '<div class="diag-items">';
     for (var k = 0; k < items.length; k++) {
         html += '<div class="diag-item diag-item-pending" data-diag-idx="' + k + '">';
@@ -2416,54 +2917,27 @@ async function runWiredDiag() {
     }
     html += '</div>';
     container.innerHTML = html;
-
     for (var m = 0; m < items.length; m++) {
         await new Promise(function(resolve) { setTimeout(resolve, 80 + Math.random() * 120); });
-        var item = items[m];
         var el = container.querySelector('[data-diag-idx="' + m + '"]');
         if (!el) continue;
-        var cls = item.ok ? 'diag-item-ok' : 'diag-item-fail';
-        var icon = item.ok ? '&#10003;' : '&#10007;';
-        el.className = 'diag-item ' + cls;
+        var item = items[m];
+        el.className = 'diag-item ' + (item.ok ? 'diag-item-ok' : 'diag-item-fail');
         el.querySelector('.diag-item-icon').className = 'diag-item-icon';
-        el.querySelector('.diag-item-icon').innerHTML = icon;
+        el.querySelector('.diag-item-icon').innerHTML = item.ok ? '&#10003;' : '&#10007;';
         el.querySelector('.diag-item-msg').textContent = item.message;
     }
-
-    btn.disabled = false;
-    btn.textContent = '运行自检';
-}
-
-function renderDiagSection(title, result) {
-    var items = result.items || [];
-    var okCount = result.ok_count || items.filter(function(i) { return i.ok; }).length;
-    var failCount = result.fail_count || items.filter(function(i) { return !i.ok; }).length;
-    var total = result.total || items.length;
-    var allOk = failCount === 0;
-    var html = '<div class="diag-section">';
-    html += '<div class="diag-section-header">';
-    html += '<span class="diag-section-title">' + title + '</span>';
-    html += '<span class="diag-badge ' + (allOk ? 'diag-badge-ok' : 'diag-badge-fail') + '">';
-    html += allOk ? '全部通过' : (okCount + '/' + total + ' 通过');
-    html += '</span></div>';
-    html += '<div class="diag-items">';
-    items.forEach(function(item) {
-        var cls = item.ok ? 'diag-item-ok' : 'diag-item-fail';
-        var icon = item.ok ? '&#10003;' : '&#10007;';
-        html += '<div class="diag-item ' + cls + '">';
-        html += '<span class="diag-item-icon">' + icon + '</span>';
-        html += '<span class="diag-item-name">' + item.name + '</span>';
-        html += '<span class="diag-item-msg">' + item.message + '</span>';
-        html += '</div>';
-    });
-    html += '</div></div>';
-    return html;
 }
 
 // ==================== Help ====================
 
 function showHelp() { $('helpModal').style.display = 'flex'; }
 function closeHelp() { $('helpModal').style.display = 'none'; }
+
+/* 每日动画拦截: 已知死锁缺陷, panel 侧禁用安装(2026-08-31)
+ * 详见开发文档《每日动画拦截死锁调查》; 代码保留待修复后重新开放 */
+function showBootPushDisabled() { $('bootPushModal').style.display = 'flex'; }
+function closeBootPushDisabled() { $('bootPushModal').style.display = 'none'; }
 
 // ==================== Emergency Nuke ====================
 
@@ -2584,25 +3058,42 @@ document.addEventListener('DOMContentLoaded', function() {
     updateSairLocks();
     renderMcpTools();
 
-    document.querySelectorAll('.svc-list,.file-container,.log-container,.diag-container,.mcp-tools-list,.adb-device-list,.modal').forEach(function(el) {
-        el.addEventListener('wheel', function(e) {
-            var st = el.scrollTop;
-            var atTop = st <= 0;
-            var atBottom = st + el.clientHeight >= el.scrollHeight;
-            if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
-                e.preventDefault();
-            }
-        }, { passive: false });
+    /* 后台标签页暂停设备轮询(2026-08-31 性能优化):
+     * EventSource 挂后台不会断, 每条SSE流驱动 panel server 每5s全量拉设备
+     * /api/logs + 前端 5s 状态轮询——面板忘在后台也持续打设备。切走即停,
+     * 切回即恢复, 页面可见时行为不变 */
+    document.addEventListener('visibilitychange', function() {
+        if (S.mode !== 'wireless' || !S.wl.connected) return;
+        if (document.hidden) {
+            stopPolling();
+        } else {
+            startPolling();
+            refreshStatus();
+        }
     });
 
+    /* ---- 局部滚动传播统一规范(2026-08-31) ----
+     * 规则(所有局部滚动容器一份逻辑, 全局委托, 新增容器自动纳入):
+     *   有滚动条且未到边界 -> 默认行为滚动该容器
+     *   有滚动条且已到边界 -> 阻断, 不向上层递进(整页不滚)
+     *   无滚动条(内容全展示) -> 不拦截, 向上层递进(整页滚)
+     * 替代此前两套并行实现: 逐容器绑定(选择器硬编码易漏)
+     * + .process-table-scroll 专用 document 委托 */
     document.addEventListener('wheel', function(e) {
-        var el = e.target.closest('.process-table-scroll');
-        if (!el) return;
-        var st = el.scrollTop;
-        var atTop = st <= 0;
-        var atBottom = st + el.clientHeight >= el.scrollHeight;
-        if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
-            e.preventDefault();
+        var el = e.target;
+        while (el && el !== document.documentElement) {
+            var oy = window.getComputedStyle(el).overflowY;
+            if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 1) {
+                var st = el.scrollTop;
+                var atTop = st <= 0;
+                /* -1 容差: DPI 缩放下 scrollTop/scrollHeight 可带小数, 差 1px 内视为到边 */
+                var atBottom = st + el.clientHeight >= el.scrollHeight - 1;
+                if ((atTop && e.deltaY < 0) || (atBottom && e.deltaY > 0)) {
+                    e.preventDefault();
+                }
+                return; /* 只管最近一层可滚容器 */
+            }
+            el = el.parentElement;
         }
     }, { passive: false });
 
@@ -2613,6 +3104,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     $('cfgListeningMode').addEventListener('change', function() {
+        updateAecVisibility();
         var mode = this.value;
         var label = mode === 'realtime' ? 'Realtime（实时模式）' : 'AutoStop（自动停止）';
         toast('监听模式已切换为 ' + label + '，点击「保存配置」生效', 'info');
@@ -2621,4 +3113,14 @@ document.addEventListener('DOMContentLoaded', function() {
     connectPanelSSE();
     refreshLogPanel('panel', false);
     window.addEventListener('resize', updateViewportHeight);
+
+    // 滚动 bug 修复: viewport 高度此前只在模式切换/个别数据回调时重算,
+    // 无线页内容异步加载晚于量高时底部被 overflow:hidden 裁掉(滚不动),
+    // 切换模式再切回才恢复。ResizeObserver 盯住两页, 内容变高自动跟随。
+    // (page 宽度恒为 50% 与 viewport 高度无关, 不会造成回调循环)
+    if (window.ResizeObserver) {
+        var ro = new ResizeObserver(function () { updateViewportHeight(); });
+        ro.observe($('wiredPage'));
+        ro.observe($('wirelessPage'));
+    }
 });

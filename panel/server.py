@@ -22,6 +22,7 @@ import time
 from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote as url_quote
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 import webbrowser
 import threading
 import subprocess
@@ -302,6 +303,149 @@ def _api_services(handler, xwebd, body, query):
 @_requires_xwebd
 def _api_services_toggle(handler, xwebd, body, query):
     return xwebd._request("POST", "/api/services/toggle", data=body)
+
+
+@_api_route("GET", "/api/backlight")
+@_requires_xwebd
+def _api_backlight_get(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/backlight")
+
+
+@_api_route("PUT", "/api/backlight")
+@_requires_xwebd
+def _api_backlight_put(handler, xwebd, body, query):
+    return xwebd._request("PUT", "/api/backlight", data=body)
+
+
+@_api_route("GET", "/api/usb/mode")
+@_requires_xwebd
+def _api_usb_mode_get(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/usb/mode")
+
+
+@_api_route("GET", "/api/plugin/battery/status")
+@_requires_xwebd
+def _api_battery_status(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/plugin/battery/status")
+
+
+@_api_route("GET", "/api/diag")
+@_requires_xwebd
+def _api_xwebd_diag(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/diag")
+
+
+@_api_route("GET", "/api/plugins")
+@_requires_xwebd
+def _api_plugins(handler, xwebd, body, query):
+    return xwebd._request("GET", "/api/plugins")
+
+
+@_api_route("POST", "/api/plugins/restart")
+@_requires_xwebd
+def _api_plugins_restart(handler, xwebd, body, query):
+    return xwebd._request("POST", "/api/plugins/restart", data=body)
+
+
+@_api_route("POST", "/api/plugins/remove")
+@_requires_xwebd
+def _api_plugins_remove(handler, xwebd, body, query):
+    return xwebd._request("POST", "/api/plugins/remove", data=body)
+
+
+@_api_route("POST", "/api/plugins/install")
+@_requires_xwebd
+def _api_plugins_install(handler, xwebd, body, query):
+    return xwebd._request("POST", "/api/plugins/install", data=body)
+
+
+def _scan_local_plugins():
+    """扫描本仓库已构建的插件包 + 源码目录自述文本(xwplug_<name>.txt)
+
+    Returns:
+        dict: {"plugins": [{name, cn, desc, detail, size_kb, mtime}], "error": ...}
+    """
+    base = os.path.dirname(os.path.abspath(__file__))
+    build_dir = os.path.join(base, "..", "device", "xwebd", "build", "plugins")
+    src_dir = os.path.join(base, "..", "device", "xwebd", "plugins")
+    if not os.path.isdir(build_dir):
+        return {"error": "未找到已构建的插件目录（device/xwebd/build/plugins），请先运行 build_plugins.sh"}
+    result = []
+    for fn in sorted(os.listdir(build_dir)):
+        if not fn.startswith("xwplug-"):
+            continue
+        name = fn[len("xwplug-"):]
+        bin_path = os.path.join(build_dir, fn)
+        info = {
+            "name": name,
+            "cn": name,
+            "desc": "无自述文本（源码目录缺少 xwplug_%s.txt）" % name,
+            "detail": "",
+            "size_kb": round(os.path.getsize(bin_path) / 1024, 1),
+        }
+        txt_path = os.path.join(src_dir, "xwplug_%s.txt" % name)
+        if os.path.exists(txt_path):
+            try:
+                with open(txt_path, "r", encoding="utf-8") as f:
+                    detail_lines = []
+                    in_detail = False
+                    for line in f:
+                        line = line.rstrip("\r\n")
+                        if line.startswith("名称:"):
+                            info["cn"] = line[3:].strip()
+                        elif line.startswith("简介:"):
+                            info["desc"] = line[3:].strip()
+                        elif line.startswith("详情:"):
+                            in_detail = True
+                            rest = line[3:].strip()
+                            if rest:
+                                detail_lines.append(rest)
+                        elif in_detail and line.strip():
+                            detail_lines.append(line.strip())
+                    info["detail"] = " ".join(detail_lines)
+            except Exception as e:
+                logger.warning("读取插件自述失败 %s: %s", txt_path, e)
+        result.append(info)
+    return {"plugins": result}
+
+
+@_api_route("GET", "/api/plugins/local")
+def _api_plugins_local(handler, xwebd, body, query):
+    return _scan_local_plugins()
+
+
+@_api_route("POST", "/api/plugins/install-local")
+@_requires_xwebd
+def _api_plugins_install_local(handler, xwebd, body, query):
+    """从本仓库构建目录读取插件二进制, 上传设备并安装"""
+    name = (body or {}).get("name", "")
+    if not name or not name.replace("_", "").replace("-", "").isalnum():
+        return {"error": "无效的插件名称"}, 400
+    base = os.path.dirname(os.path.abspath(__file__))
+    bin_path = os.path.join(base, "..", "device", "xwebd", "build", "plugins", "xwplug-" + name)
+    if not os.path.exists(bin_path):
+        return {"error": "本地不存在插件 xwplug-%s（请先构建）" % name}, 404
+    with open(bin_path, "rb") as f:
+        data = f.read()
+    # 设备端 /api/files/upload 只收 multipart; octet-stream 走 /api/upload
+    # (与 sair/xwebd 部署同通道), install 的 path 指向上传落点
+    upload_r = xwebd._request("POST", "/api/upload",
+                              body=data,
+                              headers={"Content-Type": "application/octet-stream",
+                                       "X-Filename": "xwplug-" + name},
+                              timeout=60)
+    if not upload_r or upload_r.get("error"):
+        return {"error": "上传失败: " + (upload_r.get("error", "") if upload_r else "连接失败")}, 500
+    install_r = xwebd._request("POST", "/api/plugins/install",
+                               body=json.dumps({"name": name, "path": "/var/upgrade/xwplug-" + name}).encode(),
+                               headers={"Content-Type": "application/json"},
+                               timeout=30)
+    if not install_r:
+        return {"ok": True, "name": name}
+    if install_r.get("error"):
+        return {"error": "安装失败: " + install_r.get("error", "")}, 500
+    logger.info("本地插件安装: %s (%d bytes)", name, len(data))
+    return {"ok": True, "name": name}
 
 
 @_api_route("GET", "/api/panel/logs/stream")
@@ -691,6 +835,16 @@ def _api_files_download(handler, xwebd, body, query):
             handler.send_header("Content-Length", str(len(data)))
             handler.end_headers()
             handler.wfile.write(data)
+    except HTTPError as e:
+        # 设备端拒绝(如 400 越权路径): 透传状态码
+        try:
+            err = json.loads(e.read().decode("utf-8"))
+            if not isinstance(err, dict):
+                err = {}
+        except Exception:
+            err = {}
+        err.setdefault("error", f"HTTP {e.code}")
+        return err, e.code
     except Exception as e:
         return {"error": str(e)}, 500
     return _STREAM_SENTINEL
@@ -1237,6 +1391,20 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
                 return
         logger.debug("%s - %s", self.client_address[0], msg)
 
+    def handle_one_request(self):
+        """覆盖基类方法，吞掉客户端在请求建立阶段即断开连接产生的异常。
+
+        典型场景：浏览器/SSE 客户端在连接建立后立即断开（WinError 10053），
+        基类会在读取请求行时抛出 ConnectionAbortedError，这里静默忽略以避免刷屏
+        （main 分支实测修复，同步自成品仓库）。
+        """
+        try:
+            super().handle_one_request()
+        except (ConnectionAbortedError, BrokenPipeError, OSError):
+            self.close_connection = True
+        except Exception:
+            self.close_connection = True
+
     def _send_json(self, data, status=200):
         """发送 JSON 格式的 HTTP 响应
 
@@ -1249,7 +1417,11 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (ConnectionAbortedError, BrokenPipeError, OSError):
+            # 客户端(浏览器/SSE)在响应返回前已断开, 属正常情况, 静默忽略
+            pass
 
     def _send_file(self, filepath, content_type):
         """发送静态文件作为 HTTP 响应
@@ -1270,11 +1442,16 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         """读取并解析 HTTP 请求体中的 JSON 数据
 
         Returns:
-            dict: 解析后的 JSON 数据，无请求体时返回空字典
+            dict: 解析后的 JSON 数据，无请求体时返回空字典；
+            None: 请求体存在但不是合法 JSON（调用处应回 400）
         """
         length = int(self.headers.get("Content-Length", 0))
         if length > 0:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                return None
         return {}
 
     def do_GET(self):
@@ -1319,6 +1496,9 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
                 self._handle_api("POST", path, None, query)
             else:
                 data = self._read_body()
+                if data is None:
+                    self._send_json({"error": "Invalid JSON body"}, 400)
+                    return
                 self._handle_api("POST", path, data, query)
         else:
             self.send_error(404)
@@ -1335,6 +1515,9 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         if path.startswith("/api/"):
             data = self._read_body()
+            if data is None:
+                self._send_json({"error": "Invalid JSON body"}, 400)
+                return
             self._handle_api("PUT", path, data, query)
         else:
             self.send_error(404)
@@ -1483,6 +1666,10 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
                 data, status = result
             else:
                 data, status = result, 200
+            # 代理层设备端错误(dict 含 error+status)透传原状态码, 如 400 越权路径
+            if (status == 200 and isinstance(data, dict)
+                    and "error" in data and isinstance(data.get("status"), int)):
+                status = data["status"]
             self._send_json(data, status)
             return
         if not xwebd and (path.startswith("/api/assistant/") or path.startswith("/api/files/") or path == "/api/upload-progress"):

@@ -15,6 +15,7 @@ import time
 import logging
 import threading
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 from urllib.error import URLError, HTTPError
 from config import DEFAULT_DEVICE_HOST, DEFAULT_XWEBD_PORT
 
@@ -92,7 +93,9 @@ class XwebdAPI:
             req_body = body
             req_headers = headers or {"Content-Type": "application/octet-stream"}
         elif data is not None:
-            req_body = json.dumps(data).encode("utf-8")
+            # 紧凑分隔符: 设备端手写 JSON 解析器对宽松格式("key": val 带空格)
+            # 的键边界判定有历史缺陷, 紧凑输出规避(解析器已同步修复, 双保险)
+            req_body = json.dumps(data, separators=(",", ":")).encode("utf-8")
             req_headers = headers or {"Content-Type": "application/json"}
         else:
             req_body = None
@@ -101,9 +104,32 @@ class XwebdAPI:
         logger.debug("-> %s %s", method, path)
         try:
             with urlopen(req, timeout=timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
+                raw = resp.read()
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    # 设备端日志可能混入非 UTF-8 字节(GBK 中文/脏数据),
+                    # 容错解码避免整次请求因单个坏字节失败(main 分支实测修复)
+                    text = raw.decode("utf-8", errors="replace")
+                try:
+                    result = json.loads(text)
+                except json.JSONDecodeError:
+                    # 响应非合法 JSON(HTML 错误页/截断), 原样回退文本
+                    result = {"raw": text}
                 logger.debug("<- %s %s: ok", method, path)
                 return result
+        except HTTPError as e:
+            # 设备端 4xx/5xx: 解析错误应答并带上状态码(供路由层透传)
+            logger.warning("<- %s %s: HTTP %s", method, path, e.code)
+            try:
+                result = json.loads(e.read().decode("utf-8"))
+                if not isinstance(result, dict):
+                    result = {}
+            except Exception:
+                result = {}
+            result.setdefault("error", f"HTTP {e.code}")
+            result["status"] = e.code
+            return result
         except Exception as e:
             logger.warning("<- %s %s: %s", method, path, e)
             return {"error": str(e)}

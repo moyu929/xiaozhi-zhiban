@@ -1,4 +1,8 @@
+# build/ 通用忽略, 但放行成品插件二进制(panel 本地安装源)
 build/
+!device/xwebd/build/
+device/xwebd/build/*
+!device/xwebd/build/plugins/
 __pycache__/
 *.o
 *.pyc
