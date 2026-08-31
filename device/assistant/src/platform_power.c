@@ -121,16 +121,24 @@ static void *media_play_thread(void *arg)
     }
     PLOG_I("PW", "播放提示音: %s", path);
 
-    /* 轮询播完: cur 到 total 或 30s 超时兜底 */
+    /* 轮询播完(纯停滞检测, 30s 超时兜底):
+     * 不用 cur>=total 判定——music_player 对 16kHz 单声道 mp3 报的
+     * total 偏短(实测 4.0s 文件报 ~3.5s), 到 total 即 stop 会截掉
+     * 末尾 ~0.5s, 末字戛然而止(2026-08-31 实测事故). 改等播放位置
+     * 真正停滞(播完引擎归位): cur 连续 3 轮(1.5s)不变视为播完.
+     * 启动期(cur 尚为 0)不许停滞退出, 防未播先停 */
+    int prev_cur = -1;
+    int stagnant = 0;
     for (int i = 0; i < 60; i++)
     {
         usleep(500 * 1000);
-        if (f_cur && f_total)
-        {
-            int cur = f_cur(mp), total = f_total(mp);
-            if (total > 0 && cur >= total - 1)
-                break;
-        }
+        if (!f_cur)
+            continue;
+        int cur = f_cur(mp);
+        stagnant = (cur == prev_cur) ? stagnant + 1 : 0;
+        prev_cur = cur;
+        if (stagnant >= 3 && (cur > 0 || i >= 6))
+            break;
     }
     f_stop(mp);
     f_close(mp); /* 内含 stop_service, music_player 进程随之退出 */
