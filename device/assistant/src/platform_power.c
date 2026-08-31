@@ -61,14 +61,25 @@ typedef int (*mp_handle_fn)(void *);
 typedef int (*mp_set_file_fn)(void *, const char *);
 typedef int (*mp_time_fn)(void *);
 
+/* 提示音播放中标志: media_play_thread 存续期置位, use_limit 据此
+ * 在播放期+播后冷却窗内静默拦截唤醒(提示音人声被 ASR 误判自我触发) */
+static volatile int g_media_playing = 0;
+
+int platform_media_is_playing(void)
+{
+    return g_media_playing;
+}
+
 static void *media_play_thread(void *arg)
 {
     char *path = (char *)arg;
+    g_media_playing = 1;
 
     void *h = dlopen("libmusic_player_api.so", RTLD_NOW);
     if (!h)
     {
         PLOG_W("PW", "libmusic_player_api 加载失败: %s", dlerror());
+        g_media_playing = 0;
         free(path);
         return NULL;
     }
@@ -82,6 +93,7 @@ static void *media_play_thread(void *arg)
     if (!f_open || !f_set || !f_play || !f_stop || !f_close)
     {
         PLOG_W("PW", "music_player API 符号缺失");
+        g_media_playing = 0;
         free(path);
         return NULL;
     }
@@ -90,6 +102,7 @@ static void *media_play_thread(void *arg)
     if (!mp)
     {
         PLOG_W("PW", "mp_open 失败: %s", path);
+        g_media_playing = 0;
         free(path);
         return NULL;
     }
@@ -102,6 +115,7 @@ static void *media_play_thread(void *arg)
     {
         PLOG_W("PW", "mp_set_file/mp_play 失败: %s", path);
         f_close(mp);
+        g_media_playing = 0;
         free(path);
         return NULL;
     }
@@ -120,6 +134,7 @@ static void *media_play_thread(void *arg)
     }
     f_stop(mp);
     f_close(mp); /* 内含 stop_service, music_player 进程随之退出 */
+    g_media_playing = 0;
     PLOG_I("PW", "提示音播完: %s", path);
     free(path);
     return NULL;

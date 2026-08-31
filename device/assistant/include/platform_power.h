@@ -54,6 +54,16 @@ void platform_tts_play(int id);
  */
 int platform_media_play_file(const char *path);
 
+/**
+ * @brief 提示音是否仍在播放(music_player 后台线程存续期)
+ *
+ * use_limit 提示音走原生通道, ASR 无 AEC 听到提示音人声会误判唤醒;
+ * 调用方在播放期+播后冷却窗内应静默拦截唤醒, 否则提示音自我触发
+ * 成 5s 一轮的重播死循环(2026-08-31 实测)。
+ * @return 1=播放线程在跑, 0=空闲
+ */
+int platform_media_is_playing(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -2284,14 +2284,19 @@ static void check_timeouts(app_context_t *app)
  */
 static void process_pending_wakeup(app_context_t *app)
 {
-    /* 每日使用时限闸门: 达限后不连接服务器/不播回复, 仅提醒音一次(§四) */
-    if (use_limit_should_block_wakeup())
-    {
-        return;
-    }
-
+    /* 先判事件再进闸门: use_limit 拦截含播提示音副作用, 若放在 pending
+     * 判定之前, 主循环每轮都评估它, 冷却窗一过就重播——不需要任何唤醒
+     * 事件也能无限循环(2026-08-31 循环播放事故, 实测 3.7s 音+8s 窗=11.7s 周期) */
     if (!app->pending_wakeup)
         return;
+
+    /* 每日使用时限闸门: 达限后不连接服务器/不播回复, 仅提醒音一次(§四)
+     * 拦截同样要消费 pending_wakeup, 防事件悬挂 */
+    if (use_limit_should_block_wakeup())
+    {
+        app->pending_wakeup = 0;
+        return;
+    }
     app->pending_wakeup = 0;
 
     xiaozhi_state_t state = state_machine_get_state(&app->sm);

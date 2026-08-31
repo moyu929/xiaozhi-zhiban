@@ -474,11 +474,20 @@ int use_limit_should_block_wakeup(void)
         return 0;
 
     /* 每次唤醒都播提示(2026-08-30 用户决策): 只播一次会让孩子以为设备坏了.
-     * 加 5s 节流防轰炸: 唤醒引擎在提示音播放中会连续误触发(实测 200ms/次
-     * 提示风暴), 同窗口内静默拦截不重播; 窗口外下一次唤醒照常播 */
+     * 唤醒引擎在提示音播放中会连续误触发(实测 200ms/次提示风暴).
+     * 2026-08-31 死循环事故: 提示音走原生 music_player 通道, ASR 无 AEC,
+     * 提示音人声自己触发唤醒, 播完 1.4s 后重播, 每 5s 一轮无限循环.
+     * 修: 播放期(platform_media_is_playing)静默拦截并持续推节流窗,
+     * 播完后冷却窗(8s, 覆盖尾音延迟判定)内同样静默不重播 */
+#define UL_PROMPT_COOLDOWN_MS 8000
     static uint64_t last_prompt_ms = 0;
     uint64_t now = ul_now_ms();
-    if (last_prompt_ms == 0 || now - last_prompt_ms >= 5000)
+    if (platform_media_is_playing())
+    {
+        last_prompt_ms = now;
+        return 1;
+    }
+    if (last_prompt_ms == 0 || now - last_prompt_ms >= UL_PROMPT_COOLDOWN_MS)
     {
         last_prompt_ms = now;
         PLOG_I("UL", "唤醒被限时拦截(达限锁=%d 时段锁=%d), 播提示(id=%d)",
