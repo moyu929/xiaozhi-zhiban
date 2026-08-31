@@ -599,7 +599,10 @@ def get_device_ip(serial=None):
     Returns:
         str: IP 地址字符串，获取失败返回 None
     """
+    # busybox 精简环境无 ip 命令(实测出厂设备), 双路兜底: ip 失败走 ifconfig
     r = _adb(["shell", "ip addr show wlan0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1"], serial=serial)
+    if not (r["ok"] and r["stdout"].strip()):
+        r = _adb(["shell", "ifconfig wlan0 2>/dev/null | grep 'inet addr' | awk '{print $2}' | cut -d: -f2"], serial=serial)
     if r["ok"] and r["stdout"].strip():
         ip = r["stdout"].strip()
         logger.debug("设备IP: %s", ip)
