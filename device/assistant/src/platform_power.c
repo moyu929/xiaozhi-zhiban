@@ -89,7 +89,8 @@ static void *media_play_thread(void *arg)
     mp_handle_fn f_stop = (mp_handle_fn)dlsym(h, "mp_stop");
     mp_handle_fn f_close = (mp_handle_fn)dlsym(h, "mp_close");
     mp_time_fn f_cur = (mp_time_fn)dlsym(h, "mp_get_cur_time");
-    mp_time_fn f_total = (mp_time_fn)dlsym(h, "mp_get_total_time");
+    /* mp_get_total_time 已不用: 该值对 16kHz 单声道 mp3 偏短(4.0s 报 3.5s),
+     * 详见下方停滞检测注释 */
     if (!f_open || !f_set || !f_play || !f_stop || !f_close)
     {
         PLOG_W("PW", "music_player API 符号缺失");
