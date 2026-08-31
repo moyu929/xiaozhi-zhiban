@@ -320,29 +320,52 @@ body {
 .grid-3col .card {
   padding: 16px 14px;
 }
+/* 助手管理卡(2026-08-31): 左右栏独立滚动 + 按钮区固定卡片底部不随栏滚动 */
 .assistant-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.assistant-body {
   display: flex;
   gap: 20px;
 }
 .assistant-left {
   flex: 1;
   min-width: 0;
+  overflow-y: auto;
+  max-height: 460px;
+  padding-right: 6px;
 }
 .assistant-right {
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
+  overflow-y: auto;
+  max-height: 460px;
+  padding-right: 6px;
 }
 .assistant-right .mcp-tools-list {
-  flex: 1;
-  overflow-y: auto;
   min-height: 240px;
+}
+.assistant-actions {
+  border-top: 1px solid var(--border-color);
+  padding-top: 12px;
+  background: var(--bg-card);
+}
+.assistant-actions .btn-row-even {
+  margin-top: 0;
+}
+.assistant-actions .btn-row-even + .btn-row-even {
+  margin-top: 8px;
+}
+.assistant-actions .btn {
+  padding: 6px 12px;
+  font-size: 12px;
 }
 
 @media (max-width: 900px) {
   .grid-2col, .grid-3col, .grid-2-1 { grid-template-columns: 1fr; }
-  .assistant-layout { flex-direction: column; }
+  .assistant-body { flex-direction: column; }
   .timeout-row { grid-template-columns: 1fr 1fr; }
   .nav { padding: 0 16px; flex-wrap: wrap; height: auto; padding: 12px 16px; gap: 8px; }
   .nav-actions { flex-wrap: wrap; }
@@ -1611,10 +1634,3 @@ body {
 }
 .batt-kv-label { font-size: var(--fs-label); color: var(--text-muted); white-space: nowrap; }
 .batt-kv-value { font-size: var(--fs-sub); color: var(--text-primary); font-weight: 500; text-align: right; }
-
-/* 助手管理卡: 主体滚动(折叠项展开后卡片不过度拉长, 2026-08-31) */
-.assistant-layout {
-  max-height: 620px;
-  overflow-y: auto;
-  padding-right: 6px;
-}

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>小智 · 智伴</title>
-<link rel="stylesheet" href="/style.css?v=32">
+<link rel="stylesheet" href="/style.css?v=33">
 </head>
 <body>
 <canvas id="particles"></canvas>
@@ -275,6 +275,7 @@
         <section class="card" id="assistantSection" style="margin-bottom:16px">
           <div class="card-header"><h2>语音助手管理</h2><div class="card-actions"><span class="conn-status" id="assistantConnStatus"><span class="conn-dot disconnected"></span>未连接</span></div></div>
           <div class="assistant-layout">
+            <div class="assistant-body">
             <div class="assistant-left">
               <div class="service-status" style="flex-wrap:wrap">
                 <span id="assistantInstalled" class="stat-value">--</span>
@@ -401,16 +402,21 @@
                 </div>
               </details>
 
-              <div style="display:flex;gap:8px;margin-bottom:12px;margin-top:4px">
+            </div>
+            <div class="assistant-right">
+              <div class="form-label-row"><label class="form-label">MCP 工具 <span class="tip-ico" data-tip="助手固件内置的工具集，语音对话中可自然语言调用，如查状态、调音量、控制屏幕等。" tabindex="-1">!</span></label></div>
+              <div id="mcpToolsList" class="mcp-tools-list"></div>
+            </div>
+            </div>
+            <div class="assistant-actions">
+              <div class="btn-row-even">
                 <button class="btn btn-accent" onclick="saveAssistantConfig()" style="flex:1">保存配置</button>
                 <button class="btn btn-ghost" onclick="restoreAssistantDefaults()" style="flex:1">恢复默认值</button>
+                <button class="btn btn-accent sair-required" onclick="doWakeup()">唤醒</button>
+                <button class="btn btn-ghost sair-required" onclick="doAbort()">中止对话</button>
               </div>
-              <div class="btn-row-even sair-required" style="margin-bottom:8px">
-                <button class="btn btn-accent" onclick="doWakeup()">唤醒</button>
-                <button class="btn btn-ghost" onclick="doAbort()">中止对话</button>
-                <button class="btn btn-primary" id="btn-activate" onclick="doActivate()" disabled>激活</button>
-              </div>
-              <div class="btn-row-even" style="margin-top:8px">
+              <div class="btn-row-even">
+                <button class="btn btn-primary sair-required" id="btn-activate" onclick="doActivate()" disabled>激活</button>
                 <button class="btn btn-primary" onclick="doDeploy()" id="btnDeploy">部署</button>
                 <button class="btn btn-accent" onclick="doHotUpdate()">热更新</button>
                 <button id="btnUpdate" class="btn btn-ghost" onclick="doUpdate()">冷更新</button>
@@ -420,10 +426,6 @@
                 <div class="progress-bar"><div id="upgradeBar" class="progress-fill" style="width:0%"></div></div>
                 <span id="upgradeLabel" class="progress-label">上传中... 0%</span>
               </div>
-            </div>
-            <div class="assistant-right">
-              <div class="form-label-row"><label class="form-label">MCP 工具 <span class="tip-ico" data-tip="助手固件内置的工具集，语音对话中可自然语言调用，如查状态、调音量、控制屏幕等。" tabindex="-1">!</span></label></div>
-              <div id="mcpToolsList" class="mcp-tools-list"></div>
             </div>
           </div>
           <div class="section-overlay" id="assistantOverlay" style="display:none"><div class="spinner"></div><div class="overlay-text" id="assistantOverlayText"></div></div>
