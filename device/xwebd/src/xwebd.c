@@ -1366,10 +1366,29 @@ static int handle_get_diag(int fd, const char *body, const char *query) {
         }
     }
 
-    pos = diag_append(buf, pos, sizeof(buf), first,
-        "test.sh自启动", access(XWEBD_TEST_SH, X_OK) == 0,
-        access(XWEBD_TEST_SH, X_OK) == 0 ? "自启动脚本已配置" : "自启动脚本未配置",
-        &ok_count, &fail_count);
+    {
+        /* test.sh 存在且含 xwebd 拉起行(2026-09-01 卸载事故: 调试版 test.sh 只起
+         * syslogd, 卸载助手后 manager 广播 TERM 杀掉 xwebd, 重启后无人拉起,
+         * 设备失联只剩 USB。只查存在性查不出内容被覆盖的情况) */
+        int sh_ok = 0;
+        char sh_buf[512] = "";
+        int sh_fd = open(XWEBD_TEST_SH, O_RDONLY);
+        if (sh_fd >= 0)
+        {
+            int n = read(sh_fd, sh_buf, sizeof(sh_buf) - 1);
+            close(sh_fd);
+            if (n > 0)
+            {
+                sh_buf[n] = '\0';
+                if (strstr(sh_buf, "xwebd") != NULL)
+                    sh_ok = 1;
+            }
+        }
+        pos = diag_append(buf, pos, sizeof(buf), first,
+            "test.sh自启动", sh_ok,
+            sh_ok ? "开机自启配置正常" : "test.sh 缺少 xwebd 拉起行(可能被调试脚本覆盖), 建议重新部署内核",
+            &ok_count, &fail_count);
+    }
 
     {
         int wifi_ok = 0;

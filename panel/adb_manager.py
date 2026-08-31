@@ -315,23 +315,32 @@ def init_device(serial=None):
     if not r["ok"]:
         logger.warning("创建/var/upgrade目录失败: %s", r.get("stderr", ""))
 
-    if not _shell_test(TEST_SH_PATH, serial):
-        test_sh_content = (
-            '#!/bin/sh\n'
-            '# 小智·智伴 开机自启脚本\n'
-            '# 由Panel控制面板自动创建\n'
-            '\n'
-            '# Telnet服务（远程调试）\n'
-            'busybox telnetd -p 23 -l /bin/sh\n'
-            '\n'
-            '# xwebd面板内核服务\n'
-            'if [ -x /var/upgrade/xwebd ]; then\n'
-            '    cd /var/upgrade && ./xwebd -d\n'
-            'fi\n'
-            '\n'
-            '# 开机频率检测与自动回退\n'
-            '/var/upgrade/boot_watchdog.sh\n'
-        )
+    # test.sh 部署: 不存在则创建; 存在但缺少 xwebd 拉起行(如被调试取证脚本
+    # 覆盖)则重写——2026-09-01 卸载事故: 调试版 test.sh 只起 syslogd, 卸载助手
+    # 后 manager 广播 TERM 杀掉 xwebd, 设备重启后无人拉起, 无线/telnet 全失联
+    test_sh_content = (
+        '#!/bin/sh\n'
+        '# 小智·智伴 开机自启脚本\n'
+        '# 由Panel控制面板自动创建\n'
+        '\n'
+        '# Telnet服务（远程调试）\n'
+        'busybox telnetd -p 23 -l /bin/sh\n'
+        '\n'
+        '# xwebd面板内核服务\n'
+        'if [ -x /var/upgrade/xwebd ]; then\n'
+        '    cd /var/upgrade && ./xwebd -d\n'
+        'fi\n'
+        '\n'
+        '# 开机频率检测与自动回退\n'
+        '/var/upgrade/boot_watchdog.sh\n'
+    )
+    need_test_sh = True
+    if _shell_test(TEST_SH_PATH, serial):
+        r = _adb(["shell", f"grep -c xwebd {TEST_SH_PATH}"], serial=serial, timeout=5)
+        # grep 找到才输出计数(>=1); 没找到 exit 1 无输出
+        if r["ok"] and (r.get("stdout") or "").strip().isdigit() and int(r["stdout"].strip()) > 0:
+            need_test_sh = False
+    if need_test_sh:
         escaped = test_sh_content.replace("'", "'\\''")
         r = _adb(["shell", f"printf '%s' '{escaped}' > {TEST_SH_PATH}"], serial=serial, timeout=10)
         if not r["ok"]:
@@ -340,7 +349,7 @@ def init_device(serial=None):
             return result
         _adb(["shell", f"chmod 755 {TEST_SH_PATH}"], serial=serial)
         result["created_test_sh"] = True
-        logger.info("test.sh已创建: serial=%s", serial)
+        logger.info("test.sh已创建/修复: serial=%s", serial)
 
     if not _shell_test(BOOT_WATCHDOG_PATH, serial):
         watchdog_script = _find_watchdog_script()
