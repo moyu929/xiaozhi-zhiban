@@ -416,7 +416,7 @@ body {
   letter-spacing: 0.5px;
 }
 .stat-value {
-  font-size: 14px;
+  font-size: var(--fs-body);
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -433,7 +433,7 @@ body {
   letter-spacing: 0.5px;
   margin-bottom: 8px;
 }
-.control-val { color: var(--accent); font-size: 14px; }
+.control-val { color: var(--accent); font-size: var(--fs-body); }
 
 .slider-row { display: flex; align-items: center; gap: 10px; }
 .slider {
@@ -802,7 +802,7 @@ body {
 }
 .log-filter-xs option { background: var(--bg-secondary); }
 .form-hint {
-  font-size: 10px;
+  font-size: var(--fs-label);
   font-weight: 400;
   color: var(--text-muted);
   text-transform: none;
@@ -846,7 +846,7 @@ body {
   transform: translate(-50%, -50%);
   padding: 14px 32px;
   border-radius: var(--radius-md);
-  font-size: 14px;
+  font-size: var(--fs-body);
   font-weight: 600;
   z-index: 200;
   display: none;
@@ -900,7 +900,7 @@ body {
   border-bottom: 1px solid var(--border-color);
 }
 .modal-header h2 {
-  font-size: 16px;
+  font-size: var(--fs-title);
   font-weight: 600;
 }
 .modal-close {
@@ -1110,7 +1110,7 @@ body {
     background: rgba(10,10,10,0.6);
 }
 .not-installed-overlay .overlay-text {
-    font-size: 16px;
+    font-size: var(--fs-title);
     font-weight: 700;
     color: rgba(255,255,255,0.85);
 }
@@ -1175,7 +1175,7 @@ body {
   margin-bottom: 14px;
 }
 .confirm-message {
-  font-size: 14px;
+  font-size: var(--fs-body);
   color: var(--text-primary);
   line-height: 1.6;
   margin-bottom: 22px;
@@ -1710,3 +1710,138 @@ body {
 .delay-now-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .delay-min-input { width: 70px; }
 .battery-detail .stat-grid { margin-top: 4px; }
+
+/* ==================== 字号层级规范(2026-08-31) ====================
+ * 全站字号五级, 任何文本必须取其一, 禁止再加新字号:
+ *   15px 卡片标题(.card-header h2)
+ *   13px 正文/控件/数据值(.stat-value/.use-limit-label/.btn等)
+ *   12px 次要说明/表格/等宽值(.process-table/.bl-value等)
+ *   11px 标签/徽章(.stat-label/.form-label/.svc-hint等)
+ *   10px 极弱提示(.process-cat等小徽标) */
+:root {
+  --fs-title: 15px;
+  --fs-body: 13px;
+  --fs-sub: 12px;
+  --fs-label: 11px;
+  --fs-micro: 10px;
+}
+
+/* ==================== 叹号 tooltip(2026-08-31) ====================
+ * 长功能解释统一收进浮窗: 可解释词后跟小叹号, hover 显示详情,
+ * 避免长解释文本撑乱排版。浮窗 JS 单例 fixed 定位, 不受滚动容器裁剪 */
+.tip-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-left: 4px;
+  border-radius: 50%;
+  border: 1px solid rgba(59,130,246,0.45);
+  background: rgba(59,130,246,0.12);
+  color: var(--info);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+  user-select: none;
+  -webkit-user-select: none;
+  flex-shrink: 0;
+}
+.tip-ico:hover { background: rgba(59,130,246,0.3); }
+.tip-float {
+  position: fixed;
+  z-index: 300;
+  max-width: 300px;
+  padding: 9px 13px;
+  border-radius: 8px;
+  background: #1e1e1e;
+  border: 1px solid var(--border-hover);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.55);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  pointer-events: none;
+  white-space: normal;
+  word-break: break-word;
+}
+
+/* 安装插件弹窗列表(2026-08-31) */
+.plugin-install-tip { font-size: var(--fs-sub); color: var(--text-muted); margin-bottom: 10px; }
+.plugin-install-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 340px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+}
+.plugin-install-list::-webkit-scrollbar { width: 4px; }
+.plugin-install-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+.plugin-install-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.plugin-install-item:hover { border-color: var(--border-hover); }
+.plugin-install-item.installed { opacity: 0.55; cursor: default; }
+.plugin-install-item input { margin-top: 3px; accent-color: var(--accent); flex-shrink: 0; }
+.plugin-install-info { flex: 1; min-width: 0; }
+.plugin-install-name {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.plugin-install-id {
+  font-size: var(--fs-label);
+  color: var(--text-muted);
+  font-family: "SF Mono", "Consolas", monospace;
+  background: var(--bg-input);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.plugin-install-desc { font-size: var(--fs-sub); color: var(--text-secondary); margin-top: 3px; line-height: 1.5; }
+.plugin-install-size { font-size: var(--fs-label); color: var(--text-muted); white-space: nowrap; margin-top: 2px; }
+
+/* 电池详情: kv 紧凑行(插件条目内, 不复用设备状态卡的大号 stat-grid) */
+.batt-kv {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 16px;
+  margin-top: 4px;
+  padding: 8px 10px;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+}
+.batt-kv-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.batt-kv-label { font-size: var(--fs-label); color: var(--text-muted); white-space: nowrap; }
+.batt-kv-value { font-size: var(--fs-sub); color: var(--text-primary); font-weight: 500; text-align: right; }
+
+/* 助手管理卡: 主体滚动(折叠项展开后卡片不过度拉长, 2026-08-31) */
+.assistant-layout {
+  max-height: 620px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+  padding-right: 6px;
+}
+.assistant-layout::-webkit-scrollbar { width: 4px; }
+.assistant-layout::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }

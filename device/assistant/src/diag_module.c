@@ -54,7 +54,8 @@ static void check_websocket(diag_result_t *r)
     }
     else
     {
-        diag_add(r, "WebSocket", 0, "协议未初始化");
+        /* 空闲态按需连接: 无会话时协议未初始化属正常待命, 非故障 */
+        diag_add(r, "WebSocket", 1, "空闲待命（唤醒后自动连接）");
     }
 }
 
@@ -346,7 +347,8 @@ static void check_power_plugin(diag_result_t *r)
     DIR *d = opendir("/usr/bin/plugins");
     if (!d)
     {
-        diag_add(r, "插件目录", 0, "/usr/bin/plugins 不可读");
+        /* 本机固件无原生插件目录(逆向时期检查项): 非故障, 提示性通过 */
+        diag_add(r, "插件目录", 1, "原生插件目录不存在（不影响运行）");
         return;
     }
     struct dirent *e;
