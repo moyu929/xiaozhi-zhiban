@@ -1391,6 +1391,20 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
                 return
         logger.debug("%s - %s", self.client_address[0], msg)
 
+    def handle_one_request(self):
+        """覆盖基类方法，吞掉客户端在请求建立阶段即断开连接产生的异常。
+
+        典型场景：浏览器/SSE 客户端在连接建立后立即断开（WinError 10053），
+        基类会在读取请求行时抛出 ConnectionAbortedError，这里静默忽略以避免刷屏
+        （main 分支实测修复，同步自成品仓库）。
+        """
+        try:
+            super().handle_one_request()
+        except (ConnectionAbortedError, BrokenPipeError, OSError):
+            self.close_connection = True
+        except Exception:
+            self.close_connection = True
+
     def _send_json(self, data, status=200):
         """发送 JSON 格式的 HTTP 响应
 
@@ -1403,7 +1417,11 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (ConnectionAbortedError, BrokenPipeError, OSError):
+            # 客户端(浏览器/SSE)在响应返回前已断开, 属正常情况, 静默忽略
+            pass
 
     def _send_file(self, filepath, content_type):
         """发送静态文件作为 HTTP 响应

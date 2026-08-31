@@ -104,7 +104,18 @@ class XwebdAPI:
         logger.debug("-> %s %s", method, path)
         try:
             with urlopen(req, timeout=timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
+                raw = resp.read()
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    # 设备端日志可能混入非 UTF-8 字节(GBK 中文/脏数据),
+                    # 容错解码避免整次请求因单个坏字节失败(main 分支实测修复)
+                    text = raw.decode("utf-8", errors="replace")
+                try:
+                    result = json.loads(text)
+                except json.JSONDecodeError:
+                    # 响应非合法 JSON(HTML 错误页/截断), 原样回退文本
+                    result = {"raw": text}
                 logger.debug("<- %s %s: ok", method, path)
                 return result
         except HTTPError as e:
