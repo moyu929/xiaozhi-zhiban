@@ -1544,6 +1544,26 @@ static void *ota_thread_func(void *arg)
     return NULL;
 }
 
+/* 等待连接线程退出。连接线程持有 ws->tls 的所有权直到 connect 返回,
+ * 期间任何线程都不得销毁 proto (2026-09-01 崩溃: HOME 清理在连接线程
+ * DNS 阻塞时销毁 TLS, 其返回后写已置 NULL 的 net_ctx->fd 触发 SIGSEGV)。
+ * 先置取消标志让 connect 在检查点尽快走失败路径。 */
+static void wait_connect_thread_exit(app_context_t *app)
+{
+    if (!app->connect_thread_active)
+        return;
+    if (pthread_equal(pthread_self(), app->connect_thread))
+    {
+        /* 连接线程自身触发的清理, 资源由本线程出口收尾 */
+        app->connect_thread_active = 0;
+        return;
+    }
+    app->connecting = 0;
+    protocol_handler_abort_connect(&app->proto);
+    pthread_join(app->connect_thread, NULL);
+    app->connect_thread_active = 0;
+}
+
 /**
  * @brief WebSocket连接线程函数
  *        初始化协议处理器、设置回调、建立WebSocket连接
@@ -1597,6 +1617,7 @@ static void *connect_thread_func(void *arg)
         PLOG_E("CONN", "protocol_handler_init 失败: %d", init_ret);
         app->proto_initialized = 0;
         app->connecting = 0;
+        app->connect_thread_active = 0;
         state_machine_transition(&app->sm, kStateCleaning);
         return NULL;
     }
@@ -1620,6 +1641,7 @@ static void *connect_thread_func(void *arg)
         protocol_handler_disconnect(&app->proto);
         protocol_handler_destroy(&app->proto);
         app->proto_initialized = 0;
+        app->connect_thread_active = 0;
         return NULL;
     }
     /* 首次连接失败则重试一次 */
@@ -1639,6 +1661,7 @@ static void *connect_thread_func(void *arg)
     {
         PLOG_E("CONN", "重试后连接仍失败");
         app->connecting = 0;
+        app->connect_thread_active = 0;
         state_machine_transition(&app->sm, kStateCleaning);
         return NULL;
     }
@@ -1647,6 +1670,7 @@ static void *connect_thread_func(void *arg)
            proto_config.url, (unsigned long long)(get_time_ms() - app->session_start_ms));
 
     app->connecting = 0;
+    app->connect_thread_active = 0;
     state_machine_transition(&app->sm, kStateConnecting);
 
     PLOG_I("CONN", "连接线程完成");
@@ -1924,6 +1948,12 @@ static void do_session_cleanup(app_context_t *app, uint64_t now, uint64_t prev_s
 
     if (app->proto_initialized)
     {
+        /* 连接线程可能仍在 DNS/TCP/握手阻塞中, 必须先等它退出;
+         * 它被取消时会自行销毁 proto (proto_initialized 置 0) */
+        wait_connect_thread_exit(app);
+    }
+    if (app->proto_initialized)
+    {
         if (protocol_handler_is_connected(&app->proto))
         {
             protocol_handler_disconnect(&app->proto);
@@ -2024,6 +2054,7 @@ static void on_state_changed(xiaozhi_state_t from, xiaozhi_state_t to, void *use
 
         /* 启动连接线程 */
         app->connecting = 1;
+        app->connect_thread_active = 1;
         {
             pthread_attr_t attr;
             pthread_attr_init(&attr);
@@ -2535,6 +2566,7 @@ static void do_hot_update(app_context_t *app)
         app->player_initialized = 0;
     }
 
+    wait_connect_thread_exit(app);
     if (app->proto_initialized)
     {
         if (protocol_handler_is_connected(&app->proto))
@@ -3389,6 +3421,7 @@ int main(int argc, char *argv[])
     pthread_join(app->recorder_thread, NULL);
 
     /* 清理所有模块资源 */
+    wait_connect_thread_exit(app);
     if (app->proto_initialized)
     {
         if (protocol_handler_is_connected(&app->proto))

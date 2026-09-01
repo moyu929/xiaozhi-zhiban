@@ -452,6 +452,17 @@ int protocol_handler_connect(protocol_handler_t *proto)
     return connect_websocket(proto);
 }
 
+/* 请求中止进行中的连接流程 (由非连接线程调用)。
+ * 连接线程的 tls_transport_connect 会在 DNS/TCP/握手的检查点
+ * 看到 aborted 并尽快走失败路径返回。DNS 阻塞段无法中断,
+ * 只能等 getaddrinfo 自身超时返回。 */
+void protocol_handler_abort_connect(protocol_handler_t *proto)
+{
+    if (!proto)
+        return;
+    proto->ws.tls.aborted = 1;
+}
+
 void protocol_handler_disconnect(protocol_handler_t *proto)
 {
     if (!proto)

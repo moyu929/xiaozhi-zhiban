@@ -405,6 +405,13 @@ int tls_transport_connect(tls_transport_t *tls, const char *host, int port)
         return -1;
     }
 
+    /* 取消检查点: getaddrinfo 阻塞期间外部可能已请求中止 */
+    if (tls->aborted)
+    {
+        snprintf(tls->error, sizeof(tls->error), "连接已被取消");
+        return -1;
+    }
+
     /* 创建TCP套接字 */
     tls->sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (tls->sockfd < 0)
@@ -429,6 +436,15 @@ int tls_transport_connect(tls_transport_t *tls, const char *host, int port)
         return -1;
     }
 
+    /* 取消检查点: TCP 阻塞期间外部可能已请求中止 */
+    if (tls->aborted)
+    {
+        snprintf(tls->error, sizeof(tls->error), "连接已被取消");
+        close(tls->sockfd);
+        tls->sockfd = -1;
+        return -1;
+    }
+
     PLOG_I("TLS", "TCP连接成功");
 
     /* 设置socket收发超时 */
@@ -438,6 +454,14 @@ int tls_transport_connect(tls_transport_t *tls, const char *host, int port)
     setsockopt(tls->sockfd, SOL_SOCKET, SO_RCVTIMEO, &rcv_timeout, sizeof(rcv_timeout));
 
     /* 绑定mbedTLS网络IO和SSL上下文 */
+    if (!tls->net_ctx || !tls->ssl_ctx)
+    {
+        /* 防御: 结构被并发销毁时不解引用 (历史崩溃点 2026-09-01) */
+        snprintf(tls->error, sizeof(tls->error), "TLS上下文已释放");
+        close(tls->sockfd);
+        tls->sockfd = -1;
+        return -1;
+    }
     ((mbedtls_net_context *)tls->net_ctx)->fd = tls->sockfd;
     mbedtls_ssl_set_bio((mbedtls_ssl_context *)tls->ssl_ctx,
                         tls->net_ctx,
@@ -459,6 +483,15 @@ int tls_transport_connect(tls_transport_t *tls, const char *host, int port)
         if (hs_ret != MBEDTLS_ERR_SSL_WANT_READ && hs_ret != MBEDTLS_ERR_SSL_WANT_WRITE)
         {
             snprintf(tls->error, sizeof(tls->error), "TLS握手失败: -0x%x", -hs_ret);
+            close(tls->sockfd);
+            tls->sockfd = -1;
+            return -1;
+        }
+
+        /* 取消检查点: 握手等待期间外部可能已请求中止 */
+        if (tls->aborted)
+        {
+            snprintf(tls->error, sizeof(tls->error), "连接已被取消");
             close(tls->sockfd);
             tls->sockfd = -1;
             return -1;

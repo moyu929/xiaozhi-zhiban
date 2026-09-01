@@ -40,6 +40,7 @@ typedef struct app_context_t {
     volatile int ota_config_received;
 
     pthread_t connect_thread;
+    volatile int connect_thread_active;  /* 连接线程存活标志, 清理前须 join 等它退出 */
     int connecting;
     int proto_initialized;
     int player_initialized;

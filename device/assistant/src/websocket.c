@@ -796,6 +796,8 @@ void websocket_disconnect(websocket_t *ws)
     /* 关闭TLS或TCP连接 */
     if (ws->secure && ws->tls.ssl_initialized)
     {
+        /* 若连接线程仍在 connect 中, 先置中止标志让它尽快返回 */
+        ws->tls.aborted = 1;
         tls_transport_disconnect(&ws->tls);
         tls_transport_destroy(&ws->tls);
     }

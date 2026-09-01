@@ -30,6 +30,7 @@ typedef struct {
     void *ctr_drbg;
     void *net_ctx;
     bool ssl_initialized;
+    volatile int aborted;   /* 外部置1时连接流程尽快走失败路径返回 */
 } tls_transport_t;
 
 int tls_transport_init(tls_transport_t *tls);

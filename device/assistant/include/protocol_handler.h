@@ -105,6 +105,7 @@ void protocol_handler_set_callbacks(protocol_handler_t *proto,
 
 int protocol_handler_connect(protocol_handler_t *proto);
 void protocol_handler_disconnect(protocol_handler_t *proto);
+void protocol_handler_abort_connect(protocol_handler_t *proto);
 bool protocol_handler_is_connected(protocol_handler_t *proto);
 int protocol_handler_poll(protocol_handler_t *proto, int timeout_ms);
 
