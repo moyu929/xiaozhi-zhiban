@@ -33,6 +33,8 @@ XWEBD_LOG_PATH = "/var/upgrade/xwebd.log"
 TEST_SH_PATH = "/var/upgrade/test.sh"
 BOOT_WATCHDOG_PATH = "/var/upgrade/boot_watchdog.sh"
 WATCHDOG_GUARD_PATH = "/var/upgrade/watchdog_guard.sh"
+# 每日时长触限提示音: 设备上缺失时 sair 会静默回退到原生占位音(网络类语音)
+USE_LIMIT_PROMPT_REMOTE_PATH = "/var/upgrade/use_limit_exhausted.mp3"
 
 _ADB_PATH = None
 _ADB_WARMED_UP = False
@@ -56,14 +58,18 @@ def _find_adb():
     if _ADB_PATH is not None:
         return _ADB_PATH
     candidates = []
+    panel_dir = os.path.dirname(os.path.abspath(__file__))
+    # 优先：本仓库目录（xiaozhi-zhiban-main / xiaozhi-zhiban-develop）内的 platform-tools
+    repo_dir = os.path.dirname(panel_dir)
+    candidates.append(os.path.join(repo_dir, "platform-tools", "adb.exe"))
+    candidates.append(os.path.join(repo_dir, "platform-tools", "adb"))
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    # 目录重组后 platform-tools 位于工作区根目录(d:\小智ai)的 工具链/ 下
+    # 兼容旧布局：工作区根目录(d:\小智ai)的 工具链/ 下
     workspace_root = os.path.dirname(project_root)
     candidates.append(os.path.join(workspace_root, "工具链", "platform-tools", "adb.exe"))
     candidates.append(os.path.join(workspace_root, "工具链", "platform-tools", "adb"))
     candidates.append(os.path.join(project_root, "platform-tools", "adb.exe"))
     candidates.append(os.path.join(project_root, "platform-tools", "adb"))
-    panel_dir = os.path.dirname(os.path.abspath(__file__))
     candidates.append(os.path.join(panel_dir, "..", "..", "platform-tools", "adb.exe"))
     candidates.append(os.path.join(panel_dir, "..", "..", "platform-tools", "adb"))
     for path in candidates:
@@ -833,9 +839,11 @@ def deploy_sair(serial=None, binary_path=None):
     r = _push_binary(binary_path, SAIR_REMOTE_PATH, serial)
     if not r["ok"]:
         return {"ok": False, "error": r['error']}
+    prompt_pushed = _push_use_limit_prompt(serial)
     _adb(["shell", "reboot"], serial=serial, timeout=5)
     logger.info("sair冷部署完成，设备重启中: serial=%s", serial)
-    return {"ok": True, "binary": binary_path, "mode": "cold", "rebooting": True}
+    return {"ok": True, "binary": binary_path, "mode": "cold", "rebooting": True,
+            "prompt_pushed": prompt_pushed}
 
 
 def hot_update_sair(serial=None, binary_path=None):
@@ -849,11 +857,13 @@ def hot_update_sair(serial=None, binary_path=None):
     r = _push_binary(binary_path, SAIR_REMOTE_PATH + "_new", serial)
     if not r["ok"]:
         return {"ok": False, "error": r['error']}
+    prompt_pushed = _push_use_limit_prompt(serial)
     r = _adb(["shell", "kill -USR2 $(pidof sair)"], serial=serial, timeout=10)
     if not r["ok"]:
         return {"ok": False, "error": f"SIGUSR2 failed: {r['stderr']}"}
     logger.info("sair热更新已触发: serial=%s", serial)
-    return {"ok": True, "binary": binary_path, "mode": "hot"}
+    return {"ok": True, "binary": binary_path, "mode": "hot",
+            "prompt_pushed": prompt_pushed}
 
 
 def _find_sair_binary():
@@ -864,6 +874,42 @@ def _find_sair_binary():
         os.path.join(base_dir, "device", "assistant", "prebuilt", "sair"),
         os.path.join(base_dir, "device", "assistant", "build", "sair"),
     ])
+
+
+def _find_use_limit_prompt():
+    """查找每日时长触限提示音 mp3（device/assistant/resources/）
+
+    Returns:
+        str: 本地文件路径，未找到返回 None
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return _find_file([
+        os.path.join(base_dir, "..", "device", "assistant", "resources", "use_limit_exhausted.mp3"),
+        os.path.join(base_dir, "device", "assistant", "resources", "use_limit_exhausted.mp3"),
+    ])
+
+
+def _push_use_limit_prompt(serial=None):
+    """部署触限提示音到 /var/upgrade/
+
+    sair 侧逻辑（use_limit.c）：文件存在则原生 music_player 播放自定义录音，
+    否则静默回退 sound_tts_play(USE_LIMIT_PROMPT_ID)，而该 id 落在网络/绑定
+    类占位音区间——曾出现"达限后播'我已经连上网啦'"的线上问题。故部署时必须
+    一并推送，缺失只告警不阻断部署。
+
+    Returns:
+        bool: 是否成功推送
+    """
+    path = _find_use_limit_prompt()
+    if not path:
+        logger.warning("未找到触限提示音 use_limit_exhausted.mp3(跳过推送)")
+        return False
+    r = _push_binary(path, USE_LIMIT_PROMPT_REMOTE_PATH, serial)
+    if not r["ok"]:
+        logger.warning("触限提示音推送失败: %s", r["error"])
+        return False
+    logger.info("触限提示音已部署: %s", USE_LIMIT_PROMPT_REMOTE_PATH)
+    return True
 
 
 def reboot_device(serial=None):

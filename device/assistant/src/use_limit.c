@@ -71,6 +71,11 @@ void use_limit_play_prompt(void)
     if (access(UL_PROMPT_MP3, R_OK) == 0 &&
         platform_media_play_file(UL_PROMPT_MP3) == 0)
         return;
+    /* 自定义提示音缺失: 必须告警。静默回退会播成原生占位音(USE_LIMIT_PROMPT_ID
+     * 落在网络/绑定类语音区间), 现象是"达限后播'我已经连上网啦'", 只能靠听感
+     * 发现(2026-10-03 线上问题: 部署流程未随 sair 推送该 mp3) */
+    PLOG_W("UL", "触限提示音缺失(%s), 回退原生占位音 id=%d",
+           UL_PROMPT_MP3, g_ul.prompt_id);
     platform_tts_play(g_ul.prompt_id);
 }
 

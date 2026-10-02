@@ -262,6 +262,15 @@ wsl -e bash -c "cd /mnt/d/your-path/xiaozhi-zhiban-develop/device/xwebd && bash 
 
 ## 🚀 部署
 
+### 前提条件
+
+运行 Panel 控制面板需要：
+
+- **[Python 3.8+](https://www.python.org/downloads/)**
+- **[ADB](https://developer.android.com/tools/releases/platform-tools)**（Android Debug Bridge，USB 有线模式需要）
+  - Windows 直链：[platform-tools-latest-windows.zip](https://dl.google.com/android/repository/platform-tools-latest-windows.zip)
+  - 加入 PATH 即可被自动识别；若不想改 PATH，也可把解压得到的 `platform-tools` 整个文件夹放到 `xiaozhi-zhiban-develop/` 目录下（即 `xiaozhi-zhiban-develop/platform-tools/adb.exe`）
+
 ### 推荐方式：通过 Panel 控制面板
 
 ```bash
@@ -274,6 +283,14 @@ python control_panel.py
 Panel 支持两种连接方式：
 - **USB 连接（有线模式）** — 通过 ADB 端口转发，适合首次部署
 - **WiFi 连接（无线模式）** — 通过 xwebd HTTP API，功能更完整
+
+> 💡 **ADB 识别不到设备？** 先重启 ADB 服务，再重新进行有线连接：
+> ```bash
+> adb kill-server
+> adb start-server
+> adb devices          # 确认列表中出现设备
+> ```
+> 若 `adb devices` 列表仍为空，检查数据线是否支持数据传输（非纯充电线），并重新拔插 USB。
 
 > ⚠️ **部署顺序**：新设备**必须先通过有线模式安装面板内核（xwebd）**，才能使用无线模式连接。推荐安装顺序：**先安装 xwebd → 再安装语音助手（sair）**。卸载时反向操作：**先卸载 sair → 再卸载 xwebd**，或直接使用有线模式下的「恢复出厂设置」功能一键清除。
 
