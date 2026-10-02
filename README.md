@@ -78,8 +78,10 @@
 
 ### 前提条件
 
-- **Python 3.8+**（运行 Panel 控制面板）
-- **ADB**（Android Debug Bridge，用于 USB 连接模式）
+- **[Python 3.8+](https://www.python.org/downloads/)**（运行 Panel 控制面板）
+- **[ADB](https://developer.android.com/tools/releases/platform-tools)**（Android Debug Bridge，用于 USB 连接模式）
+  - Windows 直链：[platform-tools-latest-windows.zip](https://dl.google.com/android/repository/platform-tools-latest-windows.zip)
+  - 加入 PATH 即可被自动识别；若不想改 PATH，也可把解压得到的 `platform-tools` 整个文件夹放到 `xiaozhi-zhiban-main/` 目录下（即 `xiaozhi-zhiban-main/platform-tools/adb.exe`）
 - **USB 数据线**（连接设备和电脑）或 **WiFi**（设备和电脑在同一局域网）
 
 ### 第 1 步：获取项目
@@ -120,6 +122,14 @@ Panel 支持两种连接方式：
 3. 在 Panel 中点击「连接」
 
 USB 模式功能包括：文件管理、进程查看、固件部署、设备重启等。
+
+> 💡 **识别不到设备？** 先重启 ADB 服务，再回到 Panel 点击「连接」：
+> ```bash
+> adb kill-server
+> adb start-server
+> adb devices          # 确认列表中出现设备
+> ```
+> 若 `adb devices` 列表仍为空，检查数据线是否支持数据传输（非纯充电线），并重新拔插 USB。
 
 #### 方式二：WiFi 连接（无线模式）
 
