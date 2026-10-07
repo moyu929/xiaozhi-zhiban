@@ -36,7 +36,7 @@ logger = logging.getLogger("panel.server")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from device_api import XwebdAPI
 from config import DEFAULT_DEVICE_HOST, DEFAULT_PANEL_PORT, DEFAULT_XWEBD_PORT
-from adb_manager import (is_adb_available, detect_devices, is_xwebd_installed,
+from adb_manager import (is_adb_available, get_adb_status, detect_devices, is_xwebd_installed,
                           check_xwebd_status, deploy_xwebd, update_xwebd,
                           remove_xwebd, start_xwebd, stop_xwebd, restart_xwebd,
                           setup_forward, get_device_ip, get_device_info,
@@ -130,7 +130,7 @@ def adb_forward_setup(serial=None):
               {"ok": False, "error": "..."} 失败时返回错误信息
     """
     if not is_adb_available():
-        return {"ok": False, "error": "ADB not found. Please install Android SDK Platform Tools."}
+        return {"ok": False, "error": get_adb_status()["error"] or "ADB not found. Please install Android SDK Platform Tools."}
     try:
         adb_cmd = _find_adb()
         result = subprocess.run([adb_cmd, "devices"], capture_output=True, text=True, timeout=5)
@@ -1006,7 +1006,7 @@ def _api_upload_progress(handler, xwebd, body, query):
 @_api_route("GET", "/api/adb/devices")
 def _api_adb_devices(handler, xwebd, body, query):
     if not is_adb_available():
-        return {"error": "ADB not installed", "adb_available": False}, 503
+        return {"error": get_adb_status()["error"], "adb_available": False}, 503
     devices = detect_devices()
     result = []
     for d in devices:
@@ -1083,7 +1083,7 @@ def _api_xwebd_update(handler, xwebd, body, query):
 def _api_xwebd_upload_update(handler, xwebd, body, query):
     logger.info("通过ADB上传更新xwebd")
     if not is_adb_available():
-        return {"error": "ADB 不可用"}, 503
+        return {"error": get_adb_status()["error"]}, 503
     content_type = handler.headers.get('Content-Type', '')
     if 'multipart/form-data' in content_type:
         parsed = _parse_multipart(handler.headers, handler.rfile)
@@ -1241,7 +1241,7 @@ def _api_adb_logs(handler, xwebd, body, query):
 def _api_adb_xwebd_env(handler, xwebd, body, query):
     serial = query.get("serial", [None])[0] if query else None
     if not is_adb_available():
-        return {"error": "ADB not installed", "adb_available": False}, 503
+        return {"error": get_adb_status()["error"], "adb_available": False}, 503
     return check_xwebd_env(serial)
 
 

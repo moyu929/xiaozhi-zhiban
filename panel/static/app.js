@@ -133,6 +133,14 @@ function flashEl(el) {
 function showOverlay(id) { var el = document.getElementById(id); if (el) el.style.display = 'flex'; }
 function hideOverlay(id) { var el = document.getElementById(id); if (el) el.style.display = 'none'; }
 
+/* 静默中断兜底(2026-10-07): 未捕获的异步异常(如元素缺失导致的 TypeError)
+ * 弹错误提示而非静默吞掉, 根治"点击无反应"类故障 */
+window.addEventListener('unhandledrejection', function(e) {
+    if (!document.getElementById('toast')) return;
+    var msg = (e.reason && e.reason.message) ? e.reason.message : String(e.reason || '');
+    toast('操作异常: ' + msg, 'error');
+});
+
 async function api(path, opts) {
     opts = opts || {};
     var controller = new AbortController();
@@ -217,6 +225,12 @@ function renderMcpTools() {
 
 function showConfirm(msg, opts) {
     opts = opts || {};
+    var overlay = $('confirmOverlay');
+    // 弹窗元素缺失时降级为原生 confirm(2026-10-07): 避免部署等关键流程
+    // 因 $() 返回 null 触发 TypeError 而静默中断("点击无反应")
+    if (!overlay || !$('confirmMessage') || !$('confirmIcon') || !$('confirmOk')) {
+        return Promise.resolve(window.confirm(msg));
+    }
     return new Promise(function(resolve) {
         S.confirmResolve = resolve;
         $('confirmMessage').textContent = msg;
@@ -224,7 +238,7 @@ function showConfirm(msg, opts) {
         var okBtn = $('confirmOk');
         okBtn.textContent = opts.okText || '确定';
         okBtn.className = opts.danger ? 'btn btn-danger' : 'btn btn-primary';
-        $('confirmOverlay').style.display = 'flex';
+        overlay.style.display = 'flex';
     });
 }
 
@@ -395,7 +409,7 @@ async function adbDetect() {
 
     var devices = r.devices || [];
     if (!devices.length) {
-        $('adbDeviceList').innerHTML = '<div class="empty-state">未检测到设备<br><small>请确认：①USB线支持数据传输 ②设备已开启USB调试 ③设备已授权此电脑</small></div>';
+        $('adbDeviceList').innerHTML = '<div class="empty-state">未检测到设备<br><small>请确认：①USB线支持数据传输 ②设备已开启USB调试 ③设备已授权此电脑 ④Win7 需手动安装设备 USB 驱动并优先使用 USB2.0 端口（Win10/11 通常免驱）</small></div>';
         toast('未检测到ADB设备', 'info');
         return;
     }
@@ -507,7 +521,9 @@ async function adbRefreshStatus() {
         $('btnAdbStartXwebd').style.display = 'none';
         $('btnAdbRestartXwebd').style.display = '';
         $('btnAdbRemoveXwebd').style.display = '';
-    } else if (sair.installed || xwebdEl.textContent !== '未检测') {
+    } else {
+        // 2026-10-07 修复: 原条件(sair.installed || 状态≠未检测)会让全新设备
+        // (未装自定义sair且xwebd未运行)跳过内核安装检测, 部署区永远停在"未检测"
         var installed = await api('/api/adb/check?serial=' + encodeURIComponent(S.adb.serial));
         if (installed.xwebd_installed) {
             xwebdEl.textContent = '已安装';
@@ -568,6 +584,7 @@ async function adbRefreshDeviceInfo() {
 }
 
 async function adbDeployXwebd() {
+    toast('正在检测设备状态...', 'info');
     var initR = await api('/api/adb/init-status?serial=' + encodeURIComponent(S.adb.serial || ''));
     var isInit = initR.initialized;
     var confirmMsg = isInit ? '确定部署面板内核？' : '检测到新设备，部署将自动完成初始化（创建启动脚本、配置ADB等）。确定继续？';
