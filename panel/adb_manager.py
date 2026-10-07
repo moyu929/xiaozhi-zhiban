@@ -53,6 +53,29 @@ def _warmup_adb():
         logger.warning("ADB daemon 预热失败: %s", e)
 
 
+def _probe_adb_runnable(adb_path, timeout=8):
+    """探测指定 adb 是否能在当前系统上实际运行
+
+    仅检查文件存在是不够的：Windows 7 上运行较新 platform-tools 的 adb.exe
+    可能直接启动失败（缺少系统组件/不兼容）。若选中此类 adb，面板会"静默瘫痪"
+    （所有按钮均无设备响应），因此必须跳过无法运行的候选。
+
+    Returns:
+        (bool, str): (是否可运行, 版本首行或失败原因)
+    """
+    try:
+        r = subprocess.run([adb_path, "version"], capture_output=True, text=True,
+                           timeout=timeout, encoding='utf-8', errors='replace')
+        first_line = ((r.stdout or r.stderr or "").strip().splitlines() or [""])[0]
+        if r.returncode == 0:
+            return True, first_line
+        return False, first_line or f"version 退出码 {r.returncode}"
+    except subprocess.TimeoutExpired:
+        return False, "version 探测超时"
+    except OSError as e:
+        return False, str(e)
+
+
 def _find_adb():
     global _ADB_PATH
     if _ADB_PATH is not None:
@@ -72,18 +95,32 @@ def _find_adb():
     candidates.append(os.path.join(project_root, "platform-tools", "adb"))
     candidates.append(os.path.join(panel_dir, "..", "..", "platform-tools", "adb.exe"))
     candidates.append(os.path.join(panel_dir, "..", "..", "platform-tools", "adb"))
-    for path in candidates:
-        norm = os.path.normpath(path)
-        logger.info("检查ADB路径: %s (exists=%s)", norm, os.path.isfile(norm))
-        if os.path.isfile(norm):
-            _ADB_PATH = norm
-            logger.info("ADB路径: %s", _ADB_PATH)
-            return _ADB_PATH
     which_result = shutil.which("adb")
     logger.info("shutil.which('adb') = %s", which_result)
     if which_result:
-        _ADB_PATH = which_result
-        logger.info("ADB路径(PATH): %s", _ADB_PATH)
+        candidates.append(which_result)
+    # 逐候选探活：跳过"文件存在但无法运行"的 adb（典型：Win7 上 35+ 版本）
+    broken = []
+    seen = set()
+    for path in candidates:
+        norm = os.path.normpath(path)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        if not os.path.isfile(norm):
+            logger.info("检查ADB路径: %s (exists=False)", norm)
+            continue
+        runnable, detail = _probe_adb_runnable(norm)
+        if runnable:
+            _ADB_PATH = norm
+            logger.info("ADB路径: %s (%s)", _ADB_PATH, detail)
+            return _ADB_PATH
+        logger.warning("候选ADB无法运行: %s (%s)", norm, detail)
+        broken.append((norm, detail))
+    if broken:
+        # 全部候选都无法运行：仍返回第一个，让上层报出具体原因（而不是伪装成"未安装"）
+        _ADB_PATH = broken[0][0]
+        logger.warning("所有候选ADB均无法运行，暂用第一个: %s (%s)", _ADB_PATH, broken[0][1])
         return _ADB_PATH
     _ADB_PATH = "adb"
     logger.warning("ADB未找到，使用默认'adb'")
@@ -109,6 +146,10 @@ def _adb(args, serial=None, timeout=ADB_TIMEOUT):
     except FileNotFoundError:
         logger.warning("ADB未安装")
         return {"ok": False, "stdout": "", "stderr": "ADB not found. Install Android SDK Platform Tools.", "returncode": -1}
+    except OSError as e:
+        # 典型：Win7 上运行不兼容的 adb.exe（WinError 216 / 缺少运行库 DLL）
+        logger.warning("ADB无法启动: %s (%s)", cmd[0], e)
+        return {"ok": False, "stdout": "", "stderr": f"ADB 无法在当前系统上运行: {e}", "returncode": -1}
 
 
 def _find_file(candidates):
@@ -139,23 +180,33 @@ def _shell_test(path, serial):
     return r["ok"] and "yes" in r["stdout"]
 
 
-def is_adb_available():
+def get_adb_status():
+    """获取 ADB 可用性详情（含失败原因）
+
+    供面板区分三种状态：未找到 ADB / 找到但无法运行 / 可用，
+    避免把"无法运行"误报成"未安装"。
+
+    Returns:
+        dict: {"available": bool, "path": str|None, "error": str|None}
+    """
     adb_path = _find_adb()
     if adb_path == "adb":
-        result = shutil.which("adb") is not None
-        logger.info("is_adb_available: path='adb', which=%s", result)
-        return result
-    result = os.path.isfile(adb_path)
-    logger.info("is_adb_available: path='%s', exists=%s", adb_path, result)
-    if result:
-        try:
-            r = subprocess.run([adb_path, "version"], capture_output=True, text=True, timeout=5)
-            logger.info("adb version rc=%d", r.returncode)
-            return r.returncode == 0
-        except Exception as e:
-            logger.warning("adb version failed: %s", e)
-            return False
-    return False
+        return {"available": False, "path": None,
+                "error": "未找到 ADB。请下载 platform-tools 并加入 PATH，或将 platform-tools 文件夹放到仓库根目录"}
+    if not os.path.isfile(adb_path):
+        return {"available": False, "path": adb_path,
+                "error": f"ADB 路径不存在: {adb_path}"}
+    runnable, detail = _probe_adb_runnable(adb_path)
+    if runnable:
+        return {"available": True, "path": adb_path, "error": None}
+    return {"available": False, "path": adb_path,
+            "error": f"找到 ADB（{adb_path}）但无法运行: {detail}。Windows 7 请使用 platform-tools 34.0.4 及以下版本"}
+
+
+def is_adb_available():
+    status = get_adb_status()
+    logger.info("is_adb_available: available=%s path=%s", status["available"], status["path"])
+    return status["available"]
 
 
 def connect_adb_wifi(ip, port=5555):
@@ -216,6 +267,7 @@ def ensure_adb_connection(ip=None, serial=None):
 def detect_devices():
     r = _adb(["devices", "-l"])
     if not r["ok"]:
+        logger.warning("adb devices 失败: %s", r["stderr"])
         return []
     devices = []
     for line in r["stdout"].split("\n")[1:]:

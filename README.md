@@ -144,6 +144,10 @@ Starting → Activating → Idle → Connecting → Listening → Speaking
 | vfat 不支持符号链接 | /var/upgrade 是 vfat 分区 | 使用 cp 而非 ln -s |
 | malloc 全局锁非递归 | uClibc 的 `__malloc_lock` 不是递归锁 | 子线程中禁止 cJSON_PrintUnformatted |
 
+### 兼容性提示
+
+> ⚠️ Windows 7 系统、或设备固件版本低于 **2.0.01.200907**（如 2.0.00.190315 等早期批次）时，有一定概率无法成功查找到设备或部署。Win7 请使用 platform-tools **34.0.4 及以下版本**（35+ 的 adb 无法在 Win7 启动）并优先 USB 2.0 端口；旧固件设备建议先通过官方途径升级固件。
+
 ### 设备进程架构
 
 ```
@@ -270,6 +274,7 @@ wsl -e bash -c "cd /mnt/d/your-path/xiaozhi-zhiban-develop/device/xwebd && bash 
 - **[ADB](https://developer.android.com/tools/releases/platform-tools)**（Android Debug Bridge，USB 有线模式需要）
   - Windows 直链：[platform-tools-latest-windows.zip](https://dl.google.com/android/repository/platform-tools-latest-windows.zip)
   - 加入 PATH 即可被自动识别；若不想改 PATH，也可把解压得到的 `platform-tools` 整个文件夹放到 `xiaozhi-zhiban-develop/` 目录下（即 `xiaozhi-zhiban-develop/platform-tools/adb.exe`）
+  - **Windows 7 用户**：请使用 platform-tools **34.0.4 及以下版本**（35+ 的 adb 无法在 Win7 启动）；Win7 首次有线连接可能需手动安装设备 USB 驱动，并优先使用 USB 2.0 端口
 
 ### 推荐方式：通过 Panel 控制面板
 
