@@ -87,6 +87,22 @@ static void today_str(char out[9])
     snprintf(out, 9, "%04d%02d%02d", tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday);
 }
 
+/* 跨日重置(内存+落盘一次写齐): DAY/SPENT/DELAY_UNTIL 必须同步落盘——
+ * 只改 DAY 不写 SPENT, 重启后 load_day_spent 会用旧 SPENT 把新的一天
+ * 直接锁死(2026-10-09 事故形态之一)。仅主循环线程调用 */
+static void ul_crossday_reset(const char *cur)
+{
+    PLOG_I("UL", "跨日重置 (%s -> %s)", g_ul.day, cur);
+    strncpy(g_ul.day, cur, sizeof(g_ul.day));
+    g_ul.spent_sec = 0;
+    g_ul.locked = 0;
+    g_ul.delay_until = 0; /* 延迟随当日失效 */
+    set_config(UL_KEY_DAY, g_ul.day, strlen(g_ul.day));
+    cfg_set_int(UL_KEY_SPENT, 0);
+    cfg_set_int(UL_KEY_DELAY_UNTIL, 0);
+    sync_config();
+}
+
 static void load_day_spent(void)
 {
     get_config(UL_KEY_DAY, g_ul.day, sizeof(g_ul.day));
@@ -95,13 +111,7 @@ static void load_day_spent(void)
     if (strcmp(cur, g_ul.day) != 0)
     {
         /* 新的一天（或首次）：清零并落盘 */
-        strncpy(g_ul.day, cur, sizeof(g_ul.day));
-        g_ul.spent_sec = 0;
-        set_config(UL_KEY_DAY, g_ul.day, strlen(g_ul.day));
-        cfg_set_int(UL_KEY_SPENT, 0);
-        cfg_set_int(UL_KEY_DELAY_UNTIL, 0); /* 昨日的延迟不跨天 */
-        g_ul.delay_until = 0;
-        sync_config();
+        ul_crossday_reset(cur);
     }
     else
     {
@@ -142,6 +152,23 @@ void use_limit_init(void)
     /* config.bin 脏数据自愈(2026-08-30): 历史解析器 bug 曾把 epoch 秒串进
      * 各配置键并落盘(sched_enable=788064597 之类), 跨重启复活导致时段锁
      * 误开/唤醒全拦. 值域校验不过即重置默认并落盘覆盖脏值 */
+    if (g_ul.enable != 0 && g_ul.enable != 1)
+    {
+        /* 非01脏值按"非0即开"语义归一(2026-10-09 实测 enable=10):
+         * 重置为0会违背用户已开启的意图, 归一为1保留开启状态 */
+        PLOG_W("UL", "ENABLE 脏值(%d), 归一为1并落盘", g_ul.enable);
+        g_ul.enable = 1;
+        cfg_set_int(UL_KEY_ENABLE, 1);
+        dirty = 1;
+    }
+    if (minutes < 0 || minutes > 24 * 60)
+    {
+        PLOG_W("UL", "MINUTES 脏值(%ld), 重置60并落盘", minutes);
+        minutes = 60;
+        g_ul.limit_sec = 60 * 60;
+        cfg_set_int(UL_KEY_MINUTES, 60);
+        dirty = 1;
+    }
     if (g_ul.sched_enable != 0 && g_ul.sched_enable != 1)
     {
         PLOG_W("UL", "SCHED_ENABLE 脏值(%d), 重置为0并落盘", g_ul.sched_enable);
@@ -216,15 +243,7 @@ void use_limit_on_speaking(uint64_t elapsed_ms)
     char cur[9];
     today_str(cur);
     if (strcmp(cur, g_ul.day) != 0)
-    {
-        PLOG_I("UL", "跨日重置 (%s -> %s)", g_ul.day, cur);
-        strncpy(g_ul.day, cur, sizeof(g_ul.day));
-        g_ul.spent_sec = 0;
-        set_config(UL_KEY_DAY, g_ul.day, strlen(g_ul.day));
-        g_ul.locked = 0;
-        g_ul.delay_until = 0; /* 延迟随当日失效 */
-        cfg_set_int(UL_KEY_DELAY_UNTIL, 0);
-    }
+        ul_crossday_reset(cur);
 
     g_ul.spent_sec += (long)(elapsed_ms / 1000);
     PLOG_D("UL", "speaking %llums -> spent=%lds/%lds",
@@ -236,6 +255,22 @@ void use_limit_on_speaking(uint64_t elapsed_ms)
         PLOG_I("UL", "今日使用时长已耗尽(%lds), 进入锁定(断开由主循环 poll 处理)", g_ul.spent_sec);
     }
     persist_if_needed(now_ms);
+}
+
+/* 周期跨日检查(主循环 2s 慢检查调用)。原实现跨日重置只挂在
+ * use_limit_on_speaking(即 Speaking 退出)上: 达限锁定后唤醒全被拦截,
+ * 永远进不了 Speaking——锁阻止了唯一能解锁自己的代码路径, 空闲态跨日
+ * 也不解锁, 只能靠重启救(2026-10-09 事故: 21:25 达限, 次日 0:55 起
+ * 唤醒全拦, 1:22 重启才解)。挂到主循环后空闲态也能自然跨日解锁 */
+void use_limit_tick(void)
+{
+    if (!g_ul.enable)
+        return;
+    char cur[9];
+    today_str(cur);
+    if (strcmp(cur, g_ul.day) == 0)
+        return;
+    ul_crossday_reset(cur);
 }
 
 long use_limit_spent_sec(void)

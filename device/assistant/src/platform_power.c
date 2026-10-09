@@ -44,8 +44,10 @@ void platform_tts_play(int id)
     snd_tts_fn_t fn = load_sound_tts_play();
     if (fn)
     {
-        PLOG_I("PW", "tts_play(%d)", id);
-        fn(id);
+        /* 返回值语义未逆向确认, 但必须记录: 占位音是触限回退的最后
+         * 一道提示, 静默失败只能靠听感发现(2026-10-09 23:42 事故) */
+        int ret = fn(id);
+        PLOG_I("PW", "tts_play(%d) -> %d", id, ret);
     }
 }
 
@@ -61,7 +63,7 @@ typedef int (*mp_handle_fn)(void *);
 typedef int (*mp_set_file_fn)(void *, const char *);
 typedef int (*mp_time_fn)(void *);
 
-/* 提示音播放中标志: media_play_thread 存续期置位, use_limit 据此
+/* 提示音播放中标志: 起播成功置位, 播完线程清零, use_limit 据此
  * 在播放期+播后冷却窗内静默拦截唤醒(提示音人声被 ASR 误判自我触发) */
 static volatile int g_media_playing = 0;
 
@@ -70,58 +72,49 @@ int platform_media_is_playing(void)
     return g_media_playing;
 }
 
-static void *media_play_thread(void *arg)
-{
-    char *path = (char *)arg;
-    g_media_playing = 1;
+/* music_player 符号缓存: 进程内首次播放时解析一次, 后续复用 */
+static void *s_mp_lib;
+static mp_open_fn s_f_open;
+static mp_set_file_fn s_f_set;
+static mp_handle_fn s_f_play, s_f_stop, s_f_close;
+static mp_time_fn s_f_cur;
 
-    void *h = dlopen("libmusic_player_api.so", RTLD_NOW);
-    if (!h)
+static int mp_api_resolve(void)
+{
+    if (s_f_open)
+        return 0;
+    s_mp_lib = dlopen("libmusic_player_api.so", RTLD_NOW);
+    if (!s_mp_lib)
     {
         PLOG_W("PW", "libmusic_player_api 加载失败: %s", dlerror());
-        g_media_playing = 0;
-        free(path);
-        return NULL;
+        return -1;
     }
-    mp_open_fn f_open = (mp_open_fn)dlsym(h, "mp_open");
-    mp_set_file_fn f_set = (mp_set_file_fn)dlsym(h, "mp_set_file");
-    mp_handle_fn f_play = (mp_handle_fn)dlsym(h, "mp_play");
-    mp_handle_fn f_stop = (mp_handle_fn)dlsym(h, "mp_stop");
-    mp_handle_fn f_close = (mp_handle_fn)dlsym(h, "mp_close");
-    mp_time_fn f_cur = (mp_time_fn)dlsym(h, "mp_get_cur_time");
+    s_f_open = (mp_open_fn)dlsym(s_mp_lib, "mp_open");
+    s_f_set = (mp_set_file_fn)dlsym(s_mp_lib, "mp_set_file");
+    s_f_play = (mp_handle_fn)dlsym(s_mp_lib, "mp_play");
+    s_f_stop = (mp_handle_fn)dlsym(s_mp_lib, "mp_stop");
+    s_f_close = (mp_handle_fn)dlsym(s_mp_lib, "mp_close");
+    s_f_cur = (mp_time_fn)dlsym(s_mp_lib, "mp_get_cur_time");
     /* mp_get_total_time 已不用: 该值对 16kHz 单声道 mp3 偏短(4.0s 报 3.5s),
-     * 详见下方停滞检测注释 */
-    if (!f_open || !f_set || !f_play || !f_stop || !f_close)
+     * 详见 media_play_thread 停滞检测注释 */
+    if (!s_f_open || !s_f_set || !s_f_play || !s_f_stop || !s_f_close)
     {
         PLOG_W("PW", "music_player API 符号缺失");
-        g_media_playing = 0;
-        free(path);
-        return NULL;
+        s_f_open = NULL;
+        return -1;
     }
+    return 0;
+}
 
-    void *mp = f_open();
-    if (!mp)
-    {
-        PLOG_W("PW", "mp_open 失败: %s", path);
-        g_media_playing = 0;
-        free(path);
-        return NULL;
-    }
-    /* music_player URL 校验要求 file:// 前缀(M2 §5.3: check_url 家族) */
-    char url[1100];
-    snprintf(url, sizeof(url), "file://%s", path);
-    /* 返回值语义(反汇编 0xa70): set_file 成功返回 strlen(url)(>0), 失败 -1;
-     * play/stop 失败返回负数 */
-    if (f_set(mp, url) < 0 || f_play(mp) < 0)
-    {
-        PLOG_W("PW", "mp_set_file/mp_play 失败: %s", path);
-        f_close(mp);
-        g_media_playing = 0;
-        free(path);
-        return NULL;
-    }
-    PLOG_I("PW", "播放提示音: %s", path);
+typedef struct
+{
+    void *mp;    /* music_player handle */
+    char *path;  /* 仅播完日志用 */
+} mp_play_ctx_t;
 
+static void *media_play_thread(void *arg)
+{
+    mp_play_ctx_t *ctx = (mp_play_ctx_t *)arg;
     /* 轮询播完(纯停滞检测, 30s 超时兜底):
      * 不用 cur>=total 判定——music_player 对 16kHz 单声道 mp3 报的
      * total 偏短(实测 4.0s 文件报 ~3.5s), 到 total 即 stop 会截掉
@@ -133,19 +126,20 @@ static void *media_play_thread(void *arg)
     for (int i = 0; i < 60; i++)
     {
         usleep(500 * 1000);
-        if (!f_cur)
+        if (!s_f_cur)
             continue;
-        int cur = f_cur(mp);
+        int cur = s_f_cur(ctx->mp);
         stagnant = (cur == prev_cur) ? stagnant + 1 : 0;
         prev_cur = cur;
         if (stagnant >= 3 && (cur > 0 || i >= 6))
             break;
     }
-    f_stop(mp);
-    f_close(mp); /* 内含 stop_service, music_player 进程随之退出 */
+    s_f_stop(ctx->mp);
+    s_f_close(ctx->mp); /* 内含 stop_service, music_player 进程随之退出 */
     g_media_playing = 0;
-    PLOG_I("PW", "提示音播完: %s", path);
-    free(path);
+    PLOG_I("PW", "提示音播完: %s", ctx->path);
+    free(ctx->path);
+    free(ctx);
     return NULL;
 }
 
@@ -153,24 +147,64 @@ int platform_media_play_file(const char *path)
 {
     if (!path || access(path, R_OK) != 0)
         return -1;
-
-    char *p = strdup(path);
-    if (!p)
+    if (mp_api_resolve() != 0)
         return -1;
+
+    /* 同步起播: 返回 0 = 确已出声。此前整个流程跑在 detached 线程里,
+     * dlopen/mp_open/set_file/play 任一失败都只在线程内打 WARN 就退出,
+     * 调用方照样拿到 0 且不再回退占位音——应播提示音的场合全静默
+     * (2026-10-09 事故形态)。可失败步骤必须放调用线程 */
+    void *mp = s_f_open();
+    if (!mp)
+    {
+        PLOG_W("PW", "mp_open 失败: %s", path);
+        return -1;
+    }
+    /* music_player URL 校验要求 file:// 前缀(M2 §5.3: check_url 家族) */
+    char url[1100];
+    snprintf(url, sizeof(url), "file://%s", path);
+    /* 返回值语义(反汇编 0xa70): set_file 成功返回 strlen(url)(>0), 失败 -1;
+     * play/stop 失败返回负数 */
+    if (s_f_set(mp, url) < 0 || s_f_play(mp) < 0)
+    {
+        PLOG_W("PW", "mp_set_file/mp_play 失败: %s", path);
+        s_f_close(mp);
+        return -1;
+    }
+    PLOG_I("PW", "播放提示音: %s", path);
+    g_media_playing = 1;
+
+    mp_play_ctx_t *ctx = (mp_play_ctx_t *)malloc(sizeof(*ctx));
+    if (!ctx)
+        goto fail_stop;
+    ctx->mp = mp;
+    ctx->path = strdup(path);
+    if (!ctx->path)
+    {
+        free(ctx);
+        goto fail_stop;
+    }
 
     pthread_t tid;
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 32 * 1024);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&tid, &attr, media_play_thread, p) != 0)
+    if (pthread_create(&tid, &attr, media_play_thread, ctx) != 0)
     {
-        free(p);
         pthread_attr_destroy(&attr);
-        return -1;
+        free(ctx->path);
+        free(ctx);
+        goto fail_stop;
     }
     pthread_attr_destroy(&attr);
     return 0;
+
+fail_stop:
+    s_f_stop(mp);
+    s_f_close(mp);
+    g_media_playing = 0;
+    return -1;
 }
 
 /* ---- 优雅关机 ---- */

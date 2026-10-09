@@ -50,6 +50,10 @@ void use_limit_play_prompt(void);
 /** TTS 播放打点：Speaking 进入/退出各调一次，间隔毫秒数由调用方给出 */
 void use_limit_on_speaking(uint64_t elapsed_ms);
 
+/** 周期跨日检查(主循环慢检查调用, 建议每2s): 空闲态跨日解锁——跨日重置
+ *  若只挂在 on_speaking 上, 达限锁定后永远进不了 Speaking, 锁自锁到重启 */
+void use_limit_tick(void);
+
 /** 唤醒事件入口处调用；返回 1=已锁定（每次都播提示音, 调用方必须拦截本次唤醒） */
 int use_limit_should_block_wakeup(void);
 

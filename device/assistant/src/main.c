@@ -3366,6 +3366,7 @@ int main(int argc, char *argv[])
             {
                 last_slow_check_ms = now_ms;
                 api_server_check_commands();
+                use_limit_tick(); /* 空闲态跨日解锁(达限锁自锁事故 2026-10-09) */
 
                 struct stat trigger_st;
                 if (stat("/tmp/xiaozhi_wakeup_trigger", &trigger_st) == 0)
