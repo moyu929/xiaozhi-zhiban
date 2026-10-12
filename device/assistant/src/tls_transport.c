@@ -24,6 +24,7 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <poll.h>
+#include <pthread.h>
 
 #include "mbedtls/net_sockets.h"
 #include "mbedtls/ssl.h"
@@ -35,11 +36,71 @@
 #define TCP_CONNECT_TIMEOUT_MS 10000
 /* TLS握手超时时间（毫秒） */
 #define TLS_HANDSHAKE_TIMEOUT_MS 15000
+/* TLS握手期 socket recv 超时（秒）。
+ * 现场事故(2026-10-12 实机日志): 原值 5s, 握手期间网络一抖即 recv 失败
+ * (-0x4C MBEDTLS_ERR_NET_RECV_FAILED), 唤醒->连接从 0.5s 劣化到 22.5s。 */
+#define TLS_HANDSHAKE_RCV_TIMEOUT_SEC 10
+/* 握手完成后恢复的常规 recv 超时（秒） */
+#define TLS_DATA_RCV_TIMEOUT_SEC 5
 
 /* DNS解析失败时的备用IP地址列表 */
 static const char *g_fallback_ips[] = {
     "112.74.84.224",
     NULL};
+
+/* ---- DNS 结果缓存 ----
+ * 现场事故(2026-10-12 实机日志): 每次唤醒都重新 getaddrinfo, 而 uClibc 按
+ * 顺序试探 resolv.conf 里的多个 DNS, 首跳无响应即干等超时才切换, 实测单次
+ * 解析 3~5s; 叠加握手 recv 超时失败重试, 唤醒->连接劣化到 22.5s, 用户体感
+ * "唤醒没反应/连不上服务器"。
+ * 缓存 getaddrinfo 成功的结果(TTL 内复用), 唤醒路径不再受 DNS 抖动影响;
+ * 解析失败走备用IP时不写缓存, 以便 DNS 恢复后自动回到正确 IP。
+ */
+#define DNS_CACHE_TTL_MS (5 * 60 * 1000)
+
+static struct {
+    pthread_mutex_t lock;
+    char host[128];
+    struct in_addr addr;
+    int64_t cached_at_ms;
+    int valid;
+} g_dns_cache = {
+    .lock = PTHREAD_MUTEX_INITIALIZER,
+    .valid = 0,
+};
+
+/* 前向声明: DNS 缓存函数先于 tls_get_time_ms 的定义使用 */
+static int64_t tls_get_time_ms(void);
+
+/* 查 DNS 缓存: 命中返回 1 并填 addr, 未命中返回 0 */
+static int dns_cache_lookup(const char *hostname, struct in_addr *addr)
+{
+    int hit = 0;
+    pthread_mutex_lock(&g_dns_cache.lock);
+    if (g_dns_cache.valid && strcmp(g_dns_cache.host, hostname) == 0)
+    {
+        int64_t now = tls_get_time_ms();
+        if (now - g_dns_cache.cached_at_ms < DNS_CACHE_TTL_MS)
+        {
+            *addr = g_dns_cache.addr;
+            hit = 1;
+        }
+    }
+    pthread_mutex_unlock(&g_dns_cache.lock);
+    return hit;
+}
+
+/* 写 DNS 缓存（仅 getaddrinfo 成功时调用） */
+static void dns_cache_store(const char *hostname, const struct in_addr *addr)
+{
+    pthread_mutex_lock(&g_dns_cache.lock);
+    strncpy(g_dns_cache.host, hostname, sizeof(g_dns_cache.host) - 1);
+    g_dns_cache.host[sizeof(g_dns_cache.host) - 1] = '\0';
+    g_dns_cache.addr = *addr;
+    g_dns_cache.cached_at_ms = tls_get_time_ms();
+    g_dns_cache.valid = 1;
+    pthread_mutex_unlock(&g_dns_cache.lock);
+}
 
 /**
  * @brief 获取当前时间戳（毫秒）
@@ -284,6 +345,15 @@ int tls_retry_get_wait_ms(tls_retry_state_t *state)
  */
 static int resolve_hostname(const char *hostname, struct in_addr *addr)
 {
+    /* 1. 先查缓存: 命中则跳过 getaddrinfo(阻塞, 可能干等 DNS 超时) */
+    if (dns_cache_lookup(hostname, addr))
+    {
+        char ip_str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, addr, ip_str, sizeof(ip_str));
+        PLOG_I("TLS", "使用DNS缓存 %s -> %s", hostname, ip_str);
+        return 0;
+    }
+
     PLOG_I("TLS", "正在解析域名: %s", hostname);
 
     struct addrinfo hints, *result = NULL;
@@ -300,13 +370,14 @@ static int resolve_hostname(const char *hostname, struct in_addr *addr)
         inet_ntop(AF_INET, addr, ip_str, sizeof(ip_str));
         PLOG_I("TLS", "域名解析成功 %s -> %s", hostname, ip_str);
         freeaddrinfo(result);
+        dns_cache_store(hostname, addr);   /* 缓存成功结果 */
         return 0;
     }
 
     if (result)
         freeaddrinfo(result);
 
-    /* DNS解析失败，尝试备用IP */
+    /* DNS解析失败，尝试备用IP（不写缓存，DNS 恢复后自动回到正确 IP） */
     PLOG_W("TLS", "DNS解析失败: %s, 尝试备用IP", ret != 0 ? gai_strerror(ret) : "无结果");
     for (int i = 0; g_fallback_ips[i] != NULL; i++)
     {
@@ -447,11 +518,12 @@ int tls_transport_connect(tls_transport_t *tls, const char *host, int port)
 
     PLOG_I("TLS", "TCP连接成功");
 
-    /* 设置socket收发超时 */
+    /* 设置socket收发超时: 握手期 recv 放宽到 10s(防网络瞬态抖动判死),
+     * 握手完成后恢复常规 5s */
     struct timeval snd_timeout = {3, 0};
     setsockopt(tls->sockfd, SOL_SOCKET, SO_SNDTIMEO, &snd_timeout, sizeof(snd_timeout));
-    struct timeval rcv_timeout = {5, 0};
-    setsockopt(tls->sockfd, SOL_SOCKET, SO_RCVTIMEO, &rcv_timeout, sizeof(rcv_timeout));
+    struct timeval hs_rcv_timeout = {TLS_HANDSHAKE_RCV_TIMEOUT_SEC, 0};
+    setsockopt(tls->sockfd, SOL_SOCKET, SO_RCVTIMEO, &hs_rcv_timeout, sizeof(hs_rcv_timeout));
 
     /* 绑定mbedTLS网络IO和SSL上下文 */
     if (!tls->net_ctx || !tls->ssl_ctx)
@@ -519,6 +591,11 @@ int tls_transport_connect(tls_transport_t *tls, const char *host, int port)
     }
 
     PLOG_I("TLS", "TLS握手完成, 耗时%lld ms", (long long)(tls_get_time_ms() - handshake_start));
+
+    /* 握手完成, 恢复常规 recv 超时 */
+    struct timeval rcv_timeout = {TLS_DATA_RCV_TIMEOUT_SEC, 0};
+    setsockopt(tls->sockfd, SOL_SOCKET, SO_RCVTIMEO, &rcv_timeout, sizeof(rcv_timeout));
+
     tls->connected = true;
     return 0;
 }
