@@ -55,8 +55,12 @@ static const char *g_fallback_ips[] = {
  * "唤醒没反应/连不上服务器"。
  * 缓存 getaddrinfo 成功的结果(TTL 内复用), 唤醒路径不再受 DNS 抖动影响;
  * 解析失败走备用IP时不写缓存, 以便 DNS 恢复后自动回到正确 IP。
+ * TTL 可在面板「语音助手管理-更多选项(进阶)」热更新(分钟, 0=禁用缓存),
+ * 配置键 DNS_CACHE_TTL_MIN, 默认 30 分钟, 改后即时生效无需重启。
  */
-#define DNS_CACHE_TTL_MS (5 * 60 * 1000)
+#define DNS_CACHE_TTL_DEFAULT_MS (DNS_CACHE_TTL_DEFAULT_MIN * 60 * 1000)
+
+static int g_dns_cache_ttl_ms = DNS_CACHE_TTL_DEFAULT_MS;
 
 static struct {
     pthread_mutex_t lock;
@@ -80,7 +84,7 @@ static int dns_cache_lookup(const char *hostname, struct in_addr *addr)
     if (g_dns_cache.valid && strcmp(g_dns_cache.host, hostname) == 0)
     {
         int64_t now = tls_get_time_ms();
-        if (now - g_dns_cache.cached_at_ms < DNS_CACHE_TTL_MS)
+        if (now - g_dns_cache.cached_at_ms < g_dns_cache_ttl_ms)
         {
             *addr = g_dns_cache.addr;
             hit = 1;
@@ -100,6 +104,52 @@ static void dns_cache_store(const char *hostname, const struct in_addr *addr)
     g_dns_cache.cached_at_ms = tls_get_time_ms();
     g_dns_cache.valid = 1;
     pthread_mutex_unlock(&g_dns_cache.lock);
+}
+
+/* 使 DNS 缓存失效（TCP 连接失败时调用）。
+ * 服务器 IP 变更后, 缓存里的旧 IP 会 TCP 连接失败; 此时作废缓存,
+ * 上层重试即可重新 getaddrinfo 拿到新 IP, 不会粘死在旧地址上。 */
+static void dns_cache_invalidate(void)
+{
+    pthread_mutex_lock(&g_dns_cache.lock);
+    g_dns_cache.valid = 0;
+    pthread_mutex_unlock(&g_dns_cache.lock);
+}
+
+/* ---- DNS 缓存时长（分钟）: 面板热更新接口 ---- */
+
+void tls_set_dns_cache_ttl_min(int minutes)
+{
+    if (minutes < 0) minutes = 0;
+    if (minutes > 1440) minutes = 1440;
+    pthread_mutex_lock(&g_dns_cache.lock);
+    g_dns_cache_ttl_ms = minutes * 60 * 1000;
+    pthread_mutex_unlock(&g_dns_cache.lock);
+    PLOG_I("TLS", "DNS缓存时长设置为 %d 分钟%s", minutes,
+           minutes == 0 ? "(缓存已禁用)" : "");
+}
+
+int tls_get_dns_cache_ttl_min(void)
+{
+    int minutes;
+    pthread_mutex_lock(&g_dns_cache.lock);
+    minutes = g_dns_cache_ttl_ms / 60000;
+    pthread_mutex_unlock(&g_dns_cache.lock);
+    return minutes;
+}
+
+/* 启动时从 libapconfig 读取面板配置的缓存时长 */
+void tls_dns_cache_load_config(void)
+{
+    extern int get_config(const char *key, char *value, int len);
+    char ttl_buf[16] = {0};
+    if (get_config("DNS_CACHE_TTL_MIN", ttl_buf, sizeof(ttl_buf)) > 0 && ttl_buf[0])
+    {
+        int min = atoi(ttl_buf);
+        if (min < 0) min = 0;
+        if (min > 1440) min = 1440;
+        tls_set_dns_cache_ttl_min(min);
+    }
 }
 
 /**
@@ -504,6 +554,8 @@ int tls_transport_connect(tls_transport_t *tls, const char *host, int port)
         snprintf(tls->error, sizeof(tls->error), "TCP连接失败: %s", strerror(errno));
         close(tls->sockfd);
         tls->sockfd = -1;
+        /* IP 可能已变更: 作废 DNS 缓存, 让上层重试时重新解析 */
+        dns_cache_invalidate();
         return -1;
     }
 

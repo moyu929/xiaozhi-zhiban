@@ -3041,6 +3041,7 @@ int main(int argc, char *argv[])
     /* 注册IPC消息分发器 */
     use_limit_init();          /* 每日使用时长(§四) */
     display_ctrl_start();      /* 会话域息屏管理器(§八需求③) */
+    tls_dns_cache_load_config(); /* DNS 缓存时长(面板可热更新) */
 
     /* 拉起 xwebd 面板守护(rootfs squashfs 只读无法挂 rcS, 借助手进程宿主化, 幂等) */
     if (access("/var/upgrade/xwebd", X_OK) == 0 &&

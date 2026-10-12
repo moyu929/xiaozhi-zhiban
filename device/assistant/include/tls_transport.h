@@ -50,4 +50,13 @@ void tls_retry_record_failure(tls_retry_state_t *state);
 void tls_retry_reset(tls_retry_state_t *state);
 int tls_retry_get_wait_ms(tls_retry_state_t *state);
 
+/* ---- DNS 缓存时长（分钟，面板可热更新） ----
+ * 0 = 禁用缓存（每次唤醒都重新解析）
+ * 默认 30；配置键 DNS_CACHE_TTL_MIN，改后即时生效无需重启 */
+#define DNS_CACHE_TTL_DEFAULT_MIN 30
+
+void tls_set_dns_cache_ttl_min(int minutes);
+int tls_get_dns_cache_ttl_min(void);
+void tls_dns_cache_load_config(void);
+
 #endif

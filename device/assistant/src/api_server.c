@@ -19,6 +19,7 @@
 #include "diag_module.h"
 #include "use_limit.h"
 #include "display_ctrl.h"
+#include "tls_transport.h"
 #include "applib_api.h"
 
 #include <stdio.h>
@@ -124,6 +125,8 @@ void api_server_write_config(void)
     char so_buf[16] = "0";
     if (get_config("SCREEN_OFF_IDLE_SEC", so_buf, sizeof(so_buf)) <= 0 || !so_buf[0])
         snprintf(so_buf, sizeof(so_buf), "0");
+    /* DNS 缓存时长(分钟, tls_transport 域) */
+    int dns_ttl_min = tls_get_dns_cache_ttl_min();
     /* 当前系统音量(原生 sound 库, 0-40; -1=原生库未加载) */
     int vol = (g_app.mcp.sound_get_sys_volume) ? g_app.mcp.sound_get_sys_volume() : -1;
     char buf[4096];
@@ -133,6 +136,7 @@ void api_server_write_config(void)
         "\"wakeup_cooldown\":%llu,\"ws_ping_interval\":%llu,"
         "\"mcp_endpoint\":\"%s\",\"listening_mode\":\"%s\",\"aec_mode\":\"%s\","
         "\"boot_push_disable\":%d,\"screen_off_idle_sec\":%d,\"volume\":%d,"
+        "\"dns_cache_ttl_min\":%d,"
         "\"use_limit\":{\"enable\":%d,\"minutes\":%d,\"spent_sec\":%ld,"
         "\"remain_sec\":%ld,\"locked\":%d,\"delay_until\":%ld,\"delay_tool\":%d,"
         "\"sched\":{\"enable\":%d,\"days\":%d,\"spans\":\"%s\",\"in_span\":%d}}}\n",
@@ -151,6 +155,7 @@ void api_server_write_config(void)
         boot_push_disable_enabled(),
         atoi(so_buf),
         vol,
+        dns_ttl_min,
         use_limit_get_enable(),
         use_limit_get_minutes(),
         use_limit_spent_sec(),
@@ -509,6 +514,17 @@ void api_server_check_commands(void)
             {
                 use_limit_set_delay_tool(val);
                 PLOG_I(TAG, "use_limit_delay_tool=%d 已设置", val);
+                api_server_write_config();
+            }
+            /* DNS 缓存时长(分钟, 0=禁用): 热更新, 立即生效 */
+            if (parse_json_int(buf, "dns_cache_ttl_min", &val) == 0 && val >= 0 && val <= 1440)
+            {
+                tls_set_dns_cache_ttl_min(val);
+                char dv[16];
+                snprintf(dv, sizeof(dv), "%d", val);
+                set_config("DNS_CACHE_TTL_MIN", dv, strlen(dv));
+                sync_config();
+                PLOG_I(TAG, "dns_cache_ttl_min=%d 已设置", val);
                 api_server_write_config();
             }
             if (parse_json_int(buf, "use_limit_sched_days", &val) == 0)
