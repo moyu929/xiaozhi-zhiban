@@ -76,6 +76,19 @@ static int read_brightness(int defval)
     return v;
 }
 
+static int read_bl_power(void)
+{
+    int fd = open(BL_POWER, O_RDONLY);
+    if (fd < 0)
+        return -1;
+    char c = '1';
+    int n = read(fd, &c, 1);
+    close(fd);
+    if (n <= 0)
+        return -1;
+    return (c == '0') ? 0 : 1;
+}
+
 static void screen_off_apply(void)
 {
     if (g_dc.screen_off)
@@ -127,6 +140,16 @@ void display_ctrl_start(void)
     memset((void *)&g_dc, 0, sizeof(g_dc));
     g_dc.interval_sec = cfg_get_int("SCREEN_OFF_IDLE_SEC", 0);
     g_dc.last_activity_ms = now_ms();
+
+    /* 热更新(execvp)后内存清零但硬件背光保留上次状态: 启动时回读同步,
+     * 避免"内存以为亮、硬件实际黑"导致后续唤醒不亮屏
+     * (2026-10-13 采纳 onlytoy fork 同款修复) */
+    if (read_bl_power() == 1)
+    {
+        g_dc.screen_off = 1;
+        g_dc.saved_brightness = read_brightness(200);
+        PLOG_I("DISP", "启动同步: 硬件为息屏态(热更新残留), screen_off=1");
+    }
 
     g_dc.running = 1;
     pthread_attr_t attr;
