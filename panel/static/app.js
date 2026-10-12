@@ -879,6 +879,7 @@ function resetWirelessUI() {
     document.querySelectorAll('#schedDays input[type=checkbox]').forEach(function(cb) { cb.checked = false; });
     $('limitStat').textContent = '今日已用 -- 分钟（未启用）';
     $('cfgScreenOffSec').value = '';
+    $('cfgDnsCacheTtl').value = '';
     var bls = $('blSlider'); /* 背光滑条已迁 lights 插件条目, 元素可能不存在 */
     if (bls) { bls.value = 400; }
     var blv = $('blValue');
@@ -1729,6 +1730,7 @@ async function refreshConfig() {
         if (r.ws_ping_interval) $('cfgWsPingInterval').value = Math.round(r.ws_ping_interval / 1000);
         if (r.boot_push_disable !== undefined) $('cfgBootPushDisable').checked = false; /* 死锁缺陷禁用: 强制关, 见 bootPushModal */
         if (r.screen_off_idle_sec !== undefined) $('cfgScreenOffSec').value = r.screen_off_idle_sec;
+        if (r.dns_cache_ttl_min !== undefined) $('cfgDnsCacheTtl').value = r.dns_cache_ttl_min;
         if (r.volume !== undefined && r.volume >= 0) {
             $('volSlider').value = r.volume;
             volOnInput();
@@ -2017,6 +2019,9 @@ async function saveAssistantConfig() {
     var customWsUrl = $('cfgCustomWsUrl').value.trim();
     config.custom_ws_url = customWsUrl;
     config.boot_push_disable = $('cfgBootPushDisable').checked ? 1 : 0;
+    /* DNS 缓存时长(分钟, 0=禁用) */
+    var dnsCacheTtl = parseInt($('cfgDnsCacheTtl').value);
+    if (!isNaN(dnsCacheTtl) && dnsCacheTtl >= 0) config.dns_cache_ttl_min = dnsCacheTtl;
     var r = await api('/api/assistant/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -2056,6 +2061,7 @@ async function restoreAssistantDefaults() {
     $('cfgWakeupCooldown').value = '3';
     $('cfgWsPingInterval').value = '25';
     $('cfgScreenOffSec').value = '0';
+    $('cfgDnsCacheTtl').value = '30';
     $('cfgCustomWsUrl').value = '';
     $('cfgBootPushDisable').checked = false;
     $('cfgLimitEnable').checked = false;
@@ -2079,6 +2085,7 @@ async function restoreAssistantDefaults() {
             screen_off_idle_sec: 0,
             custom_ws_url: '',
             boot_push_disable: 0,
+            dns_cache_ttl_min: 30,
             use_limit_enable: 0,
             use_limit_minutes: 60,
             use_limit_delay_tool: 0,
