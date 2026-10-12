@@ -1,0 +1,128 @@
+name: build-and-sync
+
+# push develop 即自动编译固件(assistant+xwebd+插件), 并把 panel 与预编译产物
+# 同步到 main —— main 分支完全由 CI 维护, 免除本地双分支管理。
+# main 上的 release 提交均为本工作流产出; 版本号自增提交以 [skip ci] 兜底
+# (GITHUB_TOKEN 触发的 push 本就不会触发新 run, 双保险)。
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-and-sync-develop
+  cancel-in-progress: true
+
+jobs:
+  build-and-sync:
+    runs-on: ubuntu-latest
+    steps:
+      # 硬编码检出 develop: workflow_dispatch 按钮(在默认分支 main 上)触发时
+      # 也一律构建 develop 源, 与 push 触发行为完全一致
+      - name: 检出 develop
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: 缓存交叉工具链
+        id: toolchain
+        uses: actions/cache@v4
+        with:
+          path: toolchain
+          key: uclibc-toolchain-arm-buildroot-linux-uclibcgnueabi
+
+      - name: 下载并重定位工具链
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p toolchain
+          cd toolchain
+          wget -q https://raw.githubusercontent.com/ChrisTheCoolHut/uClibc-Cross-Compilers/master/arm-buildroot-linux-uclibcgnueabi_sdk-buildroot.tar.xz
+          tar -xf arm-buildroot-linux-uclibcgnueabi_sdk-buildroot.tar.xz
+          cd arm-buildroot-linux-uclibcgnueabi_sdk-buildroot
+          bash ./relocate-sdk.sh
+
+      - name: 编译 assistant (sair)
+        run: bash device/assistant/build.sh
+
+      - name: 编译 xwebd 与插件
+        run: |
+          bash device/xwebd/build.sh
+          bash device/xwebd/build_plugins.sh
+
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            device/assistant/build/sair
+            device/assistant/build/version.h
+            device/xwebd/build/xwebd
+            device/xwebd/build/version.h
+            device/xwebd/build/plugins/
+          if-no-files-found: error
+
+      # build.sh 会自增 .version 并把产物拷入 prebuilt/,
+      # 提交回 develop 保持"仓库 .version = 最近一次构建版本"的约定
+      - name: 版本自增与预编译产物提交回 develop
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add device/assistant/.version device/assistant/prebuilt device/xwebd/.version device/xwebd/prebuilt
+          if git diff --cached --quiet; then
+            echo "无版本变化, 跳过提交"
+          else
+            git commit -m "chore(ci): 构建版本号自增 [skip ci]"
+            git push
+          fi
+          echo "DEVELOP_SHA=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+
+      - name: 检出 main 到子目录
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main-sync
+          fetch-depth: 0
+
+      - name: 同步 panel 与编译产物到 main
+        run: |
+          rsync -a --delete panel/ main-sync/panel/
+          cp -f device/assistant/build/sair main-sync/device/assistant/prebuilt/sair
+          cp -f device/assistant/.version main-sync/device/assistant/.version
+          cp -f device/xwebd/build/xwebd main-sync/device/xwebd/prebuilt/xwebd
+          cp -f device/xwebd/.version main-sync/device/xwebd/.version
+          mkdir -p main-sync/device/xwebd/build/plugins
+          rsync -a --delete device/xwebd/build/plugins/ main-sync/device/xwebd/build/plugins/
+          # 工作流文件同步到 main(默认分支): 让 Actions 页出现 Run workflow 按钮
+          mkdir -p main-sync/.github/workflows
+          cp -f .github/workflows/build-sync.yml main-sync/.github/workflows/build-sync.yml
+
+      - name: 提交并推送 main
+        run: |
+          cd main-sync
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A panel device/assistant/.version device/assistant/prebuilt device/xwebd/.version device/xwebd/prebuilt device/xwebd/build/plugins .github
+          if git diff --cached --quiet; then
+            echo "main 无变化, 跳过提交"
+          else
+            git commit -m "release: CI 自动同步 develop 构建 (develop@${DEVELOP_SHA:-unknown})"
+            git push
+          fi
+
+      # 一次性配置: GitHub 仓库 Settings → Secrets and variables → Actions
+      #   新建 GITEE_TOKEN = Gitee 私人令牌(勾选 projects 权限)。
+      # 未配置时本步骤自动跳过; 配置后每次构建把 develop+main 镜像推送到 Gitee。
+      # continue-on-error: Gitee 漂移不应判红整个构建, 步骤历史里保持可见。
+      - name: 同步 Gitee 镜像 (develop + main)
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        if: env.GITEE_TOKEN != ''
+        continue-on-error: true
+        run: |
+          git push "https://oauth2:${GITEE_TOKEN}@gitee.com/beichen929/xiaozhi-zhiban.git" HEAD:develop
+          cd main-sync
+          git push "https://oauth2:${GITEE_TOKEN}@gitee.com/beichen929/xiaozhi-zhiban.git" HEAD:main
