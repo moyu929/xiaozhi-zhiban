@@ -1,5 +1,7 @@
 # 小智·智伴 (xiaozhi-zhiban)
 
+[![build-and-sync](https://github.com/moyu929/xiaozhi-zhiban/actions/workflows/build-sync.yml/badge.svg?branch=develop)](https://github.com/moyu929/xiaozhi-zhiban/actions/workflows/build-sync.yml)
+
 <p align="center">
   <strong>智伴教育机器人1X（GS705B）的开源语音助手替代方案 — 开箱即用，直接部署</strong>
 </p>
@@ -23,13 +25,15 @@
 - 📊 **实时监控** — 设备状态、日志、配置一览无余
 - ⚙️ **运行时配置** — WebSocket 地址、超时参数、日志级别等均可在线调整
 - 🔗 **MCP 接入点** — 支持配置 xiaozhi.me 智能体专属 MCP 端点，实现工具调用能力扩展
+- 💬 **屏幕字幕** — TTS 回复文本在屏幕底部实时显示
+- 🌙 **会话息屏** — 对话期间可配置 N 秒无触摸/按键自动息屏省电，触摸/按键点亮，语音对话不受影响（默认关闭）
 - 🧩 **插件系统** — 独立进程插件按需安装/卸载（电池守护、文件管理、进程管理、USB、灯控等），单个插件崩溃不影响系统
 - ⏰ **每日使用时长管理** — 家长可设每日对话时长上限，达限后锁定并播放提示音，支持多时段允许窗口与临时延迟
 
 ### ⚠️ 已知限制
 
 - **唤醒词不可自定义** — 本项目使用设备原生唤醒词模型，暂不支持更改唤醒词
-- **无实时对话模式** — 设备原生 AEC（回声消除）为闭源，无法在自定义程序中调用，因此仅支持 AutoStop 模式（TTS 播放时停止录音，播放结束后恢复）
+- **Realtime 模式 AEC 为软件兜底** — 设备原生 AEC（回声消除）为闭源无法调用，Realtime 模式采用自研定点 NLMS AEC（效果依赖实机声学环境），默认 AutoStop 模式
 
 ---
 
