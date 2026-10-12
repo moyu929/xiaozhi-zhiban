@@ -106,3 +106,17 @@ jobs:
             git commit -m "release: CI 自动同步 develop 构建 (develop@${DEVELOP_SHA:-unknown})"
             git push
           fi
+
+      # 一次性配置: GitHub 仓库 Settings → Secrets and variables → Actions
+      #   新建 GITEE_TOKEN = Gitee 私人令牌(勾选 projects 权限)。
+      # 未配置时本步骤自动跳过; 配置后每次构建把 develop+main 镜像推送到 Gitee。
+      # continue-on-error: Gitee 漂移不应判红整个构建, 步骤历史里保持可见。
+      - name: 同步 Gitee 镜像 (develop + main)
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        if: env.GITEE_TOKEN != ''
+        continue-on-error: true
+        run: |
+          git push "https://oauth2:${GITEE_TOKEN}@gitee.com/beichen929/xiaozhi-zhiban.git" HEAD:develop
+          cd main-sync
+          git push "https://oauth2:${GITEE_TOKEN}@gitee.com/beichen929/xiaozhi-zhiban.git" HEAD:main
