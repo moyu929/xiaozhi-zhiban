@@ -5,7 +5,8 @@
  * 设计口径：
  *  - 与原生 libsystime 三倒计时**解耦**：原生息屏链我们从未接入且不想牵连空闲态；
  *    这里做一个 assistant 自有的、只在会话期间生效的背光管理器。
- *  - 配置 SCREEN_OFF_IDLE_SEC：0=不息屏（默认）；>0 = 无音频输出 N 秒后熄屏。
+ *  - 配置 SCREEN_OFF_IDLE_SEC：0=不息屏（默认）；>0 = 会话内无触摸/按键输入 N 秒后熄屏
+ *    （计时仅由触摸/按键与会话开始刷新，音频输出不刷新计时）。
  *  - 熄屏用 bl_power（电源门），不用 brightness=0（部分面板低值仍微亮）；
  *    音频链路与 AEC 参考（audio_service 硬件 loopback）完全不受影响。
  *  - AI 内部状态切换（聆听↔播报）保持黑屏；触摸/按键恢复亮屏且**就地吞掉**
@@ -27,7 +28,8 @@ void display_ctrl_start(void);
 /** 重新加载配置键 SCREEN_OFF_IDLE_SEC（可运行时变更） */
 void display_ctrl_reload_config(void);
 
-/** 记录“有音频输出/用户活动”事件：刷新会话内 idle 计时（频繁调用廉价） */
+/** 记录用户活动事件：刷新会话内 idle 计时（当前仅 MSG_SAIR_DISABLE 路径调用；
+ *  日常刷新源是触摸/按键，音频输出不刷新计时） */
 void display_ctrl_note_activity(void);
 
 /** 会话生命周期：进入对话会话=1，回到 Idle=0（Idle 时若黑屏则恢复亮屏） */
