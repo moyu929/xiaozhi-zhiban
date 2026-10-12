@@ -1,5 +1,7 @@
 # 小智·智伴 (xiaozhi-zhiban) — Develop
 
+[![build-and-sync](https://github.com/moyu929/xiaozhi-zhiban/actions/workflows/build-sync.yml/badge.svg?branch=develop)](https://github.com/moyu929/xiaozhi-zhiban/actions/workflows/build-sync.yml)
+
 <p align="center">
   <strong>智伴教育机器人1X（GS705B）的开源语音助手替代方案 — 开发者版本，包含完整源码</strong>
 </p>
@@ -331,8 +333,16 @@ curl -X POST http://DEVICE_IP:8080/api/assistant/upgrade
 
 ```bash
 # 手动重启设备
-python scripts/debug/force_reboot.py
+adb shell reboot
 ```
+
+#### 分支与发布流程（CI 自动化）
+
+- 只开发/推送 **develop** 分支（origin = GitHub）：`git push origin develop` 即完成发布
+- push 自动触发 `build-and-sync` 工作流：编译 sair/xwebd/插件 → 版本号自增提交回 develop → panel 与预编译产物同步到 **main** → develop+main 镜像推送到 **Gitee**
+- **不要手动推送 main 分支与 Gitee**（main 上的 README 修订等纯文档改动可以直接推，CI 不会触碰 README）
+- CI 会把版本自增提交回 origin/develop，**本地构建前先 `git pull --rebase`**
+- 手动触发构建：Actions → build-and-sync → Run workflow（任何分支触发都会构建 develop 源）
 
 #### assistant 热更新原理
 
@@ -356,7 +366,7 @@ assistant 主循环检测到 g_hot_update_pending:
 
 **为什么不用 kill + restart**：kill 后 PID 变化 → Manager 检测 WIFSIGNALED → reboot；SCHED_RR 调度丢失；kill 到新进程启动有间隙 → 看门狗超时。
 
-> ⚠️ **版本号自动递增**：build.sh 编译时自动生成 `version.h`，通过 `.version` 文件管理版本号，采用进位逻辑（每位到10进位，如 2.1.9 → 2.2.0）。当前 assistant 版本 2.4.x，xwebd 版本 1.2.x。
+> ⚠️ **版本号自动递增**：build.sh 编译时自动生成 `version.h`，通过 `.version` 文件管理版本号，采用进位逻辑（每位到10进位，如 2.1.9 → 2.2.0）。当前版本以各模块 `.version` 文件为准（CI 构建时自动递增并提交回 develop）。
 >
 > `.version` 文件需提交到仓库，确保不同环境编译时版本号一致。
 
@@ -415,15 +425,9 @@ xiaozhi-zhiban-develop/
 │       ├── index.html
 │       ├── app.js
 │       └── style.css
-├── scripts/                          # 开发调试脚本
-│   ├── config_loader.py             # 项目参数加载模块
-│   ├── debug/                       # 调试工具
-│   │   ├── force_reboot.py          # 强制重启设备
-│   │   ├── high_freq_monitor.py     # 高频监控设备状态
-│   │   └── monitor_keys.sh          # 按键监测（设备端运行）
-│   └── device_check/                # 设备检查工具
-│       ├── emergency_fix.py         # 紧急修复循环重启
-│       └── emergency_nuke.py        # 紧急恢复出厂
+├── scripts/                          # 测试脚本
+│   ├── test_device_side.py          # 设备端测试
+│   └── test_panel_side.py           # 面板端测试
 ├── project_config.example.json       # 项目参数配置模板
 ├── LICENSE
 └── README.md
@@ -525,7 +529,8 @@ cp project_config.example.json project_config.json
 | USE_LIMIT_MINUTES | 60 | 每日可用分钟数（按 TTS 播放时长累计） |
 | USE_LIMIT_PROMPT_ID | 14 | 触限提醒音 id（暂用设备已有音频占位） |
 | USE_LIMIT_SPENT_SEC / USE_LIMIT_DAY | 0 / 当日 | 内部累计状态（勿手改） |
-| SCREEN_OFF_IDLE_SEC | 0 | 唤醒期间息屏秒数（0=不息屏，触摸/按键点亮） |
+| SCREEN_OFF_IDLE_SEC | 0 | 会话内息屏秒数（0=不息屏，触摸/按键点亮） |
+| DNS_CACHE_TTL_MIN | 30 | DNS 解析缓存时长（分钟，0=禁用，改后即时生效） |
 
 ### 编译时配置
 
@@ -571,11 +576,6 @@ assistant 通过 applib 框架的 `get_msg()` 循环自动续命（每 ~16.7 秒
 # 自动恢复（boot_watchdog.sh，设备级）
 # 连续3次短命启动自动回退
 
-# PC端脚本修复
-python scripts/device_check/emergency_fix.py          # 自适应模式
-python scripts/device_check/emergency_fix.py --fast   # 快速重启专用
-python scripts/device_check/emergency_fix.py --slow   # 慢速重启专用
-
 # 手动修复
 adb shell "rm -f /var/upgrade/sair; reboot"
 ```
@@ -593,12 +593,7 @@ adb shell "rm -f /var/upgrade/sair; reboot"
    - 无线模式：点击「🚨 紧急修复」按钮
    - 需二次确认，确认后自动高频轮询，检测到设备立即清理
 
-2. **命令行脚本**：
-   ```bash
-   python scripts/device_check/emergency_nuke.py --adb          # ADB模式（推荐，更快）
-   python scripts/device_check/emergency_nuke.py --http IP      # HTTP模式
-   python scripts/device_check/emergency_nuke.py --auto IP      # 自动模式（先ADB后HTTP）
-   ```
+2. **命令行**：等价的命令行脚本未随仓库分发，紧急场景请直接使用 Panel 面板的紧急修复按钮
 
 **原理**：
 - ADB 模式：以 0.3 秒间隔轮询 `adb devices`，检测到设备后立即执行 `killall` + `rm` 清理所有自定义文件
@@ -706,7 +701,9 @@ assistant 通过 WebSocket 连接云端 API 完成设备激活和语音对话。
 | self.reboot | 重启设备（带提示音） |
 | self.poweroff | 关机（走原生动画链，8s 兜底硬关机） |
 | self.limit_info | 查询每日使用时长状态（只读） |
-| self.screen_off_set N | 设置唤醒期间息屏秒数（0=关闭） |
+| self.screen_off_set N | 设置会话内息屏秒数（0=关闭，触摸/按键点亮） |
+| self.screen_off_now | 立即息屏，语音对话继续 |
+| self.screen_on_now | 亮屏（用户说「亮屏/打开屏幕」时调用） |
 
 ---
 
