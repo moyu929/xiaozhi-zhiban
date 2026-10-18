@@ -122,6 +122,30 @@ function toast(msg, type) {
     }, 2500);
 }
 
+/* ==================== Wait Bar (倒计时等待条) ====================
+ * 2026-10-18: 长操作(ADB检测/部署等)显示倒计时, 前端 api() 统一 15s 超时,
+ * 倒计时从 15 递减——让用户知道系统在工作, 避免误以为按钮失效而连点 */
+var _waitTimer = null;
+function showWait(msg, seconds) {
+    var el = $('waitbar');
+    if (!el) return;
+    var remain = seconds || 15;
+    var label = $('waitbarMsg');
+    label.textContent = msg + ' ' + remain + 's';
+    el.style.display = 'flex';
+    clearInterval(_waitTimer);
+    _waitTimer = setInterval(function() {
+        remain--;
+        if (remain < 0) { clearInterval(_waitTimer); _waitTimer = null; return; }
+        label.textContent = msg + ' ' + remain + 's';
+    }, 1000);
+}
+function hideWait() {
+    if (_waitTimer) { clearInterval(_waitTimer); _waitTimer = null; }
+    var el = $('waitbar');
+    if (el) el.style.display = 'none';
+}
+
 function flashEl(el) {
     if (!el) return;
     el.classList.add('flash');
@@ -397,9 +421,14 @@ async function adbDetect() {
     var btn = $('btnAdbDetect');
     btn.disabled = true;
     btn.textContent = '扫描中...';
-    var r = await api('/api/adb/devices');
-    btn.disabled = false;
-    btn.textContent = '扫描设备';
+    showWait('正在扫描USB设备', 15);
+    try {
+        var r = await api('/api/adb/devices');
+    } finally {
+        hideWait();
+        btn.disabled = false;
+        btn.textContent = '扫描设备';
+    }
 
     if (r.error) {
         $('adbDeviceList').innerHTML = '<div class="empty-state">ADB 不可用：' + escapeHtml(r.error) + '</div>';
@@ -508,7 +537,22 @@ async function selectAdbDevice(serial) {
 async function adbRefreshStatus() {
     if (!S.adb.serial) return;
     var r = await api('/api/adb/sair-status?serial=' + encodeURIComponent(S.adb.serial));
-    if (r.error) return;
+    if (r.error || !r.sair) {
+        // 2026-10-18 修复: 设备半连接时 sair-status 后端串行4-5条adb命令每条吃满
+        // 10s超时, 前端15s先超时返回error——直接return会让内核状态永远停在"未检测"
+        // (即"一直显示检测中")。降级: 改用较短的check探测, 仍失败则显示"无响应"
+        var fb = await api('/api/adb/check?serial=' + encodeURIComponent(S.adb.serial));
+        var xel = $('adbXwebdStatus');
+        if (fb && fb.adb_available) {
+            xel.textContent = fb.xwebd_installed ? '已安装' : '未安装';
+            xel.className = 'svc-status ' + (fb.xwebd_installed ? 'svc-off' : 'svc-unknown');
+        } else {
+            xel.textContent = '无响应';
+            xel.className = 'svc-status svc-unknown';
+            toast('设备响应异常，请重新插拔USB后重试', 'error');
+        }
+        return;
+    }
 
     var sair = r.sair || {};
     var xwebd = r.xwebd || {};
@@ -584,59 +628,103 @@ async function adbRefreshDeviceInfo() {
 }
 
 async function adbDeployXwebd() {
-    toast('正在检测设备状态...', 'info');
-    var initR = await api('/api/adb/init-status?serial=' + encodeURIComponent(S.adb.serial || ''));
-    var isInit = initR.initialized;
-    var confirmMsg = isInit ? '确定部署面板内核？' : '检测到新设备，部署将自动完成初始化（创建启动脚本、配置ADB等）。确定继续？';
-    if (!await showConfirm(confirmMsg)) return;
-    var progress = $('adbXwebdProgress');
-    var bar = $('adbXwebdBar');
-    var label = $('adbXwebdProgressLabel');
-    progress.style.display = 'inline-flex';
-    bar.style.width = '5%';
-    label.textContent = isInit ? '部署中...' : '初始化设备...';
-    $('btnAdbDeployXwebd').disabled = true;
-    bar.style.width = '15%';
-    if (isInit) label.textContent = '部署中...';
+    // 2026-10-18: 防重入覆盖全程——init-status 最坏30s + 部署耗时, 连点会堆积请求
+    if (S.adb.deploying) return;
+    S.adb.deploying = true;
+    try {
+        showWait('正在检测设备状态', 15);
+        var initR;
+        try {
+            initR = await api('/api/adb/init-status?serial=' + encodeURIComponent(S.adb.serial || ''));
+        } finally { hideWait(); }
+        var isInit, skipConfirm = false;
+        if (initR.error || initR.adb_available === false) {
+            // 2026-10-18 保底: 检测失败(设备半连接典型)不硬性中止, 两道确认后允许强制部署
+            // deploy_xwebd 后端自包含(push/chmod/看门狗/自启/启动), 不依赖检测结果
+            var failReason = initR.error || 'ADB不可用';
+            var force = await showConfirm(
+                '⚠️ 设备状态检测失败\n\n'
+                + '原因：' + failReason + '\n\n'
+                + '这通常意味着设备处于半连接状态（adbd假死 / USB不稳 / 未确认授权），建议先重新插拔USB或重启设备后再试。\n\n'
+                + '如仍要尝试，可强制部署（按新设备流程执行初始化并部署）。是否强制部署？',
+                {danger: true, okText: '强制部署'});
+            if (!force) return;
+            var force2 = await showConfirm(
+                '⚠️ 二次确认\n\n'
+                + '设备状态未确认，即将按新设备流程强制部署面板内核。\n\n'
+                + 'USB连接不稳定时部署可能耗时较长或失败。确定开始部署？',
+                {danger: true, okText: '开始部署'});
+            if (!force2) return;
+            isInit = false;
+            skipConfirm = true; // 强制部署的两道确认已含部署意图, 不再走常规确认
+        } else {
+            isInit = initR.initialized;
+        }
+        if (!skipConfirm) {
+            var confirmMsg = isInit ? '确定部署面板内核？' : '检测到新设备，部署将自动完成初始化（创建启动脚本、配置ADB等）。确定继续？';
+            if (!await showConfirm(confirmMsg)) return;
+        }
+        var progress = $('adbXwebdProgress');
+        var bar = $('adbXwebdBar');
+        var label = $('adbXwebdProgressLabel');
+        progress.style.display = 'inline-flex';
+        bar.style.width = '5%';
+        label.textContent = isInit ? '部署中...' : '初始化设备...';
+        $('btnAdbDeployXwebd').disabled = true;
+        bar.style.width = '15%';
+        if (isInit) label.textContent = '部署中...';
 
-    var r = await api('/api/deploy/xwebd', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serial: S.adb.serial }),
-    });
+        showWait(isInit ? '正在部署面板内核' : '正在初始化并部署内核', 15);
+        var r;
+        try {
+            r = await api('/api/deploy/xwebd', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ serial: S.adb.serial }),
+            });
+        } finally { hideWait(); }
 
-    bar.style.width = '100%';
-    $('btnAdbDeployXwebd').disabled = false;
-    if (r.ok) {
-        label.textContent = '完成';
-        toast('面板内核部署成功', 'success');
-        if (r.ip) $('deviceHost').value = r.ip;
-        setTimeout(function() { progress.style.display = 'none'; adbRefreshStatus(); }, 1500);
-    } else {
-        label.textContent = '失败';
-        toast('面板内核部署失败', 'error');
+        bar.style.width = '100%';
+        $('btnAdbDeployXwebd').disabled = false;
+        if (r.ok) {
+            label.textContent = '完成';
+            toast('面板内核部署成功', 'success');
+            if (r.ip) $('deviceHost').value = r.ip;
+            setTimeout(function() { progress.style.display = 'none'; adbRefreshStatus(); }, 1500);
+        } else {
+            label.textContent = '失败';
+            toast('面板内核部署失败' + (r.error ? '：' + r.error : ''), 'error');
+        }
+    } finally {
+        S.adb.deploying = false;
     }
 }
 
 async function adbStartXwebd() {
-    toast('正在启动面板内核...', 'info');
-    var r = await api('/api/xwebd/restart', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serial: S.adb.serial }),
-    });
+    showWait('正在启动面板内核', 15);
+    var r;
+    try {
+        r = await api('/api/xwebd/restart', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serial: S.adb.serial }),
+        });
+    } finally { hideWait(); }
     if (r.ok) { toast('面板内核已启动', 'success'); adbRefreshStatus(); }
     else toast('启动失败', 'error');
 }
 
 async function adbRestartXwebd() {
     if (!await showConfirm('确定重启面板内核？')) return;
-    toast('正在重启面板内核...', 'info');
-    var r = await api('/api/xwebd/restart', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serial: S.adb.serial }),
-    });
+    showWait('正在重启面板内核', 15);
+    var r;
+    try {
+        r = await api('/api/xwebd/restart', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serial: S.adb.serial }),
+        });
+    } finally { hideWait(); }
     if (r.ok) toast('面板内核已重启', 'success');
     else toast('重启失败', 'error');
     adbRefreshStatus();
@@ -644,12 +732,15 @@ async function adbRestartXwebd() {
 
 async function adbRemoveXwebd() {
     if (!await showConfirm('确定卸载面板内核？', {danger: true})) return;
-    toast('正在卸载面板内核...', 'info');
-    var r = await api('/api/xwebd/remove', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serial: S.adb.serial }),
-    });
+    showWait('正在卸载面板内核', 15);
+    var r;
+    try {
+        r = await api('/api/xwebd/remove', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serial: S.adb.serial }),
+        });
+    } finally { hideWait(); }
     if (r.ok) { toast('面板内核已卸载', 'success'); adbRefreshStatus(); }
     else toast('卸载失败', 'error');
 }
@@ -663,12 +754,16 @@ async function adbDeploySair(mode) {
     bar.style.width = '10%';
     label.textContent = '部署中...';
     $('btnAdbDeploySairCold').disabled = true;
+    showWait('正在部署语音助手', 15);
 
-    var r = await api('/api/adb/deploy-sair', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serial: S.adb.serial, mode: 'cold' }),
-    });
+    var r;
+    try {
+        r = await api('/api/adb/deploy-sair', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serial: S.adb.serial, mode: 'cold' }),
+        });
+    } finally { hideWait(); }
 
     bar.style.width = '100%';
     $('btnAdbDeploySairCold').disabled = false;
@@ -690,12 +785,15 @@ async function adbDeploySair(mode) {
 
 async function adbRemoveSair() {
     if (!await showConfirm('确定卸载语音助手？', {danger: true})) return;
-    toast('正在卸载语音助手...', 'info');
-    var r = await api('/api/adb/uninstall-sair', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serial: S.adb.serial }),
-    });
+    showWait('正在卸载语音助手', 15);
+    var r;
+    try {
+        r = await api('/api/adb/uninstall-sair', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serial: S.adb.serial }),
+        });
+    } finally { hideWait(); }
     if (r.ok) { toast('语音助手已卸载', 'success'); adbRefreshStatus(); }
     else toast('卸载失败: ' + (r.error || ''), 'error');
 }
@@ -713,12 +811,15 @@ async function adbPoweroff() {
 
 async function adbFactoryReset() {
     if (!await showConfirm('确定恢复出厂设置？\n\n⚠️ 仅清除小智·智伴项目相关文件（/var/upgrade目录下的自定义程序、脚本和日志），并非对设备本身恢复出厂设置。清除后设备将恢复为原生状态。', {danger: true})) return;
-    toast('正在恢复出厂设置...', 'info');
-    var r = await api('/api/adb/factory-reset', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serial: S.adb.serial }),
-    });
+    showWait('正在恢复出厂设置', 15);
+    var r;
+    try {
+        r = await api('/api/adb/factory-reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serial: S.adb.serial }),
+        });
+    } finally { hideWait(); }
     if (r.ok) {
         stopPolling();
         S.wl.connected = false;

@@ -822,6 +822,39 @@ body {
 .toast.success { background: rgba(50,240,140,0.2); color: var(--accent); border: 1px solid rgba(50,240,140,0.3); }
 .toast.error { background: rgba(239,68,68,0.2); color: var(--danger); border: 1px solid rgba(239,68,68,0.3); }
 
+/* 倒计时等待条(2026-10-18): 长操作期间底部常驻, 显示剩余秒数 */
+.waitbar {
+  position: fixed;
+  bottom: 6%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 22px;
+  border-radius: 999px;
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--info);
+  background: rgba(30,41,59,0.85);
+  border: 1px solid rgba(59,130,246,0.35);
+  z-index: 210;
+  display: none;
+  align-items: center;
+  gap: 10px;
+  backdrop-filter: blur(16px);
+  pointer-events: none;
+  max-width: 80vw;
+  white-space: nowrap;
+}
+.waitbar-spinner {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 2px solid rgba(59,130,246,0.25);
+  border-top-color: var(--info);
+  border-radius: 50%;
+  animation: waitbarSpin 0.8s linear infinite;
+}
+@keyframes waitbarSpin { to { transform: rotate(360deg); } }
+
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -1090,6 +1123,7 @@ body {
   color: var(--text-primary);
   line-height: 1.6;
   margin-bottom: 22px;
+  white-space: pre-line; /* 2026-10-18: 让 \n 多行确认文案(如强制部署说明)正常换行 */
 }
 .confirm-actions {
   display: flex;
