@@ -359,10 +359,23 @@ def _find_watchdog_guard_script():
 
 
 def is_device_initialized(serial=None):
+    # 2026-10-18: 合并为单条shell命令——原3次_shell_test在设备半连接时
+    # 各吃满10s超时共30s, 是"点击部署一直检测中"的成因之一
+    r = _adb(["shell",
+              f"test -f {TEST_SH_PATH} && echo T1 || echo T0; test -f {BOOT_WATCHDOG_PATH} && echo W1 || echo W0"],
+             serial=serial)
+    test_sh = watchdog = False
+    if r["ok"]:
+        for line in (r["stdout"] or "").splitlines():
+            line = line.strip()
+            if line == "T1":
+                test_sh = True
+            elif line == "W1":
+                watchdog = True
     return {
-        "initialized": _shell_test(TEST_SH_PATH, serial),
-        "test_sh_exists": _shell_test(TEST_SH_PATH, serial),
-        "boot_watchdog_exists": _shell_test(BOOT_WATCHDOG_PATH, serial),
+        "initialized": test_sh,
+        "test_sh_exists": test_sh,
+        "boot_watchdog_exists": watchdog,
     }
 
 
